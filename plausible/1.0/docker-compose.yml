@@ -1,0 +1,32 @@
+version: "3"
+services:
+  plausible:
+    image: plausible/analytics:latest
+    ports:
+      - "8000:8000"
+    depends_on:
+      - plausible_db
+      - plausible_events_db
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@plausible_db:5432/plausible
+      CLICKHOUSE_DATABASE_URL: http://plausible_events_db:8123/plausible_events_db
+
+  plausible_db:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  plausible_events_db:
+    image: clickhouse/clickhouse-server:latest
+    volumes:
+      - event_data:/var/lib/clickhouse
+      - clickhouse_config:/etc/clickhouse-server/config.d
+      - clickhouse_user_config:/etc/clickhouse-server/users.d
+
+volumes:
+  db_data:
+  event_data:
+  clickhouse_config:
+  clickhouse_user_config:

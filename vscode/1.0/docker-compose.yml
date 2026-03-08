@@ -1,0 +1,11 @@
+version: "3"
+services:
+  code-server:
+    image: codercom/code-server:latest
+    command: ["--auth", "none", "--bind-addr", "0.0.0.0:8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - project_data:/home/coder/project
+volumes:
+  project_data:

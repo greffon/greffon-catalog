@@ -1,0 +1,48 @@
+{
+  "name": "OpenClaw",
+  "logo": "https://openclaw.ai/logo.png",
+  "description": "Open-source personal AI assistant that handles tasks like email, calendars, and browsing through chat",
+  "categories": [],
+  "images": [],
+  "configurations": [
+    {
+      "title": "ANTHROPIC_API_KEY",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "Anthropic API key" }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "openclaw-gateway", "key": "ANTHROPIC_API_KEY" }
+      ]
+    },
+    {
+      "title": "OPENAI_API_KEY",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "OpenAI API key (optional)" }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "openclaw-gateway", "key": "OPENAI_API_KEY" }
+      ]
+    },
+    {
+      "title": "OPENCLAW_GATEWAY_TOKEN",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Gateway authentication token"
+          }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "openclaw-gateway", "key": "OPENCLAW_GATEWAY_TOKEN" }
+      ]
+    }
+  ]
+}

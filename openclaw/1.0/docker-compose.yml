@@ -1,0 +1,14 @@
+version: "3"
+services:
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    ports:
+      - "18789:18789"
+    volumes:
+      - openclaw_data:/home/node/.openclaw
+    environment:
+      NODE_ENV: production
+      OPENCLAW_GATEWAY_BIND: lan
+
+volumes:
+  openclaw_data:

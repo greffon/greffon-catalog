@@ -1,0 +1,125 @@
+{
+  "name": "Freqtrade",
+  "logo": "https://www.freqtrade.io/en/stable/images/logo.png",
+  "description": "Freqtrade is a crypto-currency algorithmic trading software",
+  "categories": [],
+  "images": [],
+  "configurations": [
+    {
+      "title": "Configuration",
+      "schema": {
+        "type": "object",
+        "required": [
+          "max_open_trades", "stake_currency", "stake_amount",
+          "tradable_balance_ratio", "fiat_display_currency", "timeframe",
+          "dry_run", "dry_run_wallet", "cancel_open_orders_on_exit",
+          "unfilledtimeout", "order_types", "order_time_in_force",
+          "bid_strategy", "ask_strategy", "exchange", "pairlists",
+          "edge", "telegram", "api_server", "bot_name", "initial_state",
+          "forcebuy_enable", "internals", "strategy"
+        ],
+        "properties": {
+          "dry_run": { "type": "boolean" },
+          "dry_run_wallet": { "type": "integer" },
+          "max_open_trades": { "type": "integer" },
+          "stake_currency": { "type": "string" },
+          "stake_amount": { "type": "string" },
+          "timeframe": { "type": "string" },
+          "tradable_balance_ratio": { "type": "number" },
+          "fiat_display_currency": { "type": "string" },
+          "cancel_open_orders_on_exit": { "type": "boolean" },
+          "bot_name": { "type": "string" },
+          "initial_state": { "type": "string" },
+          "forcebuy_enable": { "type": "boolean" },
+          "strategy": { "type": "string" },
+          "exchange": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "key": { "type": "string" },
+              "secret": { "type": "string" },
+              "pair_whitelist": { "type": "array", "items": { "type": "string" } },
+              "pair_blacklist": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["name", "key", "secret", "pair_whitelist", "pair_blacklist"]
+          },
+          "telegram": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "token": { "type": "string" },
+              "chat_id": { "type": "string" }
+            },
+            "required": ["enabled", "token", "chat_id"]
+          },
+          "api_server": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "listen_ip_address": { "type": "string" },
+              "listen_port": { "type": "integer" },
+              "username": { "type": "string" },
+              "password": { "type": "string" }
+            },
+            "required": ["enabled", "listen_ip_address", "listen_port", "username", "password"]
+          }
+        }
+      },
+      "default_value": {
+        "max_open_trades": 3,
+        "stake_currency": "BUSD",
+        "stake_amount": "unlimited",
+        "tradable_balance_ratio": 0.99,
+        "fiat_display_currency": "EUR",
+        "timeframe": "5m",
+        "dry_run": true,
+        "dry_run_wallet": 100,
+        "cancel_open_orders_on_exit": false,
+        "bot_name": "freqtrade",
+        "initial_state": "running",
+        "forcebuy_enable": false,
+        "strategy": "SMAOffsetProtectOptV1",
+        "exchange": {
+          "name": "binance",
+          "key": "",
+          "secret": "",
+          "pair_whitelist": [],
+          "pair_blacklist": []
+        },
+        "telegram": {
+          "enabled": false,
+          "token": "",
+          "chat_id": ""
+        },
+        "api_server": {
+          "enabled": true,
+          "listen_ip_address": "0.0.0.0",
+          "listen_port": 8080,
+          "username": "",
+          "password": ""
+        }
+      },
+      "destinations": [
+        { "type": "json", "volume": "user_data", "name": "config.json" }
+      ]
+    },
+    {
+      "title": "Strategy",
+      "schema": {
+        "type": "object",
+        "required": ["file"],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "data-url",
+            "title": "Strategy file (.py)"
+          }
+        }
+      },
+      "default_value": {},
+      "destinations": [
+        { "type": "file", "volume": "user_data_strategies", "name": "sample_strategy.py" }
+      ]
+    }
+  ]
+}
