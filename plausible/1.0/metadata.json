@@ -6,41 +6,6 @@
   "images": [],
   "configurations": [
     {
-      "title": "clickhouse-user-config",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "file": {
-            "type": "string",
-            "format": "data-url",
-            "title": "ClickHouse user config"
-          }
-        }
-      },
-      "default_value": {},
-      "destinations": [
-        { "type": "file", "volume": "clickhouse_user_config", "name": "clickhouse-user-config.xml" }
-      ]
-    },
-    {
-      "title": "clickhouse-config",
-      "schema": {
-        "type": "object",
-        "required": ["file"],
-        "properties": {
-          "file": {
-            "type": "string",
-            "format": "data-url",
-            "title": "ClickHouse config"
-          }
-        }
-      },
-      "default_value": {},
-      "destinations": [
-        { "type": "file", "volume": "clickhouse_config", "name": "clickhouse-config.xml" }
-      ]
-    },
-    {
       "title": "ADMIN_USER_EMAIL",
       "schema": {
         "properties": {

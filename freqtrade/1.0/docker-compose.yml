@@ -7,7 +7,7 @@ services:
       - user_data_strategies:/freqtrade/user_data/strategies
     ports:
       - "8080:8080"
-    command: trade --config /freqtrade/user_data/config.json --strategy SMAOffsetProtectOptV1
+    command: webserver --config /freqtrade/user_data/config.json
 
   postgres:
     image: postgres:13
