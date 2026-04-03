@@ -1,0 +1,9 @@
+{
+  "path": "/",
+  "expected_status": [200, 302],
+  "expected_body_contains": null,
+  "required_config": {
+    "BASE_URL": "http://localhost:8000",
+    "SECRET_KEY_BASE": "aaaabbbbccccddddeeeeffffgggghhhhiiiijjjjkkkkllllmmmmnnnnoooopppp"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "path": "/",
+  "expected_status": [200, 302],
+  "expected_body_contains": "vscode"
+}
