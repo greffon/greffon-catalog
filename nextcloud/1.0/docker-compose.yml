@@ -1,0 +1,27 @@
+version: "3"
+services:
+  nextcloud:
+    image: nextcloud:latest
+    ports:
+      - "8080:80"
+    depends_on:
+      - nextcloud_db
+    environment:
+      POSTGRES_HOST: nextcloud_db
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - nextcloud_data:/var/www/html
+
+  nextcloud_db:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nextcloud
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+volumes:
+  nextcloud_data:
+  db_data:

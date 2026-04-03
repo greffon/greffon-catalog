@@ -1,0 +1,45 @@
+{
+  "name": "GlitchTip",
+  "logo": "https://gitlab.com/uploads/-/system/group/avatar/6475477/glitchtip_g.png",
+  "description": "Open-source error tracking compatible with Sentry SDKs",
+  "categories": [],
+  "images": [],
+  "configurations": [
+    {
+      "title": "SECRET_KEY",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "Secret key" }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "glitchtip", "key": "SECRET_KEY" }
+      ]
+    },
+    {
+      "title": "GLITCHTIP_DOMAIN",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "GlitchTip domain URL" }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "glitchtip", "key": "GLITCHTIP_DOMAIN" }
+      ]
+    },
+    {
+      "title": "DEFAULT_FROM_EMAIL",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "Default sender email" }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "glitchtip", "key": "DEFAULT_FROM_EMAIL" }
+      ]
+    }
+  ]
+}

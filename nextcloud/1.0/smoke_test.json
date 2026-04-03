@@ -1,0 +1,5 @@
+{
+  "path": "/status.php",
+  "expected_status": [200],
+  "expected_body_contains": "installed"
+}
