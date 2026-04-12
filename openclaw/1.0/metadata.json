@@ -1,6 +1,6 @@
 {
   "name": "OpenClaw",
-  "logo": "https://openclaw.ai/logo.png",
+  "logo": "https://cdn.jsdelivr.net/npm/@lobehub/icons-static-png@latest/light/openclaw-color.png",
   "description": "Open-source personal AI assistant that handles tasks like email, calendars, and browsing through chat",
   "categories": [],
   "images": [],
