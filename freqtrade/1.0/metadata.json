@@ -78,7 +78,7 @@
         "bot_name": "freqtrade",
         "initial_state": "running",
         "forcebuy_enable": false,
-        "strategy": "SMAOffsetProtectOptV1",
+        "strategy": "SampleStrategy",
         "exchange": {
           "name": "binance",
           "key": "",

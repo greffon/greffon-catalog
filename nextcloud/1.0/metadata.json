@@ -1,0 +1,45 @@
+{
+  "name": "Nextcloud",
+  "logo": "https://upload.wikimedia.org/wikipedia/commons/6/60/Nextcloud_Logo.svg",
+  "description": "Self-hosted productivity platform for file sync, sharing, and collaboration",
+  "categories": [],
+  "images": [],
+  "configurations": [
+    {
+      "title": "NEXTCLOUD_ADMIN_USER",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "Admin username" }
+        }
+      },
+      "default_value": { "value": "admin" },
+      "destinations": [
+        { "type": "env", "container": "nextcloud", "key": "NEXTCLOUD_ADMIN_USER" }
+      ]
+    },
+    {
+      "title": "NEXTCLOUD_ADMIN_PASSWORD",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "Admin password" }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "nextcloud", "key": "NEXTCLOUD_ADMIN_PASSWORD" }
+      ]
+    },
+    {
+      "title": "NEXTCLOUD_TRUSTED_DOMAINS",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "Trusted domains" }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "nextcloud", "key": "NEXTCLOUD_TRUSTED_DOMAINS" }
+      ]
+    }
+  ]
+}
