@@ -48,7 +48,7 @@
           "value": { "type": "string", "title": "Base URL" }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": { "value": "{{ instance_url }}" },
       "destinations": [
         { "type": "env", "container": "plausible", "key": "BASE_URL" }
       ]

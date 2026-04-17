@@ -36,7 +36,7 @@
           "value": { "type": "string", "title": "Trusted domains" }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": { "value": "{{ instance_host }} localhost" },
       "destinations": [
         { "type": "env", "container": "nextcloud", "key": "NEXTCLOUD_TRUSTED_DOMAINS" }
       ]

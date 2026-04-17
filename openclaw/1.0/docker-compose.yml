@@ -3,7 +3,7 @@ services:
   openclaw-gateway:
     image: ghcr.io/openclaw/openclaw:latest
     user: root
-    entrypoint: ["/bin/sh", "-c", "chown -R node:node /home/node/.openclaw && runuser -u node -- openclaw config set gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback true && exec runuser -u node -- docker-entrypoint.sh node openclaw.mjs gateway --allow-unconfigured --bind lan"]
+    entrypoint: ["/bin/sh", "-c", "chown -R node:node /home/node/.openclaw && runuser -u node -- openclaw config set gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback true && runuser -u node -- openclaw config set gateway.controlUi.allowedOrigins '[\"{{ instance_url }}\"]' && exec runuser -u node -- docker-entrypoint.sh node openclaw.mjs gateway --allow-unconfigured --bind lan"]
     ports:
       - "18789:18789"
     volumes:

@@ -24,7 +24,7 @@
           "value": { "type": "string", "title": "GlitchTip domain URL" }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": { "value": "{{ instance_url }}" },
       "destinations": [
         { "type": "env", "container": "glitchtip", "key": "GLITCHTIP_DOMAIN" }
       ]
