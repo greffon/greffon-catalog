@@ -13,10 +13,8 @@
           "max_open_trades", "stake_currency", "stake_amount",
           "tradable_balance_ratio", "fiat_display_currency", "timeframe",
           "dry_run", "dry_run_wallet", "cancel_open_orders_on_exit",
-          "unfilledtimeout", "order_types", "order_time_in_force",
-          "bid_strategy", "ask_strategy", "exchange", "pairlists",
-          "edge", "telegram", "api_server", "bot_name", "initial_state",
-          "forcebuy_enable", "internals", "strategy"
+          "exchange", "telegram", "api_server", "bot_name", "initial_state",
+          "forcebuy_enable", "strategy"
         ],
         "properties": {
           "dry_run": { "type": "boolean" },
