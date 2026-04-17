@@ -13,6 +13,9 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@plausible_db:5432/plausible
       CLICKHOUSE_DATABASE_URL: http://plausible_events_db:8123/plausible_events_db
+      # Allow first user to self-register via the web UI (Plausible CE v2+
+      # removed the ADMIN_USER_* env-var provisioning path).
+      DISABLE_REGISTRATION: "false"
 
   plausible_db:
     image: postgres:14-alpine

@@ -20,8 +20,10 @@
     {
       "title": "NEXTCLOUD_ADMIN_PASSWORD",
       "schema": {
+        "type": "object",
+        "required": ["value"],
         "properties": {
-          "value": { "type": "string", "title": "Admin password" }
+          "value": { "type": "string", "title": "Admin password", "writeOnly": true, "minLength": 8 }
         }
       },
       "default_value": { "value": "" },

@@ -40,6 +40,32 @@
       "destinations": [
         { "type": "env", "container": "glitchtip", "key": "DEFAULT_FROM_EMAIL" }
       ]
+    },
+    {
+      "title": "DJANGO_SUPERUSER_EMAIL",
+      "schema": {
+        "properties": {
+          "value": { "type": "string", "title": "Admin email", "format": "email" }
+        }
+      },
+      "default_value": { "value": "admin@greffon.local" },
+      "destinations": [
+        { "type": "env", "container": "glitchtip_seed", "key": "DJANGO_SUPERUSER_EMAIL" }
+      ]
+    },
+    {
+      "title": "DJANGO_SUPERUSER_PASSWORD",
+      "schema": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": { "type": "string", "title": "Admin password", "writeOnly": true, "minLength": 8 }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "glitchtip_seed", "key": "DJANGO_SUPERUSER_PASSWORD" }
+      ]
     }
   ]
 }

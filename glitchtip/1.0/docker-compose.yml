@@ -8,6 +8,20 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
 
+  # One-shot: create the first superuser so the greffon is usable
+  # immediately. DJANGO_SUPERUSER_* come from metadata configurations.
+  # If the user already exists the command is a no-op (manage.py
+  # createsuperuser --noinput returns 1 in that case; we swallow it).
+  glitchtip_seed:
+    image: glitchtip/glitchtip:latest
+    restart: "no"
+    depends_on:
+      - glitchtip_migrate
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
+    command: >
+      sh -c "./manage.py createsuperuser --noinput || true"
+
   glitchtip:
     image: glitchtip/glitchtip:latest
     ports:

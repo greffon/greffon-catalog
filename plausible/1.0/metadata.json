@@ -6,42 +6,6 @@
   "images": [],
   "configurations": [
     {
-      "title": "ADMIN_USER_EMAIL",
-      "schema": {
-        "properties": {
-          "value": { "type": "string", "title": "Admin user email" }
-        }
-      },
-      "default_value": { "value": "" },
-      "destinations": [
-        { "type": "env", "container": "plausible", "key": "ADMIN_USER_EMAIL" }
-      ]
-    },
-    {
-      "title": "ADMIN_USER_NAME",
-      "schema": {
-        "properties": {
-          "value": { "type": "string", "title": "Admin user name" }
-        }
-      },
-      "default_value": { "value": "" },
-      "destinations": [
-        { "type": "env", "container": "plausible", "key": "ADMIN_USER_NAME" }
-      ]
-    },
-    {
-      "title": "ADMIN_USER_PWD",
-      "schema": {
-        "properties": {
-          "value": { "type": "string", "title": "Admin user password" }
-        }
-      },
-      "default_value": { "value": "" },
-      "destinations": [
-        { "type": "env", "container": "plausible", "key": "ADMIN_USER_PWD" }
-      ]
-    },
-    {
       "title": "BASE_URL",
       "schema": {
         "properties": {
