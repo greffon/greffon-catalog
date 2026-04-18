@@ -66,6 +66,12 @@ jobs:
     if: needs.validate.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The integration job needs to checkout the private greffon/greffon repo,
+    # which the default GITHUB_TOKEN can't read across repos. Until a PAT
+    # secret is wired up (see .github/SMOKE_TESTING.md), failures here are
+    # informational only and don't block PR merges. Static Validation +
+    # regression tests still gate.
+    continue-on-error: true
 
     steps:
       # 1. Checkout parent greffon repo with all submodules

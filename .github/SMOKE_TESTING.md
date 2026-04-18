@@ -71,6 +71,25 @@ npx playwright test
    against a local deploy until it passes.
 5. Add a row to the env-var table above.
 
+## CI infrastructure note
+
+The Integration Test job in `.github/workflows/validate-greffon.yml` checks
+out the parent `greffon/greffon` repo to deploy and probe each greffon
+end-to-end. That repo is private, so the default `GITHUB_TOKEN` can't
+read it cross-repo and the job currently fails at the checkout step.
+
+**To enable end-to-end CI**, add a PAT secret with `repo` scope on the
+catalog repo:
+
+1. Generate a fine-grained PAT with read access to `greffon/greffon`.
+2. Add it as a repo secret named `GREFFON_REPO_TOKEN`.
+3. In `.github/workflows/validate-greffon.yml`, on the `Checkout parent
+   greffon repo` step add `token: ${{ secrets.GREFFON_REPO_TOKEN }}`.
+4. Remove the `continue-on-error: true` line on the `integration:` job.
+
+Until then the integration job is informational; Static Validation +
+the regression test suite still gate every PR.
+
 ## What the linter catches before merge
 
 See `.github/scripts/tests_validate_catalog.py` for the full list with one
