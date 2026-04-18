@@ -13,11 +13,19 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 
 import yaml
 
-REQUIRED_FILES = ["metadata.json", "docker-compose.yml"]
+# Names that strongly imply a secret value the user must supply.
+SECRET_NAME_RE = re.compile(r"(?i)password|secret(?!_id)|token|api[_-]?key|priv(?:ate)?[_-]?key")
+
+# Reserved/special-use TLDs that Python's email-validator (and most others) reject.
+# Catches the GlitchTip-style `admin@greffon.local` regression.
+RESERVED_TLDS = {"local", "localhost", "test", "example", "invalid", "internal"}
+
+REQUIRED_FILES = ["metadata.json", "docker-compose.yml", "smoke_test.spec.ts"]
 
 METADATA_REQUIRED_FIELDS = ["name", "description", "configurations"]
 
@@ -34,12 +42,15 @@ def find_catalog_root():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
+SKIP_TOP_LEVEL = {"node_modules", "playwright-report", "playwright-results", ".playwright"}
+
+
 def find_all_greffon_dirs(catalog_root):
     """Find all {name}/{version}/ directories."""
     dirs = []
     for name in sorted(os.listdir(catalog_root)):
         name_path = os.path.join(catalog_root, name)
-        if not os.path.isdir(name_path) or name.startswith("."):
+        if not os.path.isdir(name_path) or name.startswith(".") or name in SKIP_TOP_LEVEL:
             continue
         for version in sorted(os.listdir(name_path)):
             version_path = os.path.join(name_path, version)
@@ -132,6 +143,21 @@ def validate_greffon_dir(catalog_root, rel_dir):
         if val is not None and not isinstance(val, list):
             errors.append(f"{rel_dir}: metadata.json '{field}' must be a list")
 
+    # Cross-check: top-level volumes must be referenced by at least one service mount.
+    if isinstance(compose, dict) and compose_volumes:
+        used_volumes = set()
+        for svc_def in (compose.get("services") or {}).values():
+            if not isinstance(svc_def, dict):
+                continue
+            for vol_entry in svc_def.get("volumes") or []:
+                if isinstance(vol_entry, str) and ":" in vol_entry:
+                    used_volumes.add(vol_entry.split(":", 1)[0])
+        for vol_name in compose_volumes - used_volumes:
+            errors.append(
+                f"{rel_dir}: docker-compose.yml top-level volume '{vol_name}' is "
+                "declared but never mounted by a service"
+            )
+
     # Configurations
     configs = meta.get("configurations")
     if configs is not None and not isinstance(configs, list):
@@ -144,8 +170,40 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 errors.append(f"{prefix} must be an object")
                 continue
 
+            title = cfg.get("title", "")
             if "title" not in cfg:
                 errors.append(f"{prefix} missing 'title'")
+
+            # --- Schema sanity (regression: Freqtrade phantom-required fields) ---
+            schema = cfg.get("schema") or {}
+            schema_required = list(schema.get("required") or [])
+            schema_props = (schema.get("properties") or {}).keys()
+            default_value = cfg.get("default_value") or {}
+            for req_field in schema_required:
+                if req_field not in schema_props:
+                    errors.append(
+                        f"{prefix} schema.required '{req_field}' has no matching "
+                        "entry in schema.properties"
+                    )
+                if isinstance(default_value, dict) and req_field not in default_value:
+                    errors.append(
+                        f"{prefix} schema.required '{req_field}' has no entry in default_value"
+                    )
+
+            # --- Email-format sanity (regression: admin@greffon.local rejected by Pydantic) ---
+            for prop_name, prop in (schema.get("properties") or {}).items():
+                if not isinstance(prop, dict) or prop.get("format") != "email":
+                    continue
+                if not isinstance(default_value, dict):
+                    continue
+                default_email = default_value.get(prop_name, "")
+                if isinstance(default_email, str) and "@" in default_email:
+                    tld = default_email.rsplit(".", 1)[-1].lower()
+                    if tld in RESERVED_TLDS:
+                        errors.append(
+                            f"{prefix} default email '{default_email}' uses reserved/special-use "
+                            f"TLD '.{tld}'; some validators (Pydantic, email-validator) reject it"
+                        )
 
             if "destinations" not in cfg:
                 errors.append(f"{prefix} missing 'destinations'")
@@ -196,6 +254,50 @@ def validate_greffon_dir(catalog_root, rel_dir):
                             f"not found in docker-compose.yml volumes: "
                             f"{sorted(compose_volumes)}"
                         )
+
+            # --- Per-config rules that need all destinations + schema in scope ---
+            schema_required_set = set(schema_required)
+
+            # Rule: file-type destinations must have either a default file or be required.
+            # (Regression: Freqtrade Strategy / Plausible clickhouse-* crashed greffer with KeyError.)
+            for dest in destinations:
+                if not isinstance(dest, dict) or dest.get("type") != "file":
+                    continue
+                has_default_file = isinstance(default_value, dict) and bool(default_value.get("file"))
+                if not has_default_file and "file" not in schema_required_set:
+                    errors.append(
+                        f"{prefix} file destination has no default_value.file AND no "
+                        "schema.required: ['file']; greffer will crash with KeyError on empty install"
+                    )
+                    break
+
+            # Rule: configs whose title or any env-key looks like a secret must be required
+            # OR have a non-empty default. Catches "user installs with empty password,
+            # service silently broken or insecure".
+            looks_like_secret = bool(SECRET_NAME_RE.search(title))
+            for dest in destinations:
+                if isinstance(dest, dict) and SECRET_NAME_RE.search(dest.get("key", "")):
+                    looks_like_secret = True
+                    break
+            if looks_like_secret:
+                marked_required = "value" in schema_required_set
+                has_meaningful_default = (
+                    isinstance(default_value, dict)
+                    and isinstance(default_value.get("value"), str)
+                    and default_value.get("value", "").strip() != ""
+                )
+                # Escape hatch for "any-of" auth (e.g. OpenClaw needs ANTHROPIC_API_KEY
+                # OR OPENAI_API_KEY, neither alone is required). Set this flag in
+                # metadata.json on the config to silence the lint and rely on a custom
+                # smoke test to verify the user-supplied any-of constraint.
+                opt_out = bool(cfg.get("x-greffon-allow-empty-secret"))
+                if not marked_required and not has_meaningful_default and not opt_out:
+                    errors.append(
+                        f"{prefix} '{title}' looks like a secret (password/token/key) but is "
+                        "neither marked schema.required ['value'] nor given a non-empty default. "
+                        "Set 'x-greffon-allow-empty-secret: true' on the config if this is "
+                        "intentional (e.g. any-of auth)."
+                    )
 
     # Smoke test (separate file, optional but validated if present)
     smoke_path = os.path.join(abs_dir, "smoke_test.json")

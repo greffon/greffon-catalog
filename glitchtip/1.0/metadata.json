@@ -8,37 +8,70 @@
     {
       "title": "SECRET_KEY",
       "schema": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
         "properties": {
-          "value": { "type": "string", "title": "Secret key" }
+          "value": {
+            "type": "string",
+            "title": "Django secret key (32+ chars)",
+            "writeOnly": true,
+            "minLength": 32
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "glitchtip", "key": "SECRET_KEY" }
+        {
+          "type": "env",
+          "container": "glitchtip",
+          "key": "SECRET_KEY"
+        }
       ]
     },
     {
       "title": "GLITCHTIP_DOMAIN",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "GlitchTip domain URL" }
+          "value": {
+            "type": "string",
+            "title": "GlitchTip domain URL"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "glitchtip", "key": "GLITCHTIP_DOMAIN" }
+        {
+          "type": "env",
+          "container": "glitchtip",
+          "key": "GLITCHTIP_DOMAIN"
+        }
       ]
     },
     {
       "title": "DEFAULT_FROM_EMAIL",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Default sender email" }
+          "value": {
+            "type": "string",
+            "title": "Default sender email"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "glitchtip", "key": "DEFAULT_FROM_EMAIL" }
+        {
+          "type": "env",
+          "container": "glitchtip",
+          "key": "DEFAULT_FROM_EMAIL"
+        }
       ]
     }
   ]

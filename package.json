@@ -1,0 +1,12 @@
+{
+  "name": "greffon-catalog-smoke",
+  "private": true,
+  "description": "Playwright smoke tests for every catalog greffon",
+  "scripts": {
+    "test": "playwright test --config=playwright.config.ts",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

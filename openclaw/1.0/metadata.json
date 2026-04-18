@@ -9,25 +9,45 @@
       "title": "ANTHROPIC_API_KEY",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Anthropic API key" }
+          "value": {
+            "type": "string",
+            "title": "Anthropic API key"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "openclaw-gateway", "key": "ANTHROPIC_API_KEY" }
-      ]
+        {
+          "type": "env",
+          "container": "openclaw-gateway",
+          "key": "ANTHROPIC_API_KEY"
+        }
+      ],
+      "x-greffon-allow-empty-secret": true
     },
     {
       "title": "OPENAI_API_KEY",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "OpenAI API key (optional)" }
+          "value": {
+            "type": "string",
+            "title": "OpenAI API key (optional)"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "openclaw-gateway", "key": "OPENAI_API_KEY" }
-      ]
+        {
+          "type": "env",
+          "container": "openclaw-gateway",
+          "key": "OPENAI_API_KEY"
+        }
+      ],
+      "x-greffon-allow-empty-secret": true
     },
     {
       "title": "OPENCLAW_GATEWAY_TOKEN",
@@ -35,13 +55,25 @@
         "properties": {
           "value": {
             "type": "string",
-            "title": "Gateway authentication token"
+            "title": "Gateway authentication token",
+            "writeOnly": true,
+            "minLength": 8
           }
-        }
+        },
+        "type": "object",
+        "required": [
+          "value"
+        ]
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "openclaw-gateway", "key": "OPENCLAW_GATEWAY_TOKEN" }
+        {
+          "type": "env",
+          "container": "openclaw-gateway",
+          "key": "OPENCLAW_GATEWAY_TOKEN"
+        }
       ]
     }
   ]

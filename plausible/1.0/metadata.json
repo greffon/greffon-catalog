@@ -9,60 +9,111 @@
       "title": "ADMIN_USER_EMAIL",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Admin user email" }
+          "value": {
+            "type": "string",
+            "title": "Admin user email"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "plausible", "key": "ADMIN_USER_EMAIL" }
+        {
+          "type": "env",
+          "container": "plausible",
+          "key": "ADMIN_USER_EMAIL"
+        }
       ]
     },
     {
       "title": "ADMIN_USER_NAME",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Admin user name" }
+          "value": {
+            "type": "string",
+            "title": "Admin user name"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "plausible", "key": "ADMIN_USER_NAME" }
+        {
+          "type": "env",
+          "container": "plausible",
+          "key": "ADMIN_USER_NAME"
+        }
       ]
     },
     {
       "title": "ADMIN_USER_PWD",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Admin user password" }
+          "value": {
+            "type": "string",
+            "title": "Admin user password"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "plausible", "key": "ADMIN_USER_PWD" }
+        {
+          "type": "env",
+          "container": "plausible",
+          "key": "ADMIN_USER_PWD"
+        }
       ]
     },
     {
       "title": "BASE_URL",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Base URL" }
+          "value": {
+            "type": "string",
+            "title": "Base URL"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "plausible", "key": "BASE_URL" }
+        {
+          "type": "env",
+          "container": "plausible",
+          "key": "BASE_URL"
+        }
       ]
     },
     {
       "title": "SECRET_KEY_BASE",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Secret key base" }
-        }
+          "value": {
+            "type": "string",
+            "title": "Secret key base",
+            "writeOnly": true,
+            "minLength": 8
+          }
+        },
+        "type": "object",
+        "required": [
+          "value"
+        ]
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "plausible", "key": "SECRET_KEY_BASE" }
+        {
+          "type": "env",
+          "container": "plausible",
+          "key": "SECRET_KEY_BASE"
+        }
       ]
     }
   ]
