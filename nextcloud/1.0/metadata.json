@@ -64,13 +64,97 @@
         }
       },
       "default_value": {
-        "value": ""
+        "value": "{{ instance_host }} localhost"
       },
       "destinations": [
         {
           "type": "env",
           "container": "nextcloud",
           "key": "NEXTCLOUD_TRUSTED_DOMAINS"
+        }
+      ]
+    },
+    {
+      "title": "OVERWRITEPROTOCOL",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "OVERWRITEPROTOCOL"
+          }
+        }
+      },
+      "default_value": {
+        "value": "https"
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "nextcloud",
+          "key": "OVERWRITEPROTOCOL"
+        }
+      ]
+    },
+    {
+      "title": "OVERWRITEHOST",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "OVERWRITEHOST"
+          }
+        }
+      },
+      "default_value": {
+        "value": "{{ instance_host }}:{{ instance_port }}"
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "nextcloud",
+          "key": "OVERWRITEHOST"
+        }
+      ]
+    },
+    {
+      "title": "OVERWRITECLIURL",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "OVERWRITECLIURL"
+          }
+        }
+      },
+      "default_value": {
+        "value": "{{ instance_url }}"
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "nextcloud",
+          "key": "OVERWRITECLIURL"
+        }
+      ]
+    },
+    {
+      "title": "TRUSTED_PROXIES",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "TRUSTED_PROXIES"
+          }
+        }
+      },
+      "default_value": {
+        "value": "{{ instance_host }}"
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "nextcloud",
+          "key": "TRUSTED_PROXIES"
         }
       ]
     }

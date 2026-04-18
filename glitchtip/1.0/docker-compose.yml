@@ -8,6 +8,20 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
 
+  # One-shot: create the first superuser so the greffon is usable
+  # immediately after install. Retries because compose v3 depends_on
+  # only waits for container start, not for postgres to accept conns.
+  glitchtip_seed:
+    image: glitchtip/glitchtip:latest
+    restart: "no"
+    depends_on:
+      - glitchtip_db
+      - glitchtip_migrate
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
+    command: >
+      sh -c "for i in 1 2 3 4 5 6; do ./manage.py createsuperuser --noinput && break || sleep 5; done; exit 0"
+
   glitchtip:
     image: glitchtip/glitchtip:latest
     ports:

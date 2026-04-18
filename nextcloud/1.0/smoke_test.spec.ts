@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, request as pwRequest } from '@playwright/test';
 
 const URL = process.env.NEXTCLOUD_URL!;
 
@@ -40,5 +40,29 @@ test.describe('Nextcloud', () => {
     expect(page.url()).not.toMatch(/\/login/);
     const header = page.locator('#header, header, [role="banner"]').first();
     await expect(header).toBeVisible({ timeout: 30_000 });
+  });
+
+  test('admin can create a folder via WebDAV', async () => {
+    test.skip(!URL, 'NEXTCLOUD_URL not set');
+
+    // Use the WebDAV API directly with an APIRequestContext that doesn't
+    // carry a browser cookie jar — simpler, stable, and proves the admin
+    // user Nextcloud's env-var auto-install provisioned actually exists
+    // and can write.
+    const ctx = await pwRequest.newContext({
+      ignoreHTTPSErrors: true,
+      extraHTTPHeaders: {
+        Authorization: 'Basic ' + Buffer.from('admin:Admin123!').toString('base64'),
+      },
+    });
+    try {
+      const folderName = `MyDocs-${Date.now()}`;
+      const resp = await ctx.fetch(`${URL}/remote.php/dav/files/admin/${folderName}`, {
+        method: 'MKCOL',
+      });
+      expect(resp.status(), `MKCOL /remote.php/dav/files/admin/${folderName}`).toBe(201);
+    } finally {
+      await ctx.dispose();
+    }
   });
 });

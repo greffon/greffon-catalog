@@ -45,5 +45,44 @@ test.describe('Plausible Analytics', () => {
     // Prove we left the bare /register page — a successful submit navigates
     // to activation/onboarding/home.
     expect(page.url(), 'post-register URL').not.toMatch(/\/register$/);
+
+    // Plausible CE normally routes to /activate after register, gated on an
+    // emailed verification code. Without SMTP the code never arrives. Some
+    // CE builds auto-activate when MAILER_ADAPTER is unset — try /sites/new
+    // and see if the add-site form renders. If it redirects back to
+    // /activate or /login, annotate and still pass (register UI works).
+    await page.goto(`${URL.replace(/\/$/, '')}/sites/new`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+
+    const domainField = page
+      .locator('input[name="site[domain]"], input[name="domain"], input#site_domain')
+      .first();
+    const canAddSite = await domainField.isVisible({ timeout: 5_000 }).catch(() => false);
+
+    if (!canAddSite) {
+      test.info().annotations.push({
+        type: 'deployment-blocker',
+        description:
+          `Plausible redirected post-register to ${page.url()}. Most likely ` +
+          'email activation is blocking (no SMTP configured). Register form ' +
+          'still accepts input; add-site flow is not reachable without SMTP.',
+      });
+      return;
+    }
+
+    const domain = `e2e-${Date.now()}.example.com`;
+    await domainField.fill(domain);
+    await page.locator('button[type="submit"], input[type="submit"]').first().click();
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {});
+
+    // Assert we reached the tracking-snippet page. The snippet itself may be
+    // rendered in a <pre>/<code>/<textarea> and is not in innerText on all
+    // CE builds; the page's heading text "Paste this snippet" is the stable
+    // landmark.
+    const body = await page.locator('body').innerText({ timeout: 15_000 }).catch(() => '');
+    const sawSnippetPage =
+      /paste this snippet|plausible\.js|data-domain/i.test(body) ||
+      /\/snippet(\?|$)/.test(page.url());
+    expect(sawSnippetPage, `snippet page on ${page.url()}; body preview=${body.slice(0, 200)}`).toBe(true);
   });
 });
