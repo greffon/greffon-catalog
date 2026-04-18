@@ -21,11 +21,16 @@ jobs:
       - name: Install dependencies
         run: pip install pyyaml
 
+      - name: Run linter regression tests
+        # Proves every check in validate_catalog.py would have caught a real bug
+        # we shipped. Add a new test alongside any new check.
+        run: python .github/scripts/tests_validate_catalog.py
+
       - name: Detect changed greffons
         id: detect
         run: |
           CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
-            | grep -E '^[^.][^/]+/[^/]+/(metadata\.json|docker-compose\.yml|smoke_test\.json)$' \
+            | grep -E '^[^.][^/]+/[^/]+/(metadata\.json|docker-compose\.yml|smoke_test\.(json|spec\.ts))$' \
             | sed 's|/[^/]*$||' \
             | sort -u || true)
           echo "changed_dirs<<EOF" >> "$GITHUB_OUTPUT"
@@ -61,13 +66,19 @@ jobs:
     if: needs.validate.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The integration job needs to checkout the private greffon/greffon repo,
+    # which the default GITHUB_TOKEN can't read across repos. Until a PAT
+    # secret is wired up (see .github/SMOKE_TESTING.md), failures here are
+    # informational only and don't block PR merges. Static Validation +
+    # regression tests still gate.
+    continue-on-error: true
 
     steps:
       # 1. Checkout parent greffon repo with all submodules
       - name: Checkout parent greffon repo
         uses: actions/checkout@v4
         with:
-          repository: greffon-io/greffon
+          repository: greffon/greffon
           submodules: recursive
           path: greffon
 
@@ -103,3 +114,42 @@ jobs:
         run: |
           python greffon-catalog/.github/scripts/test_greffon.py \
             --changed-dirs "$CHANGED_DIRS"
+
+      # 7. Playwright smoke tests for changed greffons.
+      # Each greffon's smoke_test.spec.ts is a real-user happy-path check
+      # (login + first action). The test_greffon.py step above must export
+      # ${GREFFON}_URL env vars for each deployed instance for these to run.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright
+        working-directory: greffon/greffon-catalog
+        run: |
+          npm install --silent
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke specs for changed greffons
+        # Each spec uses test.skip(!URL) so it no-ops if test_greffon.py
+        # didn't export <GREFFON>_URL into $GITHUB_ENV. The spec must
+        # actively assert against a deployed instance to provide value;
+        # silently skipping is preferable to silently passing on bad config.
+        working-directory: greffon/greffon-catalog
+        env:
+          CHANGED_DIRS: ${{ needs.validate.outputs.changed_dirs }}
+        run: |
+          # Filter changed dirs to those that have a smoke spec, run only those.
+          for dir in $CHANGED_DIRS; do
+            spec="$dir/smoke_test.spec.ts"
+            if [ -f "$spec" ]; then
+              npx playwright test "$spec" --workers=1
+            fi
+          done
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            greffon/greffon-catalog/.playwright/

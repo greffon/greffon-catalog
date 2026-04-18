@@ -9,36 +9,69 @@
       "title": "NEXTCLOUD_ADMIN_USER",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Admin username" }
+          "value": {
+            "type": "string",
+            "title": "Admin username"
+          }
         }
       },
-      "default_value": { "value": "admin" },
+      "default_value": {
+        "value": "admin"
+      },
       "destinations": [
-        { "type": "env", "container": "nextcloud", "key": "NEXTCLOUD_ADMIN_USER" }
+        {
+          "type": "env",
+          "container": "nextcloud",
+          "key": "NEXTCLOUD_ADMIN_USER"
+        }
       ]
     },
     {
       "title": "NEXTCLOUD_ADMIN_PASSWORD",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Admin password" }
-        }
+          "value": {
+            "type": "string",
+            "title": "Admin password",
+            "writeOnly": true,
+            "minLength": 8
+          }
+        },
+        "type": "object",
+        "required": [
+          "value"
+        ]
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "nextcloud", "key": "NEXTCLOUD_ADMIN_PASSWORD" }
+        {
+          "type": "env",
+          "container": "nextcloud",
+          "key": "NEXTCLOUD_ADMIN_PASSWORD"
+        }
       ]
     },
     {
       "title": "NEXTCLOUD_TRUSTED_DOMAINS",
       "schema": {
         "properties": {
-          "value": { "type": "string", "title": "Trusted domains" }
+          "value": {
+            "type": "string",
+            "title": "Trusted domains"
+          }
         }
       },
-      "default_value": { "value": "" },
+      "default_value": {
+        "value": ""
+      },
       "destinations": [
-        { "type": "env", "container": "nextcloud", "key": "NEXTCLOUD_TRUSTED_DOMAINS" }
+        {
+          "type": "env",
+          "container": "nextcloud",
+          "key": "NEXTCLOUD_TRUSTED_DOMAINS"
+        }
       ]
     }
   ]

@@ -10,56 +10,141 @@
       "schema": {
         "type": "object",
         "required": [
-          "max_open_trades", "stake_currency", "stake_amount",
-          "tradable_balance_ratio", "fiat_display_currency", "timeframe",
-          "dry_run", "dry_run_wallet", "cancel_open_orders_on_exit",
-          "exchange", "telegram", "api_server", "bot_name", "initial_state",
-          "forcebuy_enable", "strategy"
+          "max_open_trades",
+          "stake_currency",
+          "stake_amount",
+          "tradable_balance_ratio",
+          "fiat_display_currency",
+          "timeframe",
+          "dry_run",
+          "dry_run_wallet",
+          "cancel_open_orders_on_exit",
+          "exchange",
+          "telegram",
+          "api_server",
+          "bot_name",
+          "initial_state",
+          "forcebuy_enable",
+          "strategy"
         ],
         "properties": {
-          "dry_run": { "type": "boolean" },
-          "dry_run_wallet": { "type": "integer" },
-          "max_open_trades": { "type": "integer" },
-          "stake_currency": { "type": "string" },
-          "stake_amount": { "type": "string" },
-          "timeframe": { "type": "string" },
-          "tradable_balance_ratio": { "type": "number" },
-          "fiat_display_currency": { "type": "string" },
-          "cancel_open_orders_on_exit": { "type": "boolean" },
-          "bot_name": { "type": "string" },
-          "initial_state": { "type": "string" },
-          "forcebuy_enable": { "type": "boolean" },
-          "strategy": { "type": "string" },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "dry_run_wallet": {
+            "type": "integer"
+          },
+          "max_open_trades": {
+            "type": "integer"
+          },
+          "stake_currency": {
+            "type": "string"
+          },
+          "stake_amount": {
+            "type": "string"
+          },
+          "timeframe": {
+            "type": "string"
+          },
+          "tradable_balance_ratio": {
+            "type": "number"
+          },
+          "fiat_display_currency": {
+            "type": "string"
+          },
+          "cancel_open_orders_on_exit": {
+            "type": "boolean"
+          },
+          "bot_name": {
+            "type": "string"
+          },
+          "initial_state": {
+            "type": "string"
+          },
+          "forcebuy_enable": {
+            "type": "boolean"
+          },
+          "strategy": {
+            "type": "string"
+          },
           "exchange": {
             "type": "object",
             "properties": {
-              "name": { "type": "string" },
-              "key": { "type": "string" },
-              "secret": { "type": "string" },
-              "pair_whitelist": { "type": "array", "items": { "type": "string" } },
-              "pair_blacklist": { "type": "array", "items": { "type": "string" } }
+              "name": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              },
+              "secret": {
+                "type": "string"
+              },
+              "pair_whitelist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "pair_blacklist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
-            "required": ["name", "key", "secret", "pair_whitelist", "pair_blacklist"]
+            "required": [
+              "name",
+              "key",
+              "secret",
+              "pair_whitelist",
+              "pair_blacklist"
+            ]
           },
           "telegram": {
             "type": "object",
             "properties": {
-              "enabled": { "type": "boolean" },
-              "token": { "type": "string" },
-              "chat_id": { "type": "string" }
+              "enabled": {
+                "type": "boolean"
+              },
+              "token": {
+                "type": "string"
+              },
+              "chat_id": {
+                "type": "string"
+              }
             },
-            "required": ["enabled", "token", "chat_id"]
+            "required": [
+              "enabled",
+              "token",
+              "chat_id"
+            ]
           },
           "api_server": {
             "type": "object",
             "properties": {
-              "enabled": { "type": "boolean" },
-              "listen_ip_address": { "type": "string" },
-              "listen_port": { "type": "integer" },
-              "username": { "type": "string" },
-              "password": { "type": "string" }
+              "enabled": {
+                "type": "boolean"
+              },
+              "listen_ip_address": {
+                "type": "string"
+              },
+              "listen_port": {
+                "type": "integer"
+              },
+              "username": {
+                "type": "string"
+              },
+              "password": {
+                "type": "string"
+              }
             },
-            "required": ["enabled", "listen_ip_address", "listen_port", "username", "password"]
+            "required": [
+              "enabled",
+              "listen_ip_address",
+              "listen_port",
+              "username",
+              "password"
+            ]
           }
         }
       },
@@ -98,14 +183,20 @@
         }
       },
       "destinations": [
-        { "type": "json", "volume": "user_data", "name": "config.json" }
+        {
+          "type": "json",
+          "volume": "user_data",
+          "name": "config.json"
+        }
       ]
     },
     {
       "title": "Strategy",
       "schema": {
         "type": "object",
-        "required": ["file"],
+        "required": [
+          "file"
+        ],
         "properties": {
           "file": {
             "type": "string",
@@ -114,9 +205,15 @@
           }
         }
       },
-      "default_value": {},
+      "default_value": {
+        "file": ""
+      },
       "destinations": [
-        { "type": "file", "volume": "user_data_strategies", "name": "sample_strategy.py" }
+        {
+          "type": "file",
+          "volume": "user_data_strategies",
+          "name": "sample_strategy.py"
+        }
       ]
     }
   ]
