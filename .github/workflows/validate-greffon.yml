@@ -72,7 +72,7 @@ jobs:
       - name: Checkout parent greffon repo
         uses: actions/checkout@v4
         with:
-          repository: greffon-io/greffon
+          repository: greffon/greffon
           submodules: recursive
           path: greffon
 
