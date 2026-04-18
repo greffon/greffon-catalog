@@ -74,6 +74,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
 
     # --- Validate docker-compose.yml ---
     compose_path = os.path.join(abs_dir, "docker-compose.yml")
+    compose = None  # so the cross-checks below can guard on truthiness
     compose_services = set()
     compose_volumes = set()
 

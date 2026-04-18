@@ -130,7 +130,10 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Run Playwright smoke specs for changed greffons
-        if: env.GREFFON_URLS_SET == 'true'
+        # Each spec uses test.skip(!URL) so it no-ops if test_greffon.py
+        # didn't export <GREFFON>_URL into $GITHUB_ENV. The spec must
+        # actively assert against a deployed instance to provide value;
+        # silently skipping is preferable to silently passing on bad config.
         working-directory: greffon/greffon-catalog
         env:
           CHANGED_DIRS: ${{ needs.validate.outputs.changed_dirs }}
@@ -149,5 +152,4 @@ jobs:
         with:
           name: playwright-results
           path: |
-            greffon/greffon-catalog/playwright-report/
-            greffon/greffon-catalog/playwright-results/
+            greffon/greffon-catalog/.playwright/

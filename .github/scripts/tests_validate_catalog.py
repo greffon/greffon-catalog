@@ -191,6 +191,25 @@ class ReservedTldEmailTest(unittest.TestCase):
             )
 
 
+class MissingComposeTest(unittest.TestCase):
+    """If docker-compose.yml is absent, the validator must still run all
+    metadata checks and report the missing-file error — not crash with
+    UnboundLocalError on `compose`. Caught by Codex review on PR #7."""
+
+    def test_no_compose_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            greffon_dir = os.path.join(tmp, "test", "1.0")
+            os.makedirs(greffon_dir, exist_ok=True)
+            with open(os.path.join(greffon_dir, "metadata.json"), "w") as f:
+                json.dump(_base_metadata(), f)
+            # Intentionally NO docker-compose.yml
+            errs = validate_greffon_dir(tmp, "test/1.0")
+            self.assertTrue(
+                any("missing required file 'docker-compose.yml'" in e for e in errs),
+                f"expected missing-compose error, got {errs}",
+            )
+
+
 class DanglingVolumeTest(unittest.TestCase):
     """A top-level `volumes: { db_data: }` declared but never mounted is dead code
     that often signals a mis-pasted compose. Catch it."""
