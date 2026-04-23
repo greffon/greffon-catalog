@@ -25,15 +25,45 @@ SECRET_NAME_RE = re.compile(r"(?i)password|secret(?!_id)|token|api[_-]?key|priv(
 # Catches the GlitchTip-style `admin@greffon.local` regression.
 RESERVED_TLDS = {"local", "localhost", "test", "example", "invalid", "internal"}
 
+# Detects a Jinja fragment that references the `smtp` context variable — the
+# signal that a compose env value is SMTP-managed. The match is intentionally
+# loose: the contract is "the value is a Jinja expression (contains `{{`/`}}`)
+# AND references `smtp.<field>` somewhere", not "the expression starts with
+# `{{ smtp.`". The looser form accommodates shaped values used by the three V1
+# greffons — `{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}` (Plausible),
+# `{{ {'tls': 'ssl', 'none': ''}[smtp.tls_mode] }}` (Nextcloud, dict-lookup
+# with literal braces inside), and `smtp{{ 's' if smtp.tls_mode == 'tls' ...
+# }}://{{ smtp.username | urlencode }}...` (GlitchTip, multi-expression URL).
+#
+# Deviates from the HLD's strict `\{\{\s*smtp\.` pattern, which the HLD's own
+# three examples wouldn't match — the HLD shipped inconsistent with its own
+# compose snippets. The broader check preserves the intent ("env value is
+# SMTP-managed") while admitting every expression the HLD prescribes.
+_SMTP_JINJA_OPEN_RE = re.compile(r"\{\{")
+_SMTP_JINJA_REF_RE = re.compile(r"\bsmtp\.\w+", re.IGNORECASE)
+
+
+def _value_references_smtp(value) -> bool:
+    """True if a compose env value is an SMTP-managed Jinja expression."""
+    if not isinstance(value, str):
+        return False
+    return bool(
+        _SMTP_JINJA_OPEN_RE.search(value)
+        and _SMTP_JINJA_REF_RE.search(value)
+        and "}}" in value
+    )
+
+
 REQUIRED_FILES = ["metadata.json", "docker-compose.yml", "smoke_test.spec.ts"]
 
 METADATA_REQUIRED_FIELDS = ["name", "description", "configurations"]
 
-VALID_DESTINATION_TYPES = {"env", "json", "file"}
+VALID_DESTINATION_TYPES = {"env", "json", "file", "smtp"}
 DESTINATION_REQUIRED_KEYS = {
     "env": {"type", "container", "key"},
     "json": {"type", "volume", "name"},
     "file": {"type", "volume", "name"},
+    "smtp": {"type", "container", "key"},
 }
 
 
@@ -159,6 +189,10 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 "declared but never mounted by a service"
             )
 
+    # Accumulators for the bidirectional SMTP metadata-to-compose match (Rule 5.3).
+    # Keyed by service name; values are sets of env keys.
+    metadata_smtp_keys: dict = {}
+
     # Configurations
     configs = meta.get("configurations")
     if configs is not None and not isinstance(configs, list):
@@ -256,6 +290,21 @@ def validate_greffon_dir(catalog_root, rel_dir):
                             f"{sorted(compose_volumes)}"
                         )
 
+                # --- Rule 5.2: smtp destinations must target a real service ---
+                # Also accumulate declared keys per service for the bidirectional
+                # match in Rule 5.3 below.
+                if dtype == "smtp":
+                    container = dest.get("container", "")
+                    key = dest.get("key", "")
+                    if container and compose_services and container not in compose_services:
+                        errors.append(
+                            f"{dprefix} references container '{container}' "
+                            f"not found in docker-compose.yml services: "
+                            f"{sorted(compose_services)}"
+                        )
+                    if container and key:
+                        metadata_smtp_keys.setdefault(container, set()).add(key)
+
             # --- Per-config rules that need all destinations + schema in scope ---
             schema_required_set = set(schema_required)
 
@@ -275,9 +324,17 @@ def validate_greffon_dir(catalog_root, rel_dir):
             # Rule: configs whose title or any env-key looks like a secret must be required
             # OR have a non-empty default. Catches "user installs with empty password,
             # service silently broken or insecure".
+            #
+            # Only scan env-type destinations: smtp destinations get their value from
+            # the operator's SMTP integration (render-time Jinja), not from user input,
+            # so an empty schema/default_value is expected and correct for them.
             looks_like_secret = bool(SECRET_NAME_RE.search(title))
             for dest in destinations:
-                if isinstance(dest, dict) and SECRET_NAME_RE.search(dest.get("key", "")):
+                if not isinstance(dest, dict):
+                    continue
+                if dest.get("type") != "env":
+                    continue
+                if SECRET_NAME_RE.search(dest.get("key", "")):
                     looks_like_secret = True
                     break
             if looks_like_secret:
@@ -299,6 +356,89 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         "Set 'x-greffon-allow-empty-secret: true' on the config if this is "
                         "intentional (e.g. any-of auth)."
                     )
+
+    # --- Rule 5.3 / 5.4: bidirectional SMTP metadata-to-compose match ---
+    # Walk the compose services, compute the set of env keys whose value is a
+    # Jinja expression referencing `smtp.*`, and cross-check against the
+    # metadata-declared SMTP destinations collected above. Errors are emitted
+    # in both directions.
+    #
+    # Rule 5.4: if a service has any smtp destination AND its `environment:`
+    # block is list-form (["KEY=value", ...]), we cannot cleanly inspect the
+    # value — error and require mapping form.
+    #
+    # Rule 5.5: non-SMTP greffons are untouched. Every check below is gated on
+    # "at least one smtp destination OR at least one `{{ smtp.* }}` env value"
+    # so existing catalog entries pass unchanged.
+    compose_smtp_env_keys: dict = {}
+    list_form_smtp_services: set = set()
+    if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
+        for svc_name, svc_def in compose["services"].items():
+            if not isinstance(svc_def, dict):
+                continue
+            env = svc_def.get("environment")
+            if isinstance(env, dict):
+                for k, v in env.items():
+                    if _value_references_smtp(v):
+                        compose_smtp_env_keys.setdefault(svc_name, set()).add(k)
+            elif isinstance(env, list):
+                # List form: KEY=value strings. If the service has any smtp
+                # destination on the metadata side, flag it — we require
+                # mapping form for SMTP-aware services (Rule 5.4). Also scan
+                # list entries for an obvious `{{ smtp.` reference so a
+                # maintainer who wrote list-form Jinja still trips Rule 5.3.
+                for entry in env:
+                    if _value_references_smtp(entry):
+                        # Best-effort key extraction for Rule 5.3 parity;
+                        # the Rule 5.4 error below is the real fix.
+                        if isinstance(entry, str) and "=" in entry:
+                            key = entry.split("=", 1)[0].strip()
+                            compose_smtp_env_keys.setdefault(svc_name, set()).add(key)
+                if svc_name in metadata_smtp_keys:
+                    list_form_smtp_services.add(svc_name)
+
+    for svc_name in sorted(list_form_smtp_services):
+        errors.append(
+            f"{rel_dir}: service '{svc_name}' has smtp destination(s) but its "
+            "'environment' is list-form; convert to mapping form "
+            "(KEY: value) so SMTP Jinja values can be validated"
+        )
+
+    # Bidirectional match (Rule 5.3).
+    affected_services = set(metadata_smtp_keys) | set(compose_smtp_env_keys)
+    for svc in sorted(affected_services):
+        meta_keys = metadata_smtp_keys.get(svc, set())
+        compose_keys = compose_smtp_env_keys.get(svc, set())
+
+        compose_env = {}
+        if isinstance(compose, dict):
+            svc_def = (compose.get("services") or {}).get(svc)
+            if isinstance(svc_def, dict) and isinstance(svc_def.get("environment"), dict):
+                compose_env = svc_def["environment"]
+
+        for key in sorted(meta_keys - compose_keys):
+            if key in compose_env:
+                # Key is present in compose but its value doesn't reference smtp.*
+                errors.append(
+                    f"{rel_dir}: metadata.json declares SMTP env key '{key}' for "
+                    f"service '{svc}' but its compose value does not reference the "
+                    f"'smtp' Jinja context (got: '{compose_env[key]}'). "
+                    "SMTP-managed keys must render from 'smtp.*'"
+                )
+            else:
+                errors.append(
+                    f"{rel_dir}: metadata.json declares SMTP env key '{key}' for "
+                    f"service '{svc}' but it is not present in docker-compose.yml's "
+                    f"environment for that service"
+                )
+
+        for key in sorted(compose_keys - meta_keys):
+            errors.append(
+                f"{rel_dir}: docker-compose.yml env '{key}' on service '{svc}' "
+                "references the smtp Jinja context but metadata.json has no smtp "
+                f"destination for it. Add a destination of type 'smtp' with "
+                f"container='{svc}' key='{key}', or remove the Jinja reference"
+            )
 
     # Smoke test (separate file, optional but validated if present)
     smoke_path = os.path.join(abs_dir, "smoke_test.json")

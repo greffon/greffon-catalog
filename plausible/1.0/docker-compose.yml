@@ -15,6 +15,14 @@ services:
       CLICKHOUSE_DATABASE_URL: http://plausible_events_db:8123/plausible_events_db
       # First user can self-register via web UI (CE v2+ deprecated ADMIN_USER_*).
       DISABLE_REGISTRATION: "false"
+      # SMTP — values rendered from the operator's SMTP integration at deploy time.
+      # Greffer removes these keys entirely when no SMTP integration is selected.
+      SMTP_HOST_ADDR: "{{ smtp.host }}"
+      SMTP_HOST_PORT: "{{ smtp.port }}"
+      SMTP_USER_NAME: "{{ smtp.username }}"
+      SMTP_USER_PWD: "{{ smtp.password }}"
+      MAILER_EMAIL: "{{ smtp.from_address }}"
+      SMTP_HOST_SSL_ENABLED: "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}"
 
   plausible_db:
     image: postgres:14-alpine

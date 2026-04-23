@@ -68,6 +68,44 @@ Nginx-internal template vars like `{{ports[i].port_host}}` are reserved for the 
 | `env`  | `container`, `key`              | Inject as environment variable           |
 | `json` | `volume`, `name`                | Write JSON file into a named volume      |
 | `file` | `volume`, `name`                | Write uploaded file into a named volume  |
+| `smtp` | `container`, `key`              | Mark an env key as SMTP-integration-managed (value comes from the operator's SMTP integration, not user input) |
+
+#### SMTP destinations
+
+An `smtp` destination declares that a given env var on a given service is **driven by the operator's SMTP integration**, not by per-instance user input. The value is rendered at deploy time from the greffer-side Jinja context variable `smtp` — a dict with fields `host`, `port`, `username`, `password`, `from_address`, `tls_mode` (`"none"` / `"starttls"` / `"tls"`). Write the shaping expression inline in the compose file's `environment:` mapping:
+
+```yaml
+services:
+  app:
+    environment:
+      SMTP_HOST_ADDR: "{{ smtp.host }}"
+      SMTP_HOST_PORT: "{{ smtp.port }}"
+      SMTP_USER_NAME: "{{ smtp.username }}"
+      SMTP_USER_PWD: "{{ smtp.password }}"
+      MAILER_EMAIL: "{{ smtp.from_address }}"
+      SMTP_HOST_SSL_ENABLED: "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}"
+```
+
+The `metadata.json` entry for the same config section:
+
+```json
+{
+  "title": "SMTP",
+  "schema": { "properties": {} },
+  "default_value": {},
+  "destinations": [
+    { "type": "smtp", "container": "app", "key": "SMTP_HOST_ADDR" },
+    { "type": "smtp", "container": "app", "key": "SMTP_HOST_PORT" }
+  ]
+}
+```
+
+Notes:
+
+- `schema` stays empty (`{"properties": {}}`) and `default_value` stays empty (`{}`) — SMTP is not user-configurable at instance-creation time; the value source is the operator's integration.
+- When an instance is deployed **without** an SMTP integration selected, the greffer removes each metadata-declared `smtp` env key from the rendered compose before starting the instance. The env var is absent in the container rather than empty-string noise, regardless of how Jinja rendered the expression.
+- The compose `environment:` must be mapping form (`KEY: value`) on every service that has an `smtp` destination; list form (`["KEY=value", ...]`) is rejected by the validator because the bidirectional Jinja check can't inspect list entries cleanly.
+- Value shaping (booleans, tri-state strings, composed URLs) lives in the compose Jinja, not in a named transform — see the Plausible / Nextcloud / GlitchTip entries for worked examples.
 
 ## CI Quality Gate
 

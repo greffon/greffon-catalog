@@ -132,6 +132,17 @@
           "key": "DJANGO_SUPERUSER_PASSWORD"
         }
       ]
+    },
+    {
+      "title": "SMTP",
+      "schema": {
+        "properties": {}
+      },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "glitchtip",        "key": "EMAIL_URL" },
+        { "type": "smtp", "container": "glitchtip_worker", "key": "EMAIL_URL" }
+      ]
     }
   ]
 }

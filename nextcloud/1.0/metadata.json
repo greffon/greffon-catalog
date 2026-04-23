@@ -157,6 +157,22 @@
           "key": "TRUSTED_PROXIES"
         }
       ]
+    },
+    {
+      "title": "SMTP",
+      "schema": {
+        "properties": {}
+      },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "nextcloud", "key": "SMTP_HOST" },
+        { "type": "smtp", "container": "nextcloud", "key": "SMTP_PORT" },
+        { "type": "smtp", "container": "nextcloud", "key": "SMTP_NAME" },
+        { "type": "smtp", "container": "nextcloud", "key": "SMTP_PASSWORD" },
+        { "type": "smtp", "container": "nextcloud", "key": "MAIL_FROM_ADDRESS" },
+        { "type": "smtp", "container": "nextcloud", "key": "MAIL_DOMAIN" },
+        { "type": "smtp", "container": "nextcloud", "key": "SMTP_SECURE" }
+      ]
     }
   ]
 }
