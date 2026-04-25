@@ -26,32 +26,39 @@ SECRET_NAME_RE = re.compile(r"(?i)password|secret(?!_id)|token|api[_-]?key|priv(
 RESERVED_TLDS = {"local", "localhost", "test", "example", "invalid", "internal"}
 
 # Detects a Jinja fragment that references the `smtp` context variable — the
-# signal that a compose env value is SMTP-managed. The match is intentionally
-# loose: the contract is "the value is a Jinja expression (contains `{{`/`}}`)
-# AND references `smtp.<field>` somewhere", not "the expression starts with
-# `{{ smtp.`". The looser form accommodates shaped values used by the three V1
-# greffons — `{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}` (Plausible),
-# `{{ {'tls': 'ssl', 'none': ''}[smtp.tls_mode] }}` (Nextcloud, dict-lookup
-# with literal braces inside), and `smtp{{ 's' if smtp.tls_mode == 'tls' ...
-# }}://{{ smtp.username | urlencode }}...` (GlitchTip, multi-expression URL).
+# signal that a compose env value is SMTP-managed. The match is scoped to the
+# *inside of a `{{ ... }}` expression block* and is *case-sensitive*:
 #
-# Deviates from the HLD's strict `\{\{\s*smtp\.` pattern, which the HLD's own
-# three examples wouldn't match — the HLD shipped inconsistent with its own
-# compose snippets. The broader check preserves the intent ("env value is
-# SMTP-managed") while admitting every expression the HLD prescribes.
-_SMTP_JINJA_OPEN_RE = re.compile(r"\{\{")
-_SMTP_JINJA_REF_RE = re.compile(r"\bsmtp\.\w+", re.IGNORECASE)
+#   - A reference must appear INSIDE a `{{ ... }}`: the value
+#     `"{{ instance_url }} smtp.host"` is rejected because `smtp.host` sits
+#     outside any Jinja expression and would render literally.
+#   - The identifier must be lowercase `smtp.<field>`: Jinja variable lookup
+#     is case-sensitive, so `{{ SMTP.host }}` would render undefined and is
+#     rejected at lint time.
+#   - A word boundary before `smtp` prevents `{{ notsmtp.host }}` from matching.
+#
+# The `(?:(?!\}\}).)*?` tempered-greedy token matches any char that isn't the
+# start of `}}`, so dict literals inside the expression (e.g. Nextcloud's
+# `{{ {'tls': 'ssl', ...}[smtp.tls_mode] }}`) are admitted while the match
+# still can't cross an expression boundary.
+_SMTP_JINJA_RE = re.compile(
+    r"\{\{(?:(?!\}\}).)*?\bsmtp\.[a-z_][a-z0-9_]*(?:(?!\}\}).)*?\}\}"
+)
 
 
 def _value_references_smtp(value) -> bool:
-    """True if a compose env value is an SMTP-managed Jinja expression."""
-    if not isinstance(value, str):
-        return False
-    return bool(
-        _SMTP_JINJA_OPEN_RE.search(value)
-        and _SMTP_JINJA_REF_RE.search(value)
-        and "}}" in value
-    )
+    """Returns True iff the compose value contains a `{{ smtp.<field> }}`
+    Jinja expression that reads from the SMTP integration context.
+
+    The match is scoped to the *inside of a Jinja expression block* —
+    `"{{ instance_url }} smtp.host"` is rejected because `smtp.host` is
+    outside any `{{ }}` and would render literally.
+
+    The match is *case-sensitive* because Jinja variable lookup is
+    case-sensitive; `{{ SMTP.host }}` would render undefined, so the
+    validator rejects it.
+    """
+    return isinstance(value, str) and bool(_SMTP_JINJA_RE.search(value))
 
 
 REQUIRED_FILES = ["metadata.json", "docker-compose.yml", "smoke_test.spec.ts"]

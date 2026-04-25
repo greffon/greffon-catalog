@@ -18,7 +18,7 @@ import textwrap
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from validate_catalog import validate_greffon_dir
+from validate_catalog import _value_references_smtp, validate_greffon_dir
 
 
 def _write_greffon(tmpdir, *, metadata, compose_yaml=None):
@@ -535,6 +535,71 @@ class SmtpRealCatalogPassesTest(unittest.TestCase):
         root = find_catalog_root()
         errs = validate_greffon_dir(root, "glitchtip/1.0")
         self.assertEqual(errs, [], f"glitchtip/1.0 should pass, got {errs}")
+
+
+class SmtpJinjaRegexTest(unittest.TestCase):
+    """Unit tests for `_value_references_smtp` — addresses Codex 2xP2 on PR #10:
+
+    1. Case-sensitive: `{{ SMTP.host }}` is NOT a valid SMTP reference because
+       Jinja variable lookup is case-sensitive (it would render to undefined).
+    2. Scoped to `{{ ... }}`: `smtp.host` sitting OUTSIDE a Jinja expression is
+       not a reference; the previous regex wrongly accepted
+       `"{{ instance_url }} smtp.host"` as SMTP-managed.
+    """
+
+    def test_simple_smtp_reference_matches(self):
+        self.assertTrue(_value_references_smtp("{{ smtp.host }}"))
+
+    def test_plausible_conditional_matches(self):
+        # Plausible's boolean expression.
+        self.assertTrue(_value_references_smtp(
+            "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}"
+        ))
+
+    def test_glitchtip_composed_url_matches(self):
+        # GlitchTip's multi-expression URL: at least one `{{ ... smtp.* ... }}`
+        # block must trigger the match.
+        self.assertTrue(_value_references_smtp(
+            "smtp{{ 's' if smtp.tls_mode == 'tls' else '' }}://"
+            "{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@"
+            "{{ smtp.host }}:{{ smtp.port }}"
+            "{% if smtp.tls_mode == 'starttls' %}?tls=True{% endif %}"
+        ))
+
+    def test_nextcloud_dict_lookup_matches(self):
+        # Nextcloud's dict-literal inside a Jinja block — the regex must admit
+        # `{` and `}` that aren't a full `}}` boundary.
+        self.assertTrue(_value_references_smtp(
+            "{{ {'tls': 'ssl', 'starttls': 'tls', 'none': ''}[smtp.tls_mode] }}"
+        ))
+
+    def test_smtp_reference_outside_braces_rejected(self):
+        # Codex P2 #2: `smtp.host` is outside any `{{ }}` block, so this is a
+        # malformed env mapping that would render literally. Must be rejected.
+        self.assertFalse(_value_references_smtp("{{ instance_url }} smtp.host"))
+
+    def test_uppercase_smtp_rejected(self):
+        # Codex P2 #1: Jinja lookup is case-sensitive; `SMTP.host` renders to
+        # undefined. Must be rejected.
+        self.assertFalse(_value_references_smtp("{{ SMTP.host }}"))
+
+    def test_smtps_prefix_rejected(self):
+        # Identifier is `smtps.host`, not `smtp.host` — the `.` doesn't follow
+        # `smtp` directly, so the reference is not to the SMTP context.
+        self.assertFalse(_value_references_smtp("{{ smtps.host }}"))
+
+    def test_bare_smtp_host_without_jinja_rejected(self):
+        self.assertFalse(_value_references_smtp("smtp.host"))
+
+    def test_word_boundary_prevents_notsmtp_match(self):
+        # `\b` fails mid-word: `notsmtp.host` must NOT match `smtp.host`.
+        self.assertFalse(_value_references_smtp("{{ notsmtp.host }}"))
+
+    def test_empty_string_rejected(self):
+        self.assertFalse(_value_references_smtp(""))
+
+    def test_non_string_rejected(self):
+        self.assertFalse(_value_references_smtp(None))
 
 
 if __name__ == "__main__":
