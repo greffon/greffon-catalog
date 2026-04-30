@@ -11,6 +11,18 @@ services:
       POSTGRES_DB: nextcloud
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      # SMTP — values rendered from the operator's SMTP integration at deploy
+      # time. The Nextcloud image's smtp.config.php only activates the mail
+      # setup when SMTP_HOST + MAIL_FROM_ADDRESS + MAIL_DOMAIN are all set,
+      # so `from_address` is split by '@' into the local part and the domain.
+      # Greffer removes these keys entirely when no SMTP integration is selected.
+      SMTP_HOST: "{{ smtp.host }}"
+      SMTP_PORT: "{{ smtp.port }}"
+      SMTP_NAME: "{{ smtp.username }}"
+      SMTP_PASSWORD: "{{ smtp.password }}"
+      MAIL_FROM_ADDRESS: "{{ smtp.from_address.split('@')[0] }}"
+      MAIL_DOMAIN: "{{ smtp.from_address.split('@')[1] }}"
+      SMTP_SECURE: "{{ {'tls': 'ssl', 'starttls': 'tls', 'none': ''}[smtp.tls_mode] }}"
     volumes:
       - nextcloud_data:/var/www/html
 

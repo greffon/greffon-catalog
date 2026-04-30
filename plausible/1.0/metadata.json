@@ -52,6 +52,21 @@
           "key": "SECRET_KEY_BASE"
         }
       ]
+    },
+    {
+      "title": "SMTP",
+      "schema": {
+        "properties": {}
+      },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "plausible", "key": "SMTP_HOST_ADDR" },
+        { "type": "smtp", "container": "plausible", "key": "SMTP_HOST_PORT" },
+        { "type": "smtp", "container": "plausible", "key": "SMTP_USER_NAME" },
+        { "type": "smtp", "container": "plausible", "key": "SMTP_USER_PWD" },
+        { "type": "smtp", "container": "plausible", "key": "MAILER_EMAIL" },
+        { "type": "smtp", "container": "plausible", "key": "SMTP_HOST_SSL_ENABLED" }
+      ]
     }
   ]
 }
