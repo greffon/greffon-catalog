@@ -22,7 +22,16 @@ services:
       SMTP_USER_NAME: "{{ smtp.username }}"
       SMTP_USER_PWD: "{{ smtp.password }}"
       MAILER_EMAIL: "{{ smtp.from_address }}"
-      SMTP_HOST_SSL_ENABLED: "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}"
+      # Outer YAML scalar uses single quotes; inner Jinja uses double
+      # quotes. This survives the greffer's yaml.dump → Template render
+      # round-trip: yaml.dump always picks single-quoted style for our
+      # env values, and PyYAML's escape rule for single-quoted scalars
+      # is to double any inner ''. With the original single-quoted
+      # 'true', the dumped form became `'{{ ''true'' if … }}'`, which
+      # Jinja parses as `'' + bareword true + ''` → TemplateSyntaxError.
+      # Double quotes inside a single-quoted YAML scalar need no
+      # escaping at either layer.
+      SMTP_HOST_SSL_ENABLED: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
 
   plausible_db:
     image: postgres:14-alpine
