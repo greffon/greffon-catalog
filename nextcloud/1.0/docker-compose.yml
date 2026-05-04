@@ -20,9 +20,13 @@ services:
       SMTP_PORT: "{{ smtp.port }}"
       SMTP_NAME: "{{ smtp.username }}"
       SMTP_PASSWORD: "{{ smtp.password }}"
-      MAIL_FROM_ADDRESS: "{{ smtp.from_address.split('@')[0] }}"
-      MAIL_DOMAIN: "{{ smtp.from_address.split('@')[1] }}"
-      SMTP_SECURE: "{{ {'tls': 'ssl', 'starttls': 'tls', 'none': ''}[smtp.tls_mode] }}"
+      # Outer YAML single-quoted, inner Jinja double-quoted — see the
+      # equivalent comment in plausible/1.0/docker-compose.yml.
+      # yaml.dump would escape inner single quotes as '' and break
+      # Jinja parsing on the round-trip through the greffer.
+      MAIL_FROM_ADDRESS: '{{ smtp.from_address.split("@")[0] }}'
+      MAIL_DOMAIN: '{{ smtp.from_address.split("@")[1] }}'
+      SMTP_SECURE: '{{ {"tls": "ssl", "starttls": "tls", "none": ""}[smtp.tls_mode] }}'
     volumes:
       - nextcloud_data:/var/www/html
 

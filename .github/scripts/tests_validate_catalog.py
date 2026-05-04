@@ -457,25 +457,34 @@ class SmtpShapedJinjaExpressionsTest(unittest.TestCase):
                 f"shaped SMTP Jinja should pass for key={key}, got {errs}",
             )
 
+    # All three of the following use *double-quoted* Jinja string
+    # literals. PyYAML's yaml.dump round-trip in the greffer wraps env
+    # values in single quotes and escapes any inner single quote as
+    # '' — turning `'true'` into the bareword `true` and breaking
+    # Jinja parse. Catalog templates therefore stick to double quotes
+    # inside the {{ … }} expression. (The validator must also accept
+    # this shape; see the matching test_*_round_trips_through_yaml
+    # tests below for the regression guard.)
+
     def test_plausible_boolean_expression(self):
         self._one_service_passes(
             "SMTP_HOST_SSL_ENABLED",
-            "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}",
+            '{{ "true" if smtp.tls_mode == "tls" else "false" }}',
         )
 
     def test_nextcloud_dict_lookup_with_literal_braces(self):
         self._one_service_passes(
             "SMTP_SECURE",
-            "{{ {'tls': 'ssl', 'starttls': 'tls', 'none': ''}[smtp.tls_mode] }}",
+            '{{ {"tls": "ssl", "starttls": "tls", "none": ""}[smtp.tls_mode] }}',
         )
 
     def test_glitchtip_composed_url(self):
         self._one_service_passes(
             "EMAIL_URL",
-            "smtp{{ 's' if smtp.tls_mode == 'tls' else '' }}://"
+            'smtp{{ "s" if smtp.tls_mode == "tls" else "" }}://'
             "{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@"
             "{{ smtp.host }}:{{ smtp.port }}"
-            "{% if smtp.tls_mode == 'starttls' %}?tls=True{% endif %}",
+            '{% if smtp.tls_mode == "starttls" %}?tls=True{% endif %}',
         )
 
 
@@ -551,26 +560,28 @@ class SmtpJinjaRegexTest(unittest.TestCase):
         self.assertTrue(_value_references_smtp("{{ smtp.host }}"))
 
     def test_plausible_conditional_matches(self):
-        # Plausible's boolean expression.
+        # Plausible's boolean expression — uses double-quoted string
+        # literals inside Jinja so the value survives yaml.dump's
+        # single-quote-escape round-trip in the greffer.
         self.assertTrue(_value_references_smtp(
-            "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}"
+            '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
         ))
 
     def test_glitchtip_composed_url_matches(self):
         # GlitchTip's multi-expression URL: at least one `{{ ... smtp.* ... }}`
         # block must trigger the match.
         self.assertTrue(_value_references_smtp(
-            "smtp{{ 's' if smtp.tls_mode == 'tls' else '' }}://"
+            'smtp{{ "s" if smtp.tls_mode == "tls" else "" }}://'
             "{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@"
             "{{ smtp.host }}:{{ smtp.port }}"
-            "{% if smtp.tls_mode == 'starttls' %}?tls=True{% endif %}"
+            '{% if smtp.tls_mode == "starttls" %}?tls=True{% endif %}'
         ))
 
     def test_nextcloud_dict_lookup_matches(self):
         # Nextcloud's dict-literal inside a Jinja block — the regex must admit
         # `{` and `}` that aren't a full `}}` boundary.
         self.assertTrue(_value_references_smtp(
-            "{{ {'tls': 'ssl', 'starttls': 'tls', 'none': ''}[smtp.tls_mode] }}"
+            '{{ {"tls": "ssl", "starttls": "tls", "none": ""}[smtp.tls_mode] }}'
         ))
 
     def test_smtp_reference_outside_braces_rejected(self):
@@ -600,6 +611,82 @@ class SmtpJinjaRegexTest(unittest.TestCase):
 
     def test_non_string_rejected(self):
         self.assertFalse(_value_references_smtp(None))
+
+
+class JinjaSurvivesYamlDumpRoundTrip(unittest.TestCase):
+    """Regression guard for the bug found during the integrations-epic
+    QA on 2026-05-04: catalog templates using single-quoted string
+    literals inside Jinja `{{ … }}` were broken because the greffer's
+    render path is `yaml.dump(compose) → Template(...).render()`.
+    PyYAML wraps env values in single-quoted scalars and doubles any
+    inner single quote as ''; Jinja then sees `''true''` as
+    `empty + bareword + empty` and raises TemplateSyntaxError.
+
+    The fix is to use double-quoted string literals inside Jinja —
+    PyYAML doesn't need to escape those when the outer wrapper is
+    single-quoted. These tests simulate the round-trip in-process so
+    a future catalog template with the wrong quoting fails CI before
+    it hits a real deploy.
+    """
+
+    @staticmethod
+    def _round_trip(value, *, smtp_context):
+        """Mirror greffer/apps/utils/docker/compose.py:create_compose:
+        load → mutate → yaml.dump → Jinja Template → render.
+        Returns the rendered string (or raises if Jinja can't parse)."""
+        import yaml
+        from jinja2 import Template
+
+        compose = {"services": {"app": {"environment": {"X": value}}}}
+        rendered = Template(yaml.dump(compose)).render(smtp=smtp_context)
+        return rendered
+
+    SMTP_CONTEXT = {
+        "host": "smtp.example.com",
+        "port": 587,
+        "username": "u",
+        "password": "p",
+        "from_address": "noreply@example.com",
+        "tls_mode": "starttls",
+    }
+
+    def test_plausible_boolean_round_trips(self):
+        out = self._round_trip(
+            '{{ "true" if smtp.tls_mode == "tls" else "false" }}',
+            smtp_context=self.SMTP_CONTEXT,
+        )
+        self.assertIn("X: 'false'", out)
+
+    def test_nextcloud_dict_lookup_round_trips(self):
+        out = self._round_trip(
+            '{{ {"tls": "ssl", "starttls": "tls", "none": ""}[smtp.tls_mode] }}',
+            smtp_context=self.SMTP_CONTEXT,
+        )
+        # tls_mode='starttls' → 'tls' on Nextcloud's mapping
+        self.assertIn("X: 'tls'", out)
+
+    def test_glitchtip_email_url_round_trips(self):
+        out = self._round_trip(
+            'smtp{{ "s" if smtp.tls_mode == "tls" else "" }}://'
+            "{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@"
+            "{{ smtp.host }}:{{ smtp.port }}"
+            '{% if smtp.tls_mode == "starttls" %}?tls=True{% endif %}',
+            smtp_context=self.SMTP_CONTEXT,
+        )
+        self.assertIn("smtp://u:p@smtp.example.com:587?tls=True", out)
+
+    def test_single_quoted_jinja_breaks_after_round_trip(self):
+        """Confirms the failure mode the fix above prevents — a
+        template with the broken quoting must raise. If this ever
+        starts passing it means PyYAML changed its escape rule and
+        the assert above can be relaxed; until then, this is the
+        canary that stops anyone from undoing the catalog fix."""
+        from jinja2 import TemplateSyntaxError
+        with self.assertRaises(TemplateSyntaxError):
+            self._round_trip(
+                "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}",
+                smtp_context=self.SMTP_CONTEXT,
+            )
 
 
 if __name__ == "__main__":
