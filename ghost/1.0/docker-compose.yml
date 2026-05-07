@@ -1,0 +1,46 @@
+version: "3"
+
+services:
+  ghost:
+    image: ghost:5
+    restart: unless-stopped
+    ports:
+      - "2368:2368"
+    environment:
+      url: "{{ instance_url }}"
+      database__client: mysql
+      database__connection__host: db
+      database__connection__user: root
+      database__connection__password: ""
+      database__connection__database: ghost
+      mail__transport: SMTP
+      mail__options__host: "{{ smtp.host }}"
+      mail__options__port: "{{ smtp.port }}"
+      mail__options__auth__user: "{{ smtp.username }}"
+      mail__options__auth__pass: "{{ smtp.password }}"
+      mail__from: "{{ smtp.from_address }}"
+      NODE_ENV: production
+    volumes:
+      - ghost_content:/var/lib/ghost/content
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ""
+      MYSQL_DATABASE: ghost
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+volumes:
+  ghost_content:
+  db_data:
