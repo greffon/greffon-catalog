@@ -1,0 +1,45 @@
+{
+  "name": "TEMPLATE",
+  "logo": "https://example.com/logo.png",
+  "description": "TODO: one-line description shown in the catalog",
+  "categories": [],
+  "images": [],
+  "configurations": [
+    {
+      "title": "APP_PUBLIC_URL",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Public URL"
+          }
+        }
+      },
+      "default_value": {
+        "value": "{{ instance_url }}"
+      },
+      "destinations": [
+        { "type": "env", "container": "app", "key": "APP_PUBLIC_URL" }
+      ]
+    },
+    {
+      "title": "ADMIN_PASSWORD_EXAMPLE",
+      "schema": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Admin password",
+            "writeOnly": true,
+            "minLength": 8
+          }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "app", "key": "ADMIN_PASSWORD" }
+      ]
+    }
+  ]
+}

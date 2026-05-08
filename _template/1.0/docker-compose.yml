@@ -1,0 +1,33 @@
+version: "3"
+
+# TEMPLATE — copy this folder to <your-greffon>/<version>/ and fill in.
+#
+# Rules (the greffer rewrites this at deploy time — see ../README.md and
+# docs/adding-a-greffon.md):
+#   - Do NOT set `container_name`. Greffer assigns names per instance.
+#   - Keep `ports:` — greffer reads them to wire up the auto-injected
+#     greffon_nginx reverse proxy, then strips them.
+#   - Use named volumes for any persistent data. Volume names get namespaced
+#     by instance id at deploy time, so two instances on one greffer never
+#     share data.
+#   - Available Jinja vars: {{ instance_id }}, {{ instance_url }},
+#     {{ instance_host }}, {{ instance_port }}. Use them where the upstream
+#     compose hardcodes a public URL.
+#   - For SMTP-managed env vars, use mapping form (KEY: value) and reference
+#     the {{ smtp.* }} context — see ../README.md § "SMTP destinations".
+
+services:
+  app:
+    image: nginx:alpine          # TODO: replace with the upstream image
+    ports:
+      - "80:80"                  # TODO: container port the app listens on
+    environment:
+      # TODO: list every env var the user can configure or that depends on
+      # instance identity. Each one that the user controls needs a matching
+      # entry in metadata.json `configurations`.
+      APP_PUBLIC_URL: "{{ instance_url }}"
+    volumes:
+      - app_data:/var/lib/app    # TODO: real data path for this app
+
+volumes:
+  app_data:                      # TODO: rename + add more if needed

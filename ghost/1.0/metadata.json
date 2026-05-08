@@ -1,0 +1,58 @@
+{
+  "name": "Ghost",
+  "logo": "https://ghost.org/favicon.ico",
+  "description": "Modern publishing platform — newsletters, blogs, and member-funded media.",
+  "categories": [],
+  "images": [],
+  "configurations": [
+    {
+      "title": "URL",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Public site URL"
+          }
+        }
+      },
+      "default_value": {
+        "value": "{{ instance_url }}"
+      },
+      "destinations": [
+        { "type": "env", "container": "ghost", "key": "url" }
+      ]
+    },
+    {
+      "title": "DB_PASSWORD",
+      "schema": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Database password",
+            "writeOnly": true,
+            "minLength": 8
+          }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "ghost", "key": "database__connection__password" },
+        { "type": "env", "container": "db",    "key": "MYSQL_ROOT_PASSWORD" }
+      ]
+    },
+    {
+      "title": "SMTP",
+      "schema": { "properties": {} },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "ghost", "key": "mail__options__host" },
+        { "type": "smtp", "container": "ghost", "key": "mail__options__port" },
+        { "type": "smtp", "container": "ghost", "key": "mail__options__auth__user" },
+        { "type": "smtp", "container": "ghost", "key": "mail__options__auth__pass" },
+        { "type": "smtp", "container": "ghost", "key": "mail__from" }
+      ]
+    }
+  ]
+}

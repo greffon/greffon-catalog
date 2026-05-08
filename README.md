@@ -16,11 +16,14 @@ greffon-catalog/
 
 ## Adding a New Greffon
 
-1. Create a folder: `<greffon-name>/<version>/`
-2. Add a `docker-compose.yml` — see [How the Greffer Transforms Your Compose File](../docs/adding-a-greffon.md#how-the-greffer-transforms-your-compose-file) for what happens at deploy time and which Jinja2 template vars are available.
-3. Add a `metadata.json` describing the greffon and its configuration schema.
-4. Add a `smoke_test.spec.ts` — a Playwright spec that deploys the greffon with default config and asserts the real user-landing-task works (e.g. "admin can log in", "uploaded file persists", "API endpoint returns 200").
-5. Open a PR for review. CI runs `validate_catalog.py` and the smoke spec against a real dev environment.
+**Fast path: `/add-greffon <name>` in Claude Code.** The skill at [.claude/skills/add-greffon.md](.claude/skills/add-greffon.md) researches the upstream `docker-compose.yml` and config docs, drafts all three required files, runs the validator, and probes a local greffer to verify which configurations are actually required. You review the diff and open the PR.
+
+**Manual path:**
+
+1. Copy [`_template/1.0/`](_template/) to `<greffon-name>/<version>/` and fill in the `TODO:` comments.
+2. The folder must contain `docker-compose.yml`, `metadata.json`, and `smoke_test.spec.ts` — see [How the Greffer Transforms Your Compose File](../docs/adding-a-greffon.md#how-the-greffer-transforms-your-compose-file) for the deploy-time transformation rules and the Jinja2 vars you can use.
+3. Run `python .github/scripts/validate_catalog.py --dir <greffon-name>/<version>` until it exits 0.
+4. Open a PR. CI runs the validator and the smoke spec against a real dev environment.
 
 See [How to Add a New Greffon](../docs/adding-a-greffon.md) for the full guide.
 

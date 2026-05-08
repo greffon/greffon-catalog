@@ -79,7 +79,7 @@ def find_catalog_root():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-SKIP_TOP_LEVEL = {"node_modules", "playwright-report", "playwright-results", ".playwright"}
+SKIP_TOP_LEVEL = {"node_modules", "playwright-report", "playwright-results", ".playwright", "_template"}
 
 
 def find_all_greffon_dirs(catalog_root):

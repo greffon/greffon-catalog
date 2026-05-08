@@ -1,5 +1,7 @@
 node_modules/
 .playwright/
+.venv-validate/
+__pycache__/
 package-lock.json
 playwright-report/
 playwright-results/
