@@ -106,7 +106,7 @@
         }
       },
       "default_value": {
-        "value": "{{ instance_host }}:{{ instance_port }}"
+        "value": "{{ instance_host }}"
       },
       "destinations": [
         {
