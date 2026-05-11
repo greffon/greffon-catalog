@@ -33,8 +33,9 @@
           "value": {
             "type": "string",
             "title": "Secret key base",
+            "description": "At least 64 characters. Generate one with: openssl rand -base64 48",
             "writeOnly": true,
-            "minLength": 8
+            "minLength": 64
           }
         },
         "type": "object",
