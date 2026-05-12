@@ -344,7 +344,43 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 if SECRET_NAME_RE.search(dest.get("key", "")):
                     looks_like_secret = True
                     break
-            if looks_like_secret:
+            # Walk the schema's `value` property (if any) to detect special
+            # formats. ``greffon-secret`` declares "platform mints this
+            # value at instance creation"; it implies the field is
+            # legitimately empty in the catalog (the manager populates it)
+            # and is exempt from the looks-like-secret-but-empty lint
+            # below. It also has its own minimum-shape requirements
+            # enforced here.
+            value_prop = (
+                schema.get("properties", {}).get("value", {})
+                if isinstance(schema, dict)
+                else {}
+            )
+            value_format = value_prop.get("format") if isinstance(value_prop, dict) else None
+            is_greffon_secret = value_format == "greffon-secret"
+
+            if is_greffon_secret:
+                if value_prop.get("type") != "string":
+                    errors.append(
+                        f"{prefix} '{title}' declares format='greffon-secret' but the "
+                        "schema's `value` property is not type=string. The platform only "
+                        "mints string secrets."
+                    )
+                if not isinstance(value_prop.get("minLength"), int) or value_prop.get("minLength", 0) <= 0:
+                    errors.append(
+                        f"{prefix} '{title}' declares format='greffon-secret' but no "
+                        "positive minLength. The platform needs an explicit length to "
+                        "generate against — set minLength to the underlying greffon's "
+                        "documented minimum (e.g. 64 for Plausible SECRET_KEY_BASE)."
+                    )
+                if not value_prop.get("writeOnly"):
+                    errors.append(
+                        f"{prefix} '{title}' declares format='greffon-secret' but is not "
+                        "writeOnly. Platform-minted secrets must be writeOnly so they're "
+                        "not echoed back to API consumers."
+                    )
+
+            if looks_like_secret and not is_greffon_secret:
                 marked_required = "value" in schema_required_set
                 has_meaningful_default = (
                     isinstance(default_value, dict)
@@ -361,7 +397,8 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"{prefix} '{title}' looks like a secret (password/token/key) but is "
                         "neither marked schema.required ['value'] nor given a non-empty default. "
                         "Set 'x-greffon-allow-empty-secret: true' on the config if this is "
-                        "intentional (e.g. any-of auth)."
+                        "intentional (e.g. any-of auth), or set format='greffon-secret' "
+                        "if the platform should generate the value."
                     )
 
     # --- Rule 5.3 / 5.4: bidirectional SMTP metadata-to-compose match ---
