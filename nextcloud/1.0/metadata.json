@@ -106,7 +106,7 @@
         }
       },
       "default_value": {
-        "value": "{{ instance_host }}{% if instance_port and instance_port not in ['80', '443'] %}:{{ instance_port }}{% endif %}"
+        "value": "{{ instance_host }}{% if instance_port %}:{{ instance_port }}{% endif %}"
       },
       "destinations": [
         {
