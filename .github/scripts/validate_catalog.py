@@ -366,18 +366,32 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         "schema's `value` property is not type=string. The platform only "
                         "mints string secrets."
                     )
-                if not isinstance(value_prop.get("minLength"), int) or value_prop.get("minLength", 0) <= 0:
+                # ``isinstance(True, int)`` is True in Python (bool is an
+                # int subclass), so an explicit bool reject is needed —
+                # otherwise ``minLength: true`` slips through and the
+                # generator runs with an effective length of 1 char,
+                # silently violating the minimum-entropy contract.
+                min_length = value_prop.get("minLength")
+                if isinstance(min_length, bool) or not isinstance(min_length, int) or min_length <= 0:
                     errors.append(
                         f"{prefix} '{title}' declares format='greffon-secret' but no "
-                        "positive minLength. The platform needs an explicit length to "
-                        "generate against — set minLength to the underlying greffon's "
-                        "documented minimum (e.g. 64 for Plausible SECRET_KEY_BASE)."
+                        "positive integer minLength. The platform needs an explicit "
+                        "length to generate against — set minLength to the underlying "
+                        "greffon's documented minimum (e.g. 64 for Plausible "
+                        "SECRET_KEY_BASE)."
                     )
-                if not value_prop.get("writeOnly"):
+                # Strict-true check (not truthiness): JSON Schema's
+                # ``writeOnly`` contract is boolean-only. Truthy non-
+                # bool values (``"yes"``, ``1``) would pass a vanilla
+                # ``if not value_prop.get("writeOnly")`` and let invalid
+                # schemas drive consumers that look up the literal
+                # boolean to mis-handle the field (e.g. skip masking).
+                if value_prop.get("writeOnly") is not True:
                     errors.append(
                         f"{prefix} '{title}' declares format='greffon-secret' but is not "
-                        "writeOnly. Platform-minted secrets must be writeOnly so they're "
-                        "not echoed back to API consumers."
+                        "writeOnly: true. Platform-minted secrets must be writeOnly so "
+                        "they're not echoed back to API consumers; set the value to a "
+                        "literal boolean ``true``."
                     )
 
             if looks_like_secret and not is_greffon_secret:
