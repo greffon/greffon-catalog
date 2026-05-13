@@ -34,9 +34,16 @@ The greffer renders each catalog `docker-compose.yml` as a Jinja2 template at de
 | Variable            | Value at deploy time                                       | Use case                                                    |
 |---------------------|------------------------------------------------------------|-------------------------------------------------------------|
 | `{{ instance_id }}` | Short UUID of this greffon instance (e.g. `e71c060d`)      | Per-instance keys, filenames                                |
-| `{{ instance_url }}` | Full public URL where browsers reach this instance        | OAuth callback base, app-self-URL env vars                  |
-| `{{ instance_host }}` | Hostname portion of `instance_url`                       | `ALLOWED_HOSTS`, trusted-domain lists (`NEXTCLOUD_TRUSTED_DOMAINS`) |
-| `{{ instance_port }}` | Dynamically-allocated host port for this instance        | Rare — most apps don't need it                              |
+| `{{ instance_url }}` | Full public URL where browsers reach this instance (e.g. `https://abc.my.greffon.local`). | OAuth callback base, app-self-URL env vars, anywhere a full URL is needed. |
+
+If a catalog template needs the host portion (or `host:port`) of the URL rather than the full URL, use Jinja string ops on `instance_url` at the call site rather than expecting a separate variable. The most common pattern:
+
+```jinja
+# Just the host[:port] part — what a browser sends in the `Host:` header.
+{{ instance_url.split('://')[1] }}
+```
+
+This works whether the URL has an explicit port (`https://example.com:8443`) or uses the default (`https://abc.my.greffon.local`). The catalog stays declarative, with a single source-of-truth Jinja variable, and there's no cross-PR contract about pre-parsed pieces for a reviewer to track. The `_template/` reference compose has an example.
 
 Volumes you declare are automatically namespaced by instance id — a volume named `db-data` in your compose becomes `<instance_id>_db-data` at runtime, so two instances of the same greffon on one greffer never share data.
 
