@@ -36,7 +36,8 @@ The greffer renders each catalog `docker-compose.yml` as a Jinja2 template at de
 | `{{ instance_id }}` | Short UUID of this greffon instance (e.g. `e71c060d`)      | Per-instance keys, filenames                                |
 | `{{ instance_url }}` | Full public URL where browsers reach this instance        | OAuth callback base, app-self-URL env vars                  |
 | `{{ instance_host }}` | Hostname portion of `instance_url`                       | `ALLOWED_HOSTS`, trusted-domain lists (`NEXTCLOUD_TRUSTED_DOMAINS`) |
-| `{{ instance_port }}` | Dynamically-allocated host port for this instance        | Rare — most apps don't need it                              |
+| `{{ instance_port }}` | User-facing port — empty string when the URL uses the default TLS port (443) so a wildcard subdomain doesn't carry a stale port suffix. Falls back to the greffer's bound port only when no manager URL is supplied (greffer-direct deployments). | Rare — most apps don't need it directly |
+| `{{ instance_authority }}` | `host` when the port is empty, `host:port` otherwise. The URL's authority component as the browser would send in the `Host:` header. | `OVERWRITEHOST` (Nextcloud), `BASE_URL` host-port construction, any env var that needs to mirror `Host:` |
 
 Volumes you declare are automatically namespaced by instance id — a volume named `db-data` in your compose becomes `<instance_id>_db-data` at runtime, so two instances of the same greffon on one greffer never share data.
 
