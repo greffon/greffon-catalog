@@ -73,6 +73,41 @@ Nginx-internal template vars like `{{ports[i].port_host}}` are reserved for the 
 | `file` | `volume`, `name`                | Write uploaded file into a named volume  |
 | `smtp` | `container`, `key`              | Mark an env key as SMTP-integration-managed (value comes from the operator's SMTP integration, not user input) |
 
+### Custom Schema Formats
+
+The platform reads JSON Schema's `format` keyword to dispatch special handling for fields whose intent goes beyond plain validation. Custom formats use the `greffon-` prefix to avoid collision with standard JSON Schema formats (`email`, `uri`, `date-time`, …) and with vendor formats from other tools.
+
+| Format             | Intent                                                                                                                                                                                       | Required schema keywords        |
+|--------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------|
+| `greffon-secret`   | Cryptographic secret the platform generates and persists at instance creation. The user never sees an empty input — manager mints a URL-safe base64 value of exactly `minLength` chars and stores it on `GreffonInstanceConfiguration` before the install form opens. The frontend renders the field password-masked with a regenerate button. Use for `SECRET_KEY_BASE`-style values where the underlying greffon enforces a minimum entropy (e.g. Plausible's 32-byte floor) and no human-typed value can satisfy it.                                            | `type: "string"`, `minLength`, `writeOnly: true` |
+
+Example:
+
+```json
+{
+  "title": "SECRET_KEY_BASE",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "value": {
+        "type": "string",
+        "title": "Secret key base",
+        "writeOnly": true,
+        "minLength": 64,
+        "format": "greffon-secret"
+      }
+    },
+    "required": ["value"]
+  },
+  "default_value": { "value": "" },
+  "destinations": [
+    { "type": "env", "container": "plausible", "key": "SECRET_KEY_BASE" }
+  ]
+}
+```
+
+`default_value.value` stays empty — the value source is the manager, not the catalog. Setting `format: "greffon-secret"` without `minLength` is a validator error (the platform needs an explicit length).
+
 #### SMTP destinations
 
 An `smtp` destination declares that a given env var on a given service is **driven by the operator's SMTP integration**, not by per-instance user input. The value is rendered at deploy time from the greffer-side Jinja context variable `smtp` — a dict with fields `host`, `port`, `username`, `password`, `from_address`, `tls_mode` (`"none"` / `"starttls"` / `"tls"`). Write the shaping expression inline in the compose file's `environment:` mapping:
