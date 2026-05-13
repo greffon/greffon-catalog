@@ -10,9 +10,10 @@ version: "3"
 #   - Use named volumes for any persistent data. Volume names get namespaced
 #     by instance id at deploy time, so two instances on one greffer never
 #     share data.
-#   - Available Jinja vars: {{ instance_id }}, {{ instance_url }},
-#     {{ instance_host }}, {{ instance_port }}. Use them where the upstream
-#     compose hardcodes a public URL.
+#   - Available Jinja vars: {{ instance_id }} and {{ instance_url }}. Use
+#     them where the upstream compose hardcodes a public URL. If you need
+#     just the host[:port] portion (e.g. for a trusted-domains list), use
+#     inline Jinja string ops: {{ instance_url.split('://')[1] }}.
 #   - For SMTP-managed env vars, use mapping form (KEY: value) and reference
 #     the {{ smtp.* }} context — see ../README.md § "SMTP destinations".
 
