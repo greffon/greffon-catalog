@@ -35,15 +35,17 @@ The greffer renders each catalog `docker-compose.yml` as a Jinja2 template at de
 |---------------------|------------------------------------------------------------|-------------------------------------------------------------|
 | `{{ instance_id }}` | Short UUID of this greffon instance (e.g. `e71c060d`)      | Per-instance keys, filenames                                |
 | `{{ instance_url }}` | Full public URL where browsers reach this instance (e.g. `https://abc.my.greffon.local`). | OAuth callback base, app-self-URL env vars, anywhere a full URL is needed. |
+| `{{ instance_host }}` | Hostname portion of `instance_url` (back-compat alias). | `ALLOWED_HOSTS`, trusted-domain lists. New catalogs should prefer `instance_url` string ops. |
+| `{{ instance_port }}` | User-facing port from `instance_url`. EMPTY for default TLS port 443 (don't concatenate as `host:port` without a guard — the result would have a stray trailing `:`). Falls back to greffer-local `port_host` only on the no-manager-URL fallback path. | Rare — most apps don't need it directly. |
 
-If a catalog template needs the host portion (or `host:port`) of the URL rather than the full URL, use Jinja string ops on `instance_url` at the call site rather than expecting a separate variable. The most common pattern:
+If a catalog template needs the host portion (or `host:port`) of the URL, prefer the `instance_url` form rather than concatenating the back-compat pieces:
 
 ```jinja
 # Just the host[:port] part — what a browser sends in the `Host:` header.
 {{ instance_url.split('://')[1] }}
 ```
 
-This works whether the URL has an explicit port (`https://example.com:8443`) or uses the default (`https://abc.my.greffon.local`). The catalog stays declarative, with a single source-of-truth Jinja variable, and there's no cross-PR contract about pre-parsed pieces for a reviewer to track. The `_template/` reference compose has an example.
+This works whether the URL has an explicit port (`https://example.com:8443`) or uses the default (`https://abc.my.greffon.local`). The single-variable form stays correct under all deployment shapes (wildcard subdomain, custom-port deployment, greffer-direct fallback) without you having to guard for empty ports. The `_template/` reference compose has an example.
 
 Volumes you declare are automatically namespaced by instance id — a volume named `db-data` in your compose becomes `<instance_id>_db-data` at runtime, so two instances of the same greffon on one greffer never share data.
 
