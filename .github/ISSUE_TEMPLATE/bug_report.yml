@@ -1,0 +1,58 @@
+name: Bug report
+description: A greffon in the catalog isn't behaving as expected.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: greffon
+    attributes:
+      label: Which greffon?
+      description: The catalog directory of the affected greffon.
+      options:
+        - plausible
+        - ghost
+        - nextcloud
+        - glitchtip
+        - openclaw
+        - freqtrade
+        - other (note in description)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Greffon version
+      description: The version subdirectory (e.g. `2.1`, `1.0`).
+      placeholder: "1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What went wrong?
+      description: A clear description of the unexpected behavior. Include the validator output or smoke-test failure if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps a maintainer can follow to reproduce the issue.
+      placeholder: |
+        1. Deploy the greffon from defaults
+        2. Configure X
+        3. Observe Y
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Greffer version, Docker version, host OS — anything that might matter.
+  - type: checkboxes
+    id: code-of-conduct
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/greffon/greffon-catalog/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow the Code of Conduct
+          required: true
