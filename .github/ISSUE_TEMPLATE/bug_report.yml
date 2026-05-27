@@ -14,6 +14,7 @@ body:
         - glitchtip
         - openclaw
         - freqtrade
+        - vscode
         - other (note in description)
     validations:
       required: true
