@@ -5,7 +5,7 @@
 
 This repository contains the whitelisted greffon definitions — Docker Compose templates and configuration metadata for each deployable application on the [Greffon](https://greffon.io) platform.
 
-**License:** Apache 2.0 (see [LICENSE](LICENSE)). The catalog is permissive so anyone can contribute and copy a recipe without license friction. Greffon's product code ([manager](https://github.com/greffon/manager), [greffer](https://github.com/greffon/greffer)) is AGPL v3 — the catalog is content (recipes for other people's apps), not product features, so it's permissive. This is not "open core."
+**License:** Apache 2.0 (see [LICENSE](LICENSE)). The catalog is permissive so anyone can contribute and copy a recipe without license friction. Greffon's product code (the manager and greffer) is AGPL v3 — the catalog is content (recipes for other people's apps), not product features, so it's permissive. This is not "open core."
 
 **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md). DCO sign-off required (`git commit -s`). New greffon? Use `/add-greffon <name>` in Claude Code (fast path) or follow the manual steps in [Adding a New Greffon](#adding-a-new-greffon) below.
 

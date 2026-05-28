@@ -32,7 +32,7 @@ This repository contains docker-compose templates and metadata for third-party a
 
 For vulnerabilities in the **upstream applications themselves** (Plausible, Ghost, Nextcloud, etc.), please report to the respective upstream project. We'll happily relay reports if you flag them to us, but we don't patch upstream code from here.
 
-For vulnerabilities in the **[greffer](https://github.com/greffon/greffer/security/advisories/new) worker** or the **[manager](https://github.com/greffon/manager/security/advisories/new)** control plane, report on that repo's advisories page or to `security@greffon.io`.
+For vulnerabilities in the **greffer** worker or the **manager** control plane, email `security@greffon.io` — that's the always-reachable route and we'll forward it to the right repo. (Each of those repos also has its own GitHub Security Advisories page once it's public.)
 
 ## Supported versions
 
