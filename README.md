@@ -3,13 +3,13 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2.svg)](https://discord.gg/vBmhUGPY)
 
-This repository contains the whitelisted greffon definitions — Docker Compose templates and configuration metadata for each deployable application on the [Greffon](https://github.com/greffon/greffon) platform.
+This repository contains the whitelisted greffon definitions — Docker Compose templates and configuration metadata for each deployable application on the [Greffon](https://greffon.io) platform.
 
-**License:** Apache 2.0 (see [LICENSE](LICENSE)). The catalog is permissive so anyone can contribute and copy a recipe without license friction. Greffon's product code (manager, greffer) is AGPL v3 — different license, different reasoning, [explained here](https://github.com/greffon/greffon/blob/main/docs/marketing/licensing.md).
+**License:** Apache 2.0 (see [LICENSE](LICENSE)). The catalog is permissive so anyone can contribute and copy a recipe without license friction. Greffon's product code ([manager](https://github.com/greffon/manager), [greffer](https://github.com/greffon/greffer)) is AGPL v3 — the catalog is content (recipes for other people's apps), not product features, so it's permissive. This is not "open core."
 
 **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md). DCO sign-off required (`git commit -s`). New greffon? Use `/add-greffon <name>` in Claude Code (fast path) or follow the manual steps in [Adding a New Greffon](#adding-a-new-greffon) below.
 
-**Community:** [Discord](https://discord.gg/vBmhUGPY) · [GitHub Discussions (main repo)](https://github.com/greffon/greffon/discussions) · [Code of Conduct](CODE_OF_CONDUCT.md)
+**Community:** [Discord](https://discord.gg/vBmhUGPY) · bugs/new-greffon requests in this repo's [Issues](https://github.com/greffon/greffon-catalog/issues) · [Code of Conduct](CODE_OF_CONDUCT.md)
 
 **Security:** report privately via [GitHub Security Advisories](https://github.com/greffon/greffon-catalog/security/advisories/new) or `security@greffon.io`. See [SECURITY.md](SECURITY.md).
 
