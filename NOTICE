@@ -1,0 +1,11 @@
+Greffon Catalog
+Copyright 2021-2026 Greffon
+
+This product is licensed under the Apache License 2.0 (see the LICENSE file).
+
+The Greffon Catalog contains docker-compose templates and metadata for
+third-party applications. Each catalog entry references an upstream
+application (Plausible, Ghost, Nextcloud, GlitchTip, OpenClaw, FreqTrade,
+etc.) which retains its own license and copyright. The Apache 2.0 license
+in this repository applies to the catalog templates and tooling, not to the
+applications they deploy.

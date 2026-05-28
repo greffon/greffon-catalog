@@ -1,0 +1,47 @@
+name: Add a greffon / feature request
+description: Suggest a new greffon for the catalog or an improvement to an existing entry.
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of request?
+      options:
+        - Add a new greffon to the catalog
+        - Improve an existing catalog entry
+        - Improve the catalog format / tooling
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: upstream
+    attributes:
+      label: Upstream project (if adding a new greffon)
+      description: Link to the application's homepage and official `docker-compose.yml`.
+      placeholder: "https://example.com — https://github.com/.../docker-compose.yml"
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this matters
+      description: What user need does this address? Who would deploy it?
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything tricky we should know — required env vars, OAuth config, persistent volumes, networking constraints, upstream license, etc.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd be willing to open a PR for this myself
+  - type: checkboxes
+    id: code-of-conduct
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/greffon/greffon-catalog/blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow the Code of Conduct
+          required: true
