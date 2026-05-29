@@ -34,11 +34,11 @@ greffon-catalog/
 **Manual path:**
 
 1. Copy [`_template/1.0/`](_template/) to `<greffon-name>/<version>/` and fill in the `TODO:` comments.
-2. The folder must contain `docker-compose.yml`, `metadata.json`, and `smoke_test.spec.ts` — see [How the Greffer Transforms Your Compose File](../docs/adding-a-greffon.md#how-the-greffer-transforms-your-compose-file) for the deploy-time transformation rules and the Jinja2 vars you can use.
+2. The folder must contain `docker-compose.yml`, `metadata.json`, and `smoke_test.spec.ts` — see [Jinja Template Vars](#jinja-template-vars-in-docker-composeyml) and [metadata.json Format](#metadatajson-format) below for the deploy-time transformation rules and the Jinja2 vars you can use.
 3. Run `python .github/scripts/validate_catalog.py --dir <greffon-name>/<version>` until it exits 0.
 4. Open a PR. CI runs the validator and the smoke spec against a real dev environment.
 
-See [How to Add a New Greffon](../docs/adding-a-greffon.md) for the full guide.
+The rest of this README is the full guide: [Jinja Template Vars](#jinja-template-vars-in-docker-composeyml), [metadata.json Format](#metadatajson-format), [Destination Types](#destination-types), and the [CI Quality Gate](#ci-quality-gate).
 
 ## Jinja Template Vars in `docker-compose.yml`
 
@@ -187,7 +187,5 @@ After merging, create entries in the manager backend via:
 - **Django admin** at `/admin/greffonmanager/greffon/` — create the Greffon, GreffonVersion (pointing `compose_path` to the raw URL of the compose file), and GreffonVersionConfiguration records
 - **Django fixture** — write a JSON fixture matching the manager models and load with `poetry run python manage.py loaddata <fixture>.json`
 - **Django shell** — create records programmatically
-
-See [How to Add a New Greffon](../docs/adding-a-greffon.md) for the full guide.
 
 > **Note:** `metadata.json` is catalog documentation, not a Django fixture. The manager DB records must be created separately.
