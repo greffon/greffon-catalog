@@ -3,13 +3,13 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2.svg)](https://discord.gg/vBmhUGPY)
 
-This repository contains the whitelisted greffon definitions — Docker Compose templates and configuration metadata for each deployable application on the [Greffon](https://github.com/greffon/greffon) platform.
+This repository contains the whitelisted greffon definitions — Docker Compose templates and configuration metadata for each deployable application on the [Greffon](https://greffon.io) platform.
 
-**License:** Apache 2.0 (see [LICENSE](LICENSE)). The catalog is permissive so anyone can contribute and copy a recipe without license friction. Greffon's product code (manager, greffer) is AGPL v3 — different license, different reasoning, [explained here](https://github.com/greffon/greffon/blob/main/docs/marketing/licensing.md).
+**License:** Apache 2.0 (see [LICENSE](LICENSE)). The catalog is permissive so anyone can contribute and copy a recipe without license friction. Greffon's product code (the manager and greffer) is AGPL v3 — the catalog is content (recipes for other people's apps), not product features, so it's permissive. This is not "open core."
 
 **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md). DCO sign-off required (`git commit -s`). New greffon? Use `/add-greffon <name>` in Claude Code (fast path) or follow the manual steps in [Adding a New Greffon](#adding-a-new-greffon) below.
 
-**Community:** [Discord](https://discord.gg/vBmhUGPY) · [GitHub Discussions (main repo)](https://github.com/greffon/greffon/discussions) · [Code of Conduct](CODE_OF_CONDUCT.md)
+**Community:** [Discord](https://discord.gg/vBmhUGPY) · bugs/new-greffon requests in this repo's [Issues](https://github.com/greffon/greffon-catalog/issues) · [Code of Conduct](CODE_OF_CONDUCT.md)
 
 **Security:** report privately via [GitHub Security Advisories](https://github.com/greffon/greffon-catalog/security/advisories/new) or `security@greffon.io`. See [SECURITY.md](SECURITY.md).
 
@@ -34,11 +34,11 @@ greffon-catalog/
 **Manual path:**
 
 1. Copy [`_template/1.0/`](_template/) to `<greffon-name>/<version>/` and fill in the `TODO:` comments.
-2. The folder must contain `docker-compose.yml`, `metadata.json`, and `smoke_test.spec.ts` — see [How the Greffer Transforms Your Compose File](../docs/adding-a-greffon.md#how-the-greffer-transforms-your-compose-file) for the deploy-time transformation rules and the Jinja2 vars you can use.
+2. The folder must contain `docker-compose.yml`, `metadata.json`, and `smoke_test.spec.ts` — see [Jinja Template Vars](#jinja-template-vars-in-docker-composeyml) and [metadata.json Format](#metadatajson-format) below for the deploy-time transformation rules and the Jinja2 vars you can use.
 3. Run `python .github/scripts/validate_catalog.py --dir <greffon-name>/<version>` until it exits 0.
 4. Open a PR. CI runs the validator and the smoke spec against a real dev environment.
 
-See [How to Add a New Greffon](../docs/adding-a-greffon.md) for the full guide.
+The rest of this README is the full guide: [Jinja Template Vars](#jinja-template-vars-in-docker-composeyml), [metadata.json Format](#metadatajson-format), [Destination Types](#destination-types), and the [CI Quality Gate](#ci-quality-gate).
 
 ## Jinja Template Vars in `docker-compose.yml`
 
@@ -187,7 +187,5 @@ After merging, create entries in the manager backend via:
 - **Django admin** at `/admin/greffonmanager/greffon/` — create the Greffon, GreffonVersion (pointing `compose_path` to the raw URL of the compose file), and GreffonVersionConfiguration records
 - **Django fixture** — write a JSON fixture matching the manager models and load with `poetry run python manage.py loaddata <fixture>.json`
 - **Django shell** — create records programmatically
-
-See [How to Add a New Greffon](../docs/adding-a-greffon.md) for the full guide.
 
 > **Note:** `metadata.json` is catalog documentation, not a Django fixture. The manager DB records must be created separately.

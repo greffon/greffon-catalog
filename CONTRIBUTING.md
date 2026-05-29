@@ -16,7 +16,7 @@ Thanks for thinking about adding a greffon. This catalog is permissively license
 
 ## Before you open a PR
 
-1. Read [README.md](README.md) and [docs/adding-a-greffon.md](https://github.com/greffon/greffon/blob/main/docs/adding-a-greffon.md) (in the main `greffon` repo) — the catalog format has several constraints the validator enforces.
+1. Read [README.md](README.md) — it documents the catalog format (metadata.json schema, Jinja template vars, destination types, CI gate) and the constraints the validator enforces.
 2. Run the validator locally: `python .github/scripts/validate_catalog.py --dir <greffon-name>/<version>` — until it exits 0.
 3. Write a smoke test (`smoke_test.spec.ts`) that asserts the primary user task. CI runs this against a real dev environment.
 4. **Sign off your commits with the Developer Certificate of Origin (DCO).** Use `git commit -s` so each commit ends with a `Signed-off-by:` line. The DCO bot enforces this on every PR. See [DCO](https://developercertificate.org/) for the certification text — by signing off you're stating you have the right to contribute the code under the project's license.
@@ -35,9 +35,8 @@ Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md) (Contribu
 
 ## Where to ask questions
 
-- **Discord**: https://discord.gg/vBmhUGPY
-- **GitHub Discussions**: in the main [greffon/greffon](https://github.com/greffon/greffon) repo
-- **Issues**: file in this repo if it's specific to a catalog entry; in the main repo for platform-wide questions
+- **Discord**: https://discord.gg/vBmhUGPY — general questions and help
+- **Issues**: file in this repo's [Issues](https://github.com/greffon/greffon-catalog/issues) for anything catalog-specific (a greffon entry, the format, the validator)
 
 ## Licensing of your contribution
 
