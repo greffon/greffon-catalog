@@ -1,0 +1,12 @@
+version: "3"
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    restart: on-failure
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime_kuma_data:/app/data
+
+volumes:
+  uptime_kuma_data:

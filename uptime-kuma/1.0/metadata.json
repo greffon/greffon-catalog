@@ -1,0 +1,8 @@
+{
+  "name": "Uptime Kuma",
+  "logo": "https://raw.githubusercontent.com/louislam/uptime-kuma/master/public/icon.svg",
+  "description": "Self-hosted uptime monitoring tool with status pages and alerts",
+  "categories": ["monitoring"],
+  "images": [],
+  "configurations": []
+}
