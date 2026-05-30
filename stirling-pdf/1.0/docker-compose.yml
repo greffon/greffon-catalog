@@ -1,0 +1,18 @@
+version: "3"
+services:
+  stirling-pdf:
+    image: stirlingtools/stirling-pdf:latest
+    restart: on-failure
+    ports:
+      - "8080:8080"
+    environment:
+      # Single-user self-hosted instance behind the greffon proxy — no built-in
+      # login by default. Operator can layer auth at the platform level.
+      SECURITY_ENABLELOGIN: "false"
+    volumes:
+      - stirling_configs:/configs
+      - stirling_logs:/logs
+
+volumes:
+  stirling_configs:
+  stirling_logs:
