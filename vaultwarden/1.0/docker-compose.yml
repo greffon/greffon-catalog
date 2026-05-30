@@ -22,7 +22,7 @@ services:
       SMTP_USERNAME: "{{ smtp.username }}"
       SMTP_PASSWORD: "{{ smtp.password }}"
       SMTP_FROM: "{{ smtp.from_address }}"
-      SMTP_SECURITY: '{{ "force_tls" if smtp.tls_mode == "tls" else "starttls" }}'
+      SMTP_SECURITY: '{{ {"tls": "force_tls", "starttls": "starttls", "none": "off"}[smtp.tls_mode] }}'
     volumes:
       - vw_data:/data
 
