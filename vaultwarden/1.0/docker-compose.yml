@@ -1,0 +1,30 @@
+version: "3"
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    restart: on-failure
+    ports:
+      - "80:80"
+    environment:
+      # Vaultwarden must know its public URL to issue correct attachment,
+      # WebAuthn, and email links. Rendered from the instance URL at deploy.
+      DOMAIN: "{{ instance_url }}"
+      # Leave registration open so the first user can create an account, then
+      # the operator disables it from the admin page (ADMIN_TOKEN).
+      SIGNUPS_ALLOWED: "true"
+      # Admin page is disabled unless a token is set (user-configurable).
+      ADMIN_TOKEN: ""
+      # SMTP — values rendered from the operator's SMTP integration at deploy
+      # time. Greffer strips these keys entirely when no SMTP integration is
+      # selected, so an unconfigured instance simply has mail disabled.
+      SMTP_HOST: "{{ smtp.host }}"
+      SMTP_PORT: "{{ smtp.port }}"
+      SMTP_USERNAME: "{{ smtp.username }}"
+      SMTP_PASSWORD: "{{ smtp.password }}"
+      SMTP_FROM: "{{ smtp.from_address }}"
+      SMTP_SECURITY: '{{ {"tls": "force_tls", "starttls": "starttls", "none": "off"}[smtp.tls_mode] }}'
+    volumes:
+      - vw_data:/data
+
+volumes:
+  vw_data:

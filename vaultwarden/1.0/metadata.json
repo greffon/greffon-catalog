@@ -1,0 +1,59 @@
+{
+  "name": "Vaultwarden",
+  "logo": "https://raw.githubusercontent.com/dani-garcia/vaultwarden/main/resources/vaultwarden-icon.svg",
+  "description": "Lightweight self-hosted password manager, compatible with Bitwarden clients",
+  "categories": ["security", "productivity"],
+  "images": [],
+  "configurations": [
+    {
+      "title": "DOMAIN",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Public URL"
+          }
+        }
+      },
+      "default_value": {
+        "value": "{{ instance_url }}"
+      },
+      "destinations": [
+        { "type": "env", "container": "vaultwarden", "key": "DOMAIN" }
+      ]
+    },
+    {
+      "title": "ADMIN_TOKEN",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Admin token",
+            "description": "Set a token to enable the /admin page. Leave empty to keep the admin page disabled.",
+            "writeOnly": true,
+            "minLength": 8
+          }
+        }
+      },
+      "x-greffon-allow-empty-secret": true,
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "vaultwarden", "key": "ADMIN_TOKEN" }
+      ]
+    },
+    {
+      "title": "SMTP",
+      "schema": { "properties": {} },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "vaultwarden", "key": "SMTP_HOST" },
+        { "type": "smtp", "container": "vaultwarden", "key": "SMTP_PORT" },
+        { "type": "smtp", "container": "vaultwarden", "key": "SMTP_USERNAME" },
+        { "type": "smtp", "container": "vaultwarden", "key": "SMTP_PASSWORD" },
+        { "type": "smtp", "container": "vaultwarden", "key": "SMTP_FROM" },
+        { "type": "smtp", "container": "vaultwarden", "key": "SMTP_SECURITY" }
+      ]
+    }
+  ]
+}
