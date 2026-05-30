@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pyyaml
+        run: pip install pyyaml jinja2
 
       - name: Run linter regression tests
         # Proves every check in validate_catalog.py would have caught a real bug
