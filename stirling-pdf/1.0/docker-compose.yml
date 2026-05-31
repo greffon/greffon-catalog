@@ -16,8 +16,12 @@ services:
       # inputs and generated outputs here; persist so they survive a
       # greffer container recreate on update/redeploy.
       - stirling_pipeline:/pipeline
+      # User-saved signatures and custom branding assets live here; same
+      # recreate-survival reasoning as the volumes above.
+      - stirling_custom_files:/customFiles
 
 volumes:
   stirling_configs:
   stirling_logs:
   stirling_pipeline:
+  stirling_custom_files:
