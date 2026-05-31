@@ -1,6 +1,6 @@
 {
   "name": "Vikunja",
-  "logo": "https://avatars.githubusercontent.com/u/97856433",
+  "logo": "https://raw.githubusercontent.com/go-vikunja/vikunja/main/frontend/public/images/icons/icon.png",
   "description": "Self-hosted to-do and project management app",
   "categories": ["productivity"],
   "images": [],
