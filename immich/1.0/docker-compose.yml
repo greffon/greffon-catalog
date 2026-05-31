@@ -23,7 +23,7 @@ services:
     volumes:
       - immich_upload:/data
 
-  immich_machine_learning:
+  immich-machine-learning:
     image: ghcr.io/immich-app/immich-machine-learning:v2.7.5
     restart: on-failure
     volumes:
