@@ -3,9 +3,12 @@ import { test, expect } from '@playwright/test';
 const URL = process.env.FRESHRSS_URL!;
 
 /**
- * FreshRSS happy path on a fresh install: the app serves and the web
- * installer renders. On first run with an empty data volume, the root route
- * shows the setup wizard (step 1: language / general checks).
+ * FreshRSS fresh-install smoke: a brand-new instance (empty data volume) must
+ * serve the install wizard, not a login page. Asserting the FreshRSS wordmark
+ * alone is too weak — it appears on both the installer and the login screen,
+ * so a reused/already-initialized volume could pass without proving setup
+ * works. Assert an installer-specific landmark instead (the wizard title /
+ * the /i/ installer route / its language selector).
  */
 test.describe('FreshRSS', () => {
   test('serves the install wizard on a fresh instance', async ({ page }) => {
@@ -14,9 +17,10 @@ test.describe('FreshRSS', () => {
     const base = URL.replace(/\/$/, '');
     await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 60_000 });
 
-    // TODO: confirm selector against a live deploy. FreshRSS first-run shows
-    // the installer ("FreshRSS" branding + a form/Next control). Assert the
-    // FreshRSS wordmark is visible — present on both installer and login.
-    await expect(page.getByText(/freshrss/i).first()).toBeVisible({ timeout: 30_000 });
+    // The installer's <title> is "Installation · FreshRSS: step N" and the
+    // page exposes a language <select name="language">. Either is a stable,
+    // installer-specific landmark absent from the post-setup login page.
+    await expect(page).toHaveTitle(/Installation\s*·\s*FreshRSS/i, { timeout: 30_000 });
+    await expect(page.locator('select[name="language"]').first()).toBeVisible({ timeout: 15_000 });
   });
 });
