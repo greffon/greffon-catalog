@@ -1,6 +1,6 @@
 {
   "name": "Vikunja",
-  "logo": "https://raw.githubusercontent.com/go-vikunja/vikunja/main/frontend/public/images/icons/icon.png",
+  "logo": "https://raw.githubusercontent.com/go-vikunja/vikunja/main/frontend/public/images/icons/apple-touch-icon-180x180.png",
   "description": "Self-hosted to-do and project management app",
   "categories": ["productivity"],
   "images": [],
