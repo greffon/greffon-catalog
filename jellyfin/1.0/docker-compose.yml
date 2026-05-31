@@ -1,0 +1,25 @@
+version: "3"
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:10.10.7
+    restart: on-failure
+    ports:
+      - "8096:8096"
+    environment:
+      # Tells Jellyfin its externally-reachable URL when behind the greffer's
+      # reverse proxy, so generated links/clients resolve correctly.
+      JELLYFIN_PublishedServerUrl: "{{ instance_url }}"
+    volumes:
+      - jellyfin_config:/config
+      - jellyfin_cache:/cache
+      # Media library. Users add content into this volume; Jellyfin scans it.
+      - jellyfin_media:/media
+
+# No SMTP: Jellyfin core has no built-in email — notifications are optional
+# plugins configured per-install, not via env. Software (CPU) transcoding
+# works out of the box; hardware/GPU transcoding is optional and host-specific.
+
+volumes:
+  jellyfin_config:
+  jellyfin_cache:
+  jellyfin_media:
