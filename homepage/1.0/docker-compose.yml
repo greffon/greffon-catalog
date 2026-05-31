@@ -10,7 +10,11 @@ services:
       # header isn't in this allowlist. Render the instance's host[:port]
       # from the public URL so browser requests through the greffer proxy
       # are accepted. localhost/127.0.0.1 are always allowed implicitly.
-      HOMEPAGE_ALLOWED_HOSTS: "{{ instance_url.split('://')[1] }}"
+      # Outer single-quoted YAML scalar + inner double quotes: this is the
+      # only quoting that survives the greffer's yaml.dump -> Jinja render
+      # round-trip. (Single quotes inside get doubled by yaml.dump and break
+      # Jinja — same gotcha documented for the SMTP booleans.)
+      HOMEPAGE_ALLOWED_HOSTS: '{{ instance_url.split("://")[1] }}'
     volumes:
       # Config dir. Homepage seeds default config files here on first run
       # when the directory is empty, so a fresh instance comes up with a
