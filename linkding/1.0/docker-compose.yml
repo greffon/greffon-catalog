@@ -1,0 +1,20 @@
+version: "3"
+services:
+  linkding:
+    image: sissbruecker/linkding:latest
+    restart: on-failure
+    ports:
+      - "9090:9090"
+    environment:
+      # First-run admin account. The container creates this superuser on
+      # startup if it doesn't exist yet (user-configurable below).
+      LD_SUPERUSER_NAME: "admin"
+      LD_SUPERUSER_PASSWORD: ""
+      # CSRF trusted origin — linkding (Django) rejects POST/login from an
+      # origin not in this list when served over HTTPS behind a proxy.
+      LD_CSRF_TRUSTED_ORIGINS: "{{ instance_url }}"
+    volumes:
+      - linkding_data:/etc/linkding/data
+
+volumes:
+  linkding_data:
