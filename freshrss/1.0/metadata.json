@@ -1,0 +1,8 @@
+{
+  "name": "FreshRSS",
+  "logo": "https://raw.githubusercontent.com/FreshRSS/FreshRSS/edge/p/themes/icons/favicon.svg",
+  "description": "Free, self-hosted RSS and Atom feed aggregator",
+  "categories": ["productivity"],
+  "images": [],
+  "configurations": []
+}

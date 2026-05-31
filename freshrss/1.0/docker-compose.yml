@@ -1,0 +1,25 @@
+version: "3"
+services:
+  freshrss:
+    image: freshrss/freshrss:latest
+    restart: on-failure
+    ports:
+      - "80:80"
+    environment:
+      # CRON_MIN and TZ are deliberately HARDCODED here, not exposed as
+      # user-editable configurations. FreshRSS's entrypoint interpolates both
+      # unquoted into root-context shell/sed/crontab commands (CRON_MIN ->
+      # `sed ... | crontab -`, TZ -> sed expression), so accepting arbitrary
+      # user values would be a command-injection surface. Fixed safe literals
+      # only. CRON_MIN is the feed-refresh schedule (minute field, ~20 min).
+      CRON_MIN: "*/20"
+      TZ: "UTC"
+    volumes:
+      # SQLite DB, user accounts, feeds and config all live here — FreshRSS
+      # runs on SQLite out of the box, no separate DB service required.
+      - freshrss_data:/var/www/FreshRSS/data
+      - freshrss_extensions:/var/www/FreshRSS/extensions
+
+volumes:
+  freshrss_data:
+  freshrss_extensions:
