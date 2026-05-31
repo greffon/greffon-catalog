@@ -5,7 +5,7 @@ services:
     # Redis + a purpose-built pgvector Postgres). First boot pulls several GB
     # of images and the ML model. Runs CPU-only by default; GPU acceleration
     # is optional and host-specific. Storage grows with the photo library.
-    image: ghcr.io/immich-app/immich-server:v2.4.0
+    image: ghcr.io/immich-app/immich-server:v2.7.5
     restart: on-failure
     ports:
       - "2283:2283"
@@ -24,7 +24,7 @@ services:
       - immich_upload:/data
 
   immich_machine_learning:
-    image: ghcr.io/immich-app/immich-machine-learning:v2.4.0
+    image: ghcr.io/immich-app/immich-machine-learning:v2.7.5
     restart: on-failure
     volumes:
       - immich_model_cache:/cache
