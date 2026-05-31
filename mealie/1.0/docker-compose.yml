@@ -1,0 +1,28 @@
+version: "3"
+services:
+  mealie:
+    image: ghcr.io/mealie-recipes/mealie:v3.3.0
+    restart: on-failure
+    ports:
+      - "9000:9000"
+    environment:
+      # Public URL — Mealie uses this for invite/reset links and as the API
+      # base; must match the browser-facing URL.
+      BASE_URL: "{{ instance_url }}"
+      # SQLite out of the box — no separate DB service required.
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no integration is
+      # selected, so an unconfigured instance simply has email disabled.
+      SMTP_HOST: "{{ smtp.host }}"
+      SMTP_PORT: "{{ smtp.port }}"
+      SMTP_USER: "{{ smtp.username }}"
+      SMTP_PASSWORD: "{{ smtp.password }}"
+      SMTP_FROM_EMAIL: "{{ smtp.from_address }}"
+      # Mealie has a true 3-way auth strategy: TLS (STARTTLS), SSL (implicit
+      # TLS), NONE (no auth/plaintext). Map the integration's tls_mode onto it.
+      SMTP_AUTH_STRATEGY: '{{ {"tls": "SSL", "starttls": "TLS", "none": "NONE"}[smtp.tls_mode] }}'
+    volumes:
+      - mealie_data:/app/data
+
+volumes:
+  mealie_data:
