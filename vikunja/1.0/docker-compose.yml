@@ -26,9 +26,13 @@ services:
       # selected, so an unconfigured instance has the mailer off (and Vikunja
       # then auto-enables new users + disables password reset, the documented
       # no-mailer behaviour). ENABLED keys off smtp.host so it's only "true"
-      # when an integration is linked. Vikunja has no 3-way protocol enum —
-      # FORCESSL=true means implicit TLS (SMTPS), false means opportunistic
-      # STARTTLS, so tls->true else false.
+      # when an integration is linked. Vikunja has only a 2-state transport:
+      # FORCESSL=true → implicit TLS (SMTPS), false → opportunistic STARTTLS.
+      # There is NO true plaintext mode, so the integration's tls_mode "none"
+      # maps to FORCESSL=false (STARTTLS) — the closest Vikunja supports. A
+      # relay that advertises STARTTLS but can't complete it (e.g. self-signed)
+      # would fail; such a relay isn't usable with Vikunja regardless. tls →
+      # true (SMTPS); starttls and none → false (STARTTLS).
       VIKUNJA_MAILER_ENABLED: '{{ "true" if smtp.host else "false" }}'
       VIKUNJA_MAILER_HOST: "{{ smtp.host }}"
       VIKUNJA_MAILER_PORT: "{{ smtp.port }}"
