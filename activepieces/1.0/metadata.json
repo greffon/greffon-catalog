@@ -68,8 +68,7 @@
         { "type": "smtp", "container": "activepieces", "key": "AP_SMTP_PORT" },
         { "type": "smtp", "container": "activepieces", "key": "AP_SMTP_USERNAME" },
         { "type": "smtp", "container": "activepieces", "key": "AP_SMTP_PASSWORD" },
-        { "type": "smtp", "container": "activepieces", "key": "AP_SMTP_SENDER_EMAIL" },
-        { "type": "smtp", "container": "activepieces", "key": "AP_SMTP_USE_SSL" }
+        { "type": "smtp", "container": "activepieces", "key": "AP_SMTP_SENDER_EMAIL" }
       ]
     }
   ]

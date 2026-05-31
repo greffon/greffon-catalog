@@ -38,9 +38,11 @@ services:
       AP_SMTP_USERNAME: "{{ smtp.username }}"
       AP_SMTP_PASSWORD: "{{ smtp.password }}"
       AP_SMTP_SENDER_EMAIL: "{{ smtp.from_address }}"
-      # Activepieces uses a single SSL boolean: true for implicit TLS (465),
-      # false for STARTTLS/plaintext. tls -> true, starttls/none -> false.
-      AP_SMTP_USE_SSL: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+      # NOTE: Activepieces (0.83.0) has no SSL/TLS-mode env var — its SMTP
+      # transport derives `secure` purely from the port (implicit TLS iff
+      # port == 465). So the integration's tls_mode is honoured by choosing
+      # the matching port (465 for implicit TLS, 587/25 for STARTTLS/plain);
+      # there is no separate flag to set here.
 
   activepieces_db:
     image: pgvector/pgvector:0.8.0-pg14
