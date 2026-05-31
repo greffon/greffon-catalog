@@ -1,0 +1,25 @@
+version: "3"
+services:
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    restart: on-failure
+    ports:
+      - "3000:3000"
+    environment:
+      # Required since homepage v1.x: the app rejects requests whose Host
+      # header isn't in this allowlist. Render the instance's host[:port]
+      # from the public URL so browser requests through the greffer proxy
+      # are accepted. localhost/127.0.0.1 are always allowed implicitly.
+      HOMEPAGE_ALLOWED_HOSTS: "{{ instance_url.split('://')[1] }}"
+    volumes:
+      # Config dir. Homepage seeds default config files here on first run
+      # when the directory is empty, so a fresh instance comes up with a
+      # working default dashboard the user can then customize.
+      - homepage_config:/app/config
+      # NOTE: the optional Docker-integration socket mount
+      # (/var/run/docker.sock) is intentionally omitted — mounting the
+      # host docker socket into a greffon instance would breach the
+      # platform's per-instance isolation boundary.
+
+volumes:
+  homepage_config:
