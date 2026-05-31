@@ -1,0 +1,32 @@
+version: "3"
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:11
+    restart: on-failure
+    ports:
+      # HTTP only. Forgejo also exposes git-over-SSH on 22, but that's a raw
+      # TCP service the greffer's per-instance HTTPS proxy can't carry, so SSH
+      # is disabled below and clones happen over HTTPS. (SSH support depends on
+      # the platform's non-HTTP greffon feature — see the backlog.)
+      - "3000:3000"
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      # SQLite out of the box — no separate DB service required.
+      FORGEJO__database__DB_TYPE: "sqlite3"
+      # Skip the first-run web installer; app.ini is generated from these env
+      # vars. The first user to register then becomes the site admin.
+      FORGEJO__security__INSTALL_LOCK: "true"
+      # Public URL drives clone links, avatars, and OAuth callbacks; must match
+      # the browser-facing URL. ROOT_URL needs the full URL; DOMAIN needs just
+      # the host[:port] — single-quoted YAML + double-quoted Jinja survives the
+      # greffer's yaml.dump -> render round-trip.
+      FORGEJO__server__ROOT_URL: "{{ instance_url }}"
+      FORGEJO__server__DOMAIN: '{{ instance_url.split("://")[1] }}'
+      # No SSH service exposed (see ports comment) — present HTTPS clone URLs.
+      FORGEJO__server__DISABLE_SSH: "true"
+    volumes:
+      - forgejo_data:/data
+
+volumes:
+  forgejo_data:

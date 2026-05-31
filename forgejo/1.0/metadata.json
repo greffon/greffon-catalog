@@ -1,0 +1,8 @@
+{
+  "name": "Forgejo",
+  "logo": "https://codeberg.org/forgejo/governance/raw/branch/main/branding/logo/forgejo.svg",
+  "description": "Self-hosted lightweight software forge — Git hosting, issues, and pull requests",
+  "categories": ["development"],
+  "images": [],
+  "configurations": []
+}
