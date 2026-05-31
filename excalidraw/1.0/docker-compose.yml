@@ -1,0 +1,11 @@
+version: "3"
+services:
+  excalidraw:
+    image: excalidraw/excalidraw:latest
+    restart: on-failure
+    ports:
+      - "80:80"
+
+# No volumes: the self-hosted Excalidraw client is a static, browser-only app
+# (nginx serving static files). There is no backend state or database to
+# persist — drawings live in the user's browser local storage.
