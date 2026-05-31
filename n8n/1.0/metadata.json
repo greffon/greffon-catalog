@@ -37,7 +37,8 @@
         { "type": "smtp", "container": "n8n", "key": "N8N_SMTP_USER" },
         { "type": "smtp", "container": "n8n", "key": "N8N_SMTP_PASS" },
         { "type": "smtp", "container": "n8n", "key": "N8N_SMTP_SENDER" },
-        { "type": "smtp", "container": "n8n", "key": "N8N_SMTP_SSL" }
+        { "type": "smtp", "container": "n8n", "key": "N8N_SMTP_SSL" },
+        { "type": "smtp", "container": "n8n", "key": "N8N_SMTP_STARTTLS" }
       ]
     }
   ]
