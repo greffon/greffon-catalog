@@ -12,7 +12,12 @@ services:
     volumes:
       - stirling_configs:/configs
       - stirling_logs:/logs
+      # Automate / folder-scan feature stores pipeline configs, watched
+      # inputs and generated outputs here; persist so they survive a
+      # greffer container recreate on update/redeploy.
+      - stirling_pipeline:/pipeline
 
 volumes:
   stirling_configs:
   stirling_logs:
+  stirling_pipeline:
