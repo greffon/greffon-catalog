@@ -14,6 +14,14 @@ services:
       # only. CRON_MIN is the feed-refresh schedule (minute field, ~20 min).
       CRON_MIN: "*/20"
       TZ: "UTC"
+      # NOTE: no SMTP integration wired. FreshRSS configures mail via a PHP
+      # config file (data/config.custom.php returning a 'mailer'/'smtp' array),
+      # NOT environment variables — so the platform's env-based {{ smtp.* }}
+      # integration can't drive it. Wiring it would need a greffer "template"
+      # destination type that renders a file with the smtp/instance context
+      # into a volume (backlogged). Email here is only for the optional
+      # email-address-validation feature, so it's left as manual setup until
+      # that destination type exists.
     volumes:
       # SQLite DB, user accounts, feeds and config all live here — FreshRSS
       # runs on SQLite out of the box, no separate DB service required.
