@@ -6,6 +6,12 @@ services:
     ports:
       - "9000:9000"
     environment:
+      # ⚠️ SECURITY: Mealie seeds a default admin on first run —
+      # changeme@example.com / MyPassword. CHANGE IT IMMEDIATELY after the
+      # first login. Mealie offers no env var to set a generated initial
+      # password, so the first user to reach a fresh instance can claim admin.
+      # Disable open signup so only the admin can create accounts.
+      ALLOW_SIGNUP: "false"
       # Public URL — Mealie uses this for invite/reset links and as the API
       # base; must match the browser-facing URL.
       BASE_URL: "{{ instance_url }}"
