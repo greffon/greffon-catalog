@@ -1,0 +1,23 @@
+version: "3"
+services:
+  vikunja:
+    image: vikunja/vikunja:latest
+    restart: on-failure
+    ports:
+      - "3456:3456"
+    environment:
+      # Public URL — Vikunja's frontend (bundled in the same container since
+      # v0.23) calls the API at this base; must match the browser-facing URL.
+      VIKUNJA_SERVICE_PUBLICURL: "{{ instance_url }}"
+      # SQLite out of the box — no separate DB service needed.
+      VIKUNJA_DATABASE_TYPE: "sqlite"
+      VIKUNJA_DATABASE_PATH: "/db/vikunja.db"
+      # Signs session JWTs (user-configurable secret below).
+      VIKUNJA_SERVICE_JWTSECRET: ""
+    volumes:
+      - vikunja_files:/app/vikunja/files
+      - vikunja_db:/db
+
+volumes:
+  vikunja_files:
+  vikunja_db:
