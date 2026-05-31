@@ -1,7 +1,12 @@
 version: "3"
 services:
   forgejo:
-    image: codeberg.org/forgejo/forgejo:11
+    # Official registry is code.forgejo.org (codeberg.org/forgejo/forgejo is
+    # the deprecated mirror, frozen at 7.x). :11 is the highest major actually
+    # published there (resolves to 11.0.3); the floating major tag receives
+    # 11.x patch/security updates. Bump to the next major's tag once Forgejo
+    # publishes it to this registry.
+    image: code.forgejo.org/forgejo/forgejo:11
     restart: on-failure
     ports:
       # HTTP only. Forgejo also exposes git-over-SSH on 22, but that's a raw

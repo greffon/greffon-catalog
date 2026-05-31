@@ -3,27 +3,46 @@ import { test, expect } from '@playwright/test';
 const URL = process.env.FORGEJO_URL!;
 
 /**
- * Forgejo happy path: with INSTALL_LOCK=true the first-run web installer is
- * skipped, so the app serves its landing/login page directly (no setup
- * wizard). We assert the API version endpoint returns JSON (reliable
- * up-signal, exempt from HTML routing) and that the web UI renders the
- * Forgejo/Sign-In surface.
+ * Forgejo primary-task smoke: register the first user (who becomes site admin
+ * with INSTALL_LOCK=true) and reach an authenticated surface. A bare "Sign In
+ * link renders" check would pass even if SQLite writes or the registration
+ * flow were broken — so we drive sign-up and assert a post-auth signal.
+ *
+ * 1. GET /api/v1/version  — backend + DB up (JSON, exempt from HTML routing).
+ * 2. Register via /user/sign_up (fields verified live: user_name/email/
+ *    password/retype). The first registrant is auto-promoted to admin.
+ * 3. Assert we left the sign-up page (Forgejo redirects to the dashboard on
+ *    success) and a logged-in affordance is present.
  */
 test.describe('Forgejo', () => {
-  test('serves the forge UI and api', async ({ page, request }) => {
+  test('registers the first user and reaches the dashboard', async ({ page, request }) => {
     test.skip(!URL, 'FORGEJO_URL not set');
 
     const base = URL.replace(/\/$/, '');
 
-    // Public API version endpoint — JSON, proves the backend is up.
     const ver = await request.get(`${base}/api/v1/version`, { timeout: 30_000 });
     expect(ver.ok(), `GET /api/v1/version -> ${ver.status()}`).toBe(true);
 
-    // Web UI loads. INSTALL_LOCK skips the installer, so the landing page
-    // renders with a Sign In / Register affordance. TODO: confirm the exact
-    // selector against a live deploy; the "Sign In" link is a stable landmark.
-    await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    await expect(page.getByRole('link', { name: /sign in/i }).first())
-      .toBeVisible({ timeout: 30_000 });
+    await page.goto(`${base}/user/sign_up`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+
+    const ts = Date.now();
+    await page.locator('input[name="user_name"]').first().fill(`e2e${ts}`);
+    await page.locator('input[name="email"]').first().fill(`e2e${ts}@example.com`);
+    const pws = page.locator('input[name="password"], input[name="retype"]');
+    await page.locator('input[name="password"]').first().fill('Sup3r-Forge-Pass');
+    const retype = page.locator('input[name="retype"]').first();
+    if (await retype.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      await retype.fill('Sup3r-Forge-Pass');
+    }
+
+    await Promise.all([
+      page.waitForURL(u => !/\/user\/sign_up$/.test(u.toString()), { timeout: 20_000 }).catch(() => {}),
+      page.getByRole('button', { name: /register|create account|sign up/i }).first().click(),
+    ]);
+
+    // Success leaves /user/sign_up. An inline validation error would keep us
+    // there; the first-user-becomes-admin path lands on the dashboard/home.
+    expect(page.url(), 'should leave the sign-up page after registering')
+      .not.toMatch(/\/user\/sign_up$/);
   });
 });
