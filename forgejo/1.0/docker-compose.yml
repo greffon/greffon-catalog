@@ -1,0 +1,50 @@
+version: "3"
+services:
+  forgejo:
+    # :15 is the current Forgejo LTS (v15.0.2, supported to Jul 2027). The
+    # floating major tag receives 15.x security patches. codeberg.org is the
+    # official registry per upstream docker docs (code.forgejo.org /
+    # data.forgejo.org are mirrors). Avoid :11 — that LTS is EOL Jul 2026.
+    image: codeberg.org/forgejo/forgejo:15
+    restart: on-failure
+    ports:
+      # HTTP only. Forgejo also exposes git-over-SSH on 22, but that's a raw
+      # TCP service the greffer's per-instance HTTPS proxy can't carry, so SSH
+      # is disabled below and clones happen over HTTPS. (SSH support depends on
+      # the platform's non-HTTP greffon feature — see the backlog.)
+      - "3000:3000"
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      # SQLite out of the box — no separate DB service required.
+      FORGEJO__database__DB_TYPE: "sqlite3"
+      # Skip the first-run web installer; app.ini is generated from these env
+      # vars. The first user to register then becomes the site admin.
+      FORGEJO__security__INSTALL_LOCK: "true"
+      # Public URL drives clone links, avatars, and OAuth callbacks; must match
+      # the browser-facing URL. ROOT_URL needs the full URL; DOMAIN needs just
+      # the host[:port] — single-quoted YAML + double-quoted Jinja survives the
+      # greffer's yaml.dump -> render round-trip.
+      FORGEJO__server__ROOT_URL: "{{ instance_url }}"
+      FORGEJO__server__DOMAIN: '{{ instance_url.split("://")[1] }}'
+      # No SSH service exposed (see ports comment) — present HTTPS clone URLs.
+      FORGEJO__server__DISABLE_SSH: "true"
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no SMTP integration is
+      # selected, so an unconfigured instance simply has the mailer off
+      # (ENABLED defaults to false in Forgejo). All values must reference the
+      # {{ smtp.* }} context so the validator + strip logic treat them as
+      # SMTP-managed. ENABLED keys off smtp.host (truthy only when configured).
+      FORGEJO__mailer__ENABLED: '{{ "true" if smtp.host else "false" }}'
+      FORGEJO__mailer__SMTP_ADDR: "{{ smtp.host }}"
+      FORGEJO__mailer__SMTP_PORT: "{{ smtp.port }}"
+      FORGEJO__mailer__USER: "{{ smtp.username }}"
+      FORGEJO__mailer__PASSWD: "{{ smtp.password }}"
+      FORGEJO__mailer__FROM: "{{ smtp.from_address }}"
+      # Forgejo PROTOCOL: smtps (TLS/465), smtp+starttls (587), smtp (plain/25).
+      FORGEJO__mailer__PROTOCOL: '{{ {"tls": "smtps", "starttls": "smtp+starttls", "none": "smtp"}[smtp.tls_mode] }}'
+    volumes:
+      - forgejo_data:/data
+
+volumes:
+  forgejo_data:
