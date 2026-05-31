@@ -1,0 +1,39 @@
+version: "3"
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:1.121.1
+    restart: on-failure
+    ports:
+      - "5678:5678"
+    environment:
+      # Host/URL config so n8n generates correct editor + webhook URLs behind
+      # the greffer proxy. N8N_HOST is host[:port]; the rest use the full URL.
+      # Single-quoted YAML + double-quoted Jinja survives the greffer's
+      # yaml.dump -> render round-trip.
+      N8N_HOST: '{{ instance_url.split("://")[1] }}'
+      N8N_PROTOCOL: "https"
+      N8N_PORT: "5678"
+      WEBHOOK_URL: "{{ instance_url }}"
+      N8N_EDITOR_BASE_URL: "{{ instance_url }}"
+      # Encrypts stored credentials. n8n auto-generates one if unset, but that
+      # lives only in the volume; pin a platform-generated key so it's stable
+      # and recoverable.
+      N8N_ENCRYPTION_KEY: ""
+      # SQLite out of the box — no separate DB service required.
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no integration is
+      # selected, so an unconfigured instance simply has email (user invites,
+      # password reset) disabled. EMAIL_MODE keys off smtp.host.
+      N8N_EMAIL_MODE: '{{ "smtp" if smtp.host else "" }}'
+      N8N_SMTP_HOST: "{{ smtp.host }}"
+      N8N_SMTP_PORT: "{{ smtp.port }}"
+      N8N_SMTP_USER: "{{ smtp.username }}"
+      N8N_SMTP_PASS: "{{ smtp.password }}"
+      N8N_SMTP_SENDER: "{{ smtp.from_address }}"
+      # N8N_SMTP_SSL=true → implicit TLS (465); false → STARTTLS/plain.
+      N8N_SMTP_SSL: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:
