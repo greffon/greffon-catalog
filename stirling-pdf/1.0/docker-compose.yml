@@ -1,0 +1,27 @@
+version: "3"
+services:
+  stirling-pdf:
+    image: stirlingtools/stirling-pdf:latest
+    restart: on-failure
+    ports:
+      - "8080:8080"
+    environment:
+      # Single-user self-hosted instance behind the greffon proxy — no built-in
+      # login by default. Operator can layer auth at the platform level.
+      SECURITY_ENABLELOGIN: "false"
+    volumes:
+      - stirling_configs:/configs
+      - stirling_logs:/logs
+      # Automate / folder-scan feature stores pipeline configs, watched
+      # inputs and generated outputs here; persist so they survive a
+      # greffer container recreate on update/redeploy.
+      - stirling_pipeline:/pipeline
+      # User-saved signatures and custom branding assets live here; same
+      # recreate-survival reasoning as the volumes above.
+      - stirling_custom_files:/customFiles
+
+volumes:
+  stirling_configs:
+  stirling_logs:
+  stirling_pipeline:
+  stirling_custom_files:

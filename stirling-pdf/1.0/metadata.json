@@ -1,0 +1,8 @@
+{
+  "name": "Stirling-PDF",
+  "logo": "https://raw.githubusercontent.com/Stirling-Tools/Stirling-PDF/main/docs/stirling.png",
+  "description": "Locally hosted web-based PDF manipulation toolkit",
+  "categories": ["productivity"],
+  "images": [],
+  "configurations": []
+}
