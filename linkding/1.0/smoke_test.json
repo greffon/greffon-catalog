@@ -4,7 +4,6 @@
   "expected_body_contains": null,
   "required_config": {
     "LD_SUPERUSER_NAME": "admin",
-    "LD_SUPERUSER_PASSWORD": "Test-Pass-1234",
-    "LD_CSRF_TRUSTED_ORIGINS": "http://localhost:9090"
+    "LD_SUPERUSER_PASSWORD": "Test-Pass-1234"
   }
 }
