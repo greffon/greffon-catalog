@@ -1,6 +1,6 @@
 {
   "name": "Homepage",
-  "logo": "https://raw.githubusercontent.com/gethomepage/homepage/main/images/logo.png",
+  "logo": "https://raw.githubusercontent.com/gethomepage/homepage/main/public/android-chrome-512x512.png",
   "description": "Highly customizable application dashboard and startpage for your services",
   "categories": ["productivity"],
   "images": [],
