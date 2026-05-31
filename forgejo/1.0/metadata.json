@@ -4,5 +4,20 @@
   "description": "Self-hosted lightweight software forge — Git hosting, issues, and pull requests",
   "categories": ["development"],
   "images": [],
-  "configurations": []
+  "configurations": [
+    {
+      "title": "SMTP",
+      "schema": { "properties": {} },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "forgejo", "key": "FORGEJO__mailer__ENABLED" },
+        { "type": "smtp", "container": "forgejo", "key": "FORGEJO__mailer__SMTP_ADDR" },
+        { "type": "smtp", "container": "forgejo", "key": "FORGEJO__mailer__SMTP_PORT" },
+        { "type": "smtp", "container": "forgejo", "key": "FORGEJO__mailer__USER" },
+        { "type": "smtp", "container": "forgejo", "key": "FORGEJO__mailer__PASSWD" },
+        { "type": "smtp", "container": "forgejo", "key": "FORGEJO__mailer__FROM" },
+        { "type": "smtp", "container": "forgejo", "key": "FORGEJO__mailer__PROTOCOL" }
+      ]
+    }
+  ]
 }
