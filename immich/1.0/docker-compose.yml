@@ -1,0 +1,57 @@
+version: "3"
+services:
+  immich:
+    # NOTE: this is a heavy, multi-service greffon (server + machine-learning +
+    # Redis + a purpose-built pgvector Postgres). First boot pulls several GB
+    # of images and the ML model. Runs CPU-only by default; GPU acceleration
+    # is optional and host-specific. Storage grows with the photo library.
+    image: ghcr.io/immich-app/immich-server:v2.4.0
+    restart: on-failure
+    ports:
+      - "2283:2283"
+    depends_on:
+      - immich_redis
+      - immich_database
+    environment:
+      DB_HOSTNAME: "immich_database"
+      DB_USERNAME: "immich"
+      DB_DATABASE_NAME: "immich"
+      # Per-instance DB password (instance_id is unique per deploy; the app and
+      # db services share the same rendered value, so no cross-instance reuse).
+      DB_PASSWORD: "{{ instance_id }}"
+      REDIS_HOSTNAME: "immich_redis"
+    volumes:
+      - immich_upload:/data
+
+  immich_machine_learning:
+    image: ghcr.io/immich-app/immich-machine-learning:v2.4.0
+    restart: on-failure
+    volumes:
+      - immich_model_cache:/cache
+
+  immich_redis:
+    image: redis:6.2-bookworm
+    restart: on-failure
+    volumes:
+      - immich_redis_data:/data
+
+  immich_database:
+    # Immich requires its purpose-built Postgres image (VectorChord + pgvecto-rs
+    # extensions). A stock postgres image will NOT work.
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+    restart: on-failure
+    environment:
+      POSTGRES_DB: "immich"
+      POSTGRES_USER: "immich"
+      POSTGRES_PASSWORD: "{{ instance_id }}"
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - immich_db_data:/var/lib/postgresql/data
+
+# No SMTP: Immich core has no email/SMTP integration.
+
+volumes:
+  immich_upload:
+  immich_model_cache:
+  immich_redis_data:
+  immich_db_data:
