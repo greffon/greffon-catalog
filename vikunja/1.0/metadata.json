@@ -40,6 +40,20 @@
       "destinations": [
         { "type": "env", "container": "vikunja", "key": "VIKUNJA_SERVICE_SECRET" }
       ]
+    },
+    {
+      "title": "SMTP",
+      "schema": { "properties": {} },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "vikunja", "key": "VIKUNJA_MAILER_ENABLED" },
+        { "type": "smtp", "container": "vikunja", "key": "VIKUNJA_MAILER_HOST" },
+        { "type": "smtp", "container": "vikunja", "key": "VIKUNJA_MAILER_PORT" },
+        { "type": "smtp", "container": "vikunja", "key": "VIKUNJA_MAILER_USERNAME" },
+        { "type": "smtp", "container": "vikunja", "key": "VIKUNJA_MAILER_PASSWORD" },
+        { "type": "smtp", "container": "vikunja", "key": "VIKUNJA_MAILER_FROMEMAIL" },
+        { "type": "smtp", "container": "vikunja", "key": "VIKUNJA_MAILER_FORCESSL" }
+      ]
     }
   ]
 }

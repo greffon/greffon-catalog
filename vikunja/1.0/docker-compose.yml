@@ -21,6 +21,21 @@ services:
       # Signs auth tokens (user-configurable secret below). NOTE: the var is
       # VIKUNJA_SERVICE_SECRET — VIKUNJA_SERVICE_JWTSECRET is deprecated.
       VIKUNJA_SERVICE_SECRET: ""
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no integration is
+      # selected, so an unconfigured instance has the mailer off (and Vikunja
+      # then auto-enables new users + disables password reset, the documented
+      # no-mailer behaviour). ENABLED keys off smtp.host so it's only "true"
+      # when an integration is linked. Vikunja has no 3-way protocol enum —
+      # FORCESSL=true means implicit TLS (SMTPS), false means opportunistic
+      # STARTTLS, so tls->true else false.
+      VIKUNJA_MAILER_ENABLED: '{{ "true" if smtp.host else "false" }}'
+      VIKUNJA_MAILER_HOST: "{{ smtp.host }}"
+      VIKUNJA_MAILER_PORT: "{{ smtp.port }}"
+      VIKUNJA_MAILER_USERNAME: "{{ smtp.username }}"
+      VIKUNJA_MAILER_PASSWORD: "{{ smtp.password }}"
+      VIKUNJA_MAILER_FROMEMAIL: "{{ smtp.from_address }}"
+      VIKUNJA_MAILER_FORCESSL: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
     volumes:
       - vikunja_files:/app/vikunja/files
       - vikunja_db:/db
