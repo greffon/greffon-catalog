@@ -3,6 +3,12 @@ services:
   vikunja:
     image: vikunja/vikunja:latest
     restart: on-failure
+    # The image defaults to uid 1000, but the greffer creates named volumes
+    # root-owned, so Vikunja can't write /app/vikunja/files (storage init
+    # fails: "permission denied [process uid=1000, dir owner uid=0]") and
+    # crash-loops. Run as root so it owns its volumes — matches how the
+    # other catalog entries on root-owned volumes behave.
+    user: "0:0"
     ports:
       - "3456:3456"
     environment:
@@ -12,8 +18,9 @@ services:
       # SQLite out of the box — no separate DB service needed.
       VIKUNJA_DATABASE_TYPE: "sqlite"
       VIKUNJA_DATABASE_PATH: "/db/vikunja.db"
-      # Signs session JWTs (user-configurable secret below).
-      VIKUNJA_SERVICE_JWTSECRET: ""
+      # Signs auth tokens (user-configurable secret below). NOTE: the var is
+      # VIKUNJA_SERVICE_SECRET — VIKUNJA_SERVICE_JWTSECRET is deprecated.
+      VIKUNJA_SERVICE_SECRET: ""
     volumes:
       - vikunja_files:/app/vikunja/files
       - vikunja_db:/db
