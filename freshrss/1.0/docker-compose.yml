@@ -1,0 +1,21 @@
+version: "3"
+services:
+  freshrss:
+    image: freshrss/freshrss:latest
+    restart: on-failure
+    ports:
+      - "80:80"
+    environment:
+      # Background feed-refresh cron schedule (minute field). FreshRSS runs
+      # its own cron inside the container; default refreshes every ~20 min.
+      CRON_MIN: "*/20"
+      TZ: "UTC"
+    volumes:
+      # SQLite DB, user accounts, feeds and config all live here — FreshRSS
+      # runs on SQLite out of the box, no separate DB service required.
+      - freshrss_data:/var/www/FreshRSS/data
+      - freshrss_extensions:/var/www/FreshRSS/extensions
+
+volumes:
+  freshrss_data:
+  freshrss_extensions:

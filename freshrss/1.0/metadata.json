@@ -1,0 +1,39 @@
+{
+  "name": "FreshRSS",
+  "logo": "https://raw.githubusercontent.com/FreshRSS/FreshRSS/edge/p/themes/icons/favicon.svg",
+  "description": "Free, self-hosted RSS and Atom feed aggregator",
+  "categories": ["productivity"],
+  "images": [],
+  "configurations": [
+    {
+      "title": "CRON_MIN",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Feed refresh schedule (cron minute field)"
+          }
+        }
+      },
+      "default_value": { "value": "*/20" },
+      "destinations": [
+        { "type": "env", "container": "freshrss", "key": "CRON_MIN" }
+      ]
+    },
+    {
+      "title": "TZ",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Timezone"
+          }
+        }
+      },
+      "default_value": { "value": "UTC" },
+      "destinations": [
+        { "type": "env", "container": "freshrss", "key": "TZ" }
+      ]
+    }
+  ]
+}
