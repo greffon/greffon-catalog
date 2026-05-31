@@ -1,0 +1,58 @@
+{
+  "name": "Linkding",
+  "logo": "https://raw.githubusercontent.com/sissbruecker/linkding/master/assets/logo.svg",
+  "description": "Minimal, fast self-hosted bookmark manager",
+  "categories": ["productivity"],
+  "images": [],
+  "configurations": [
+    {
+      "title": "LD_SUPERUSER_NAME",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Admin username"
+          }
+        }
+      },
+      "default_value": { "value": "admin" },
+      "destinations": [
+        { "type": "env", "container": "linkding", "key": "LD_SUPERUSER_NAME" }
+      ]
+    },
+    {
+      "title": "LD_SUPERUSER_PASSWORD",
+      "schema": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Admin password",
+            "writeOnly": true,
+            "minLength": 8
+          }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "linkding", "key": "LD_SUPERUSER_PASSWORD" }
+      ]
+    },
+    {
+      "title": "LD_CSRF_TRUSTED_ORIGINS",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Trusted origin (public URL)"
+          }
+        }
+      },
+      "default_value": { "value": "{{ instance_url }}" },
+      "destinations": [
+        { "type": "env", "container": "linkding", "key": "LD_CSRF_TRUSTED_ORIGINS" }
+      ]
+    }
+  ]
+}
