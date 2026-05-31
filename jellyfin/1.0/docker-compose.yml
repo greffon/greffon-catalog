@@ -1,7 +1,7 @@
 version: "3"
 services:
   jellyfin:
-    image: jellyfin/jellyfin:10.10.7
+    image: jellyfin/jellyfin:10.11.10
     restart: on-failure
     ports:
       - "8096:8096"
