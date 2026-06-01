@@ -25,9 +25,13 @@ services:
       GF_SMTP_USER: "{{ smtp.username }}"
       GF_SMTP_PASSWORD: "{{ smtp.password }}"
       GF_SMTP_FROM_ADDRESS: "{{ smtp.from_address }}"
-      # Grafana's STARTTLS policy: MandatoryStartTLS for starttls, OpportunisticStartTLS
-      # for none/plain; implicit-TLS (465) is auto-detected by Grafana from the port.
-      GF_SMTP_STARTTLS_POLICY: '{{ "MandatoryStartTLS" if smtp.tls_mode == "starttls" else "OpportunisticStartTLS" }}'
+      # Grafana STARTTLS policy maps each integration tls_mode distinctly:
+      #   starttls -> MandatoryStartTLS (require STARTTLS upgrade)
+      #   none     -> NoStartTLS        (true plaintext; never upgrade, even if
+      #                                  the relay advertises STARTTLS)
+      #   tls      -> NoStartTLS too — implicit TLS (465) is negotiated via the
+      #              port, and STARTTLS must NOT also be attempted on that path.
+      GF_SMTP_STARTTLS_POLICY: '{{ "MandatoryStartTLS" if smtp.tls_mode == "starttls" else "NoStartTLS" }}'
     volumes:
       - grafana_data:/var/lib/grafana
 
