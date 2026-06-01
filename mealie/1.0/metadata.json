@@ -1,0 +1,32 @@
+{
+  "name": "Mealie",
+  "logo": "https://avatars.githubusercontent.com/u/92342333",
+  "description": "Self-hosted recipe manager and meal planner",
+  "categories": ["productivity"],
+  "images": [],
+  "configurations": [
+    {
+      "title": "BASE_URL",
+      "schema": {
+        "properties": { "value": { "type": "string", "title": "Public URL" } }
+      },
+      "default_value": { "value": "{{ instance_url }}" },
+      "destinations": [
+        { "type": "env", "container": "mealie", "key": "BASE_URL" }
+      ]
+    },
+    {
+      "title": "SMTP",
+      "schema": { "properties": {} },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "mealie", "key": "SMTP_HOST" },
+        { "type": "smtp", "container": "mealie", "key": "SMTP_PORT" },
+        { "type": "smtp", "container": "mealie", "key": "SMTP_USER" },
+        { "type": "smtp", "container": "mealie", "key": "SMTP_PASSWORD" },
+        { "type": "smtp", "container": "mealie", "key": "SMTP_FROM_EMAIL" },
+        { "type": "smtp", "container": "mealie", "key": "SMTP_AUTH_STRATEGY" }
+      ]
+    }
+  ]
+}
