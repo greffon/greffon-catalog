@@ -357,12 +357,18 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 else {}
             )
             value_format = value_prop.get("format") if isinstance(value_prop, dict) else None
-            is_greffon_secret = value_format == "greffon-secret"
+            # Two platform-minted secret formats share identical shape rules:
+            #   greffon-secret        — URL-safe base64
+            #   greffon-secret-alnum  — strict [A-Za-z0-9], for greffons whose
+            #                           validators reject base64's - and _
+            #                           (e.g. Activepieces AP_ENCRYPTION_KEY).
+            GREFFON_SECRET_FORMATS = ("greffon-secret", "greffon-secret-alnum")
+            is_greffon_secret = value_format in GREFFON_SECRET_FORMATS
 
             if is_greffon_secret:
                 if value_prop.get("type") != "string":
                     errors.append(
-                        f"{prefix} '{title}' declares format='greffon-secret' but the "
+                        f"{prefix} '{title}' declares format='{value_format}' but the "
                         "schema's `value` property is not type=string. The platform only "
                         "mints string secrets."
                     )
@@ -374,7 +380,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 min_length = value_prop.get("minLength")
                 if isinstance(min_length, bool) or not isinstance(min_length, int) or min_length <= 0:
                     errors.append(
-                        f"{prefix} '{title}' declares format='greffon-secret' but no "
+                        f"{prefix} '{title}' declares format='{value_format}' but no "
                         "positive integer minLength. The platform needs an explicit "
                         "length to generate against — set minLength to the underlying "
                         "greffon's documented minimum (e.g. 64 for Plausible "
@@ -388,7 +394,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 # boolean to mis-handle the field (e.g. skip masking).
                 if value_prop.get("writeOnly") is not True:
                     errors.append(
-                        f"{prefix} '{title}' declares format='greffon-secret' but is not "
+                        f"{prefix} '{title}' declares format='{value_format}' but is not "
                         "writeOnly: true. Platform-minted secrets must be writeOnly so "
                         "they're not echoed back to API consumers; set the value to a "
                         "literal boolean ``true``."
