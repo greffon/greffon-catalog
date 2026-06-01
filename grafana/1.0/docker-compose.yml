@@ -13,9 +13,14 @@ services:
       # External URL so generated links + OAuth redirects resolve behind the
       # greffer proxy.
       GF_SERVER_ROOT_URL: "{{ instance_url }}"
-      # Generated initial admin password (avoids the default admin/admin). The
-      # platform mints this at instance creation; user logs in as 'admin'.
+      # Initial admin password the user logs in with (user-chosen, not auto-
+      # generated — see metadata). User logs in as 'admin'.
       GF_SECURITY_ADMIN_PASSWORD: ""
+      # Key-encryption key for stored data-source credentials. Unset, Grafana
+      # falls back to a PUBLIC hardcoded default, so anyone with the volume can
+      # decrypt secrets. Platform-generated (greffon-secret) → unique per
+      # instance. This is internal crypto (auto-gen is correct), NOT a login.
+      GF_SECURITY_SECRET_KEY: ""
       # SMTP — rendered from the operator's SMTP integration at deploy time.
       # The greffer strips every one of these keys when no integration is
       # selected, so an unconfigured instance has alerting email disabled.
