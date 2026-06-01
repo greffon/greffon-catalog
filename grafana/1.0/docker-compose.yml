@@ -1,0 +1,35 @@
+version: "3"
+services:
+  grafana:
+    image: grafana/grafana:12.2.1
+    restart: on-failure
+    # The image runs as UID 472, but the greffer creates named volumes
+    # root-owned, so Grafana can't write /var/lib/grafana and fails to start.
+    # Run as root so it owns its data volume (matches Vikunja's handling).
+    user: "0"
+    ports:
+      - "3000:3000"
+    environment:
+      # External URL so generated links + OAuth redirects resolve behind the
+      # greffer proxy.
+      GF_SERVER_ROOT_URL: "{{ instance_url }}"
+      # Generated initial admin password (avoids the default admin/admin). The
+      # platform mints this at instance creation; user logs in as 'admin'.
+      GF_SECURITY_ADMIN_PASSWORD: ""
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no integration is
+      # selected, so an unconfigured instance has alerting email disabled.
+      # ENABLED keys off smtp.host so it's only true when configured.
+      GF_SMTP_ENABLED: '{{ "true" if smtp.host else "false" }}'
+      GF_SMTP_HOST: '{{ smtp.host }}:{{ smtp.port }}'
+      GF_SMTP_USER: "{{ smtp.username }}"
+      GF_SMTP_PASSWORD: "{{ smtp.password }}"
+      GF_SMTP_FROM_ADDRESS: "{{ smtp.from_address }}"
+      # Grafana's STARTTLS policy: MandatoryStartTLS for starttls, OpportunisticStartTLS
+      # for none/plain; implicit-TLS (465) is auto-detected by Grafana from the port.
+      GF_SMTP_STARTTLS_POLICY: '{{ "MandatoryStartTLS" if smtp.tls_mode == "starttls" else "OpportunisticStartTLS" }}'
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  grafana_data:
