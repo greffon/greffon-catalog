@@ -1,0 +1,16 @@
+version: "3"
+services:
+  memos:
+    image: ghcr.io/usememos/memos:stable
+    restart: on-failure
+    ports:
+      - "5230:5230"
+    volumes:
+      # SQLite DB + uploads live here — Memos runs zero-config on SQLite.
+      - memos_data:/var/opt/memos
+
+# No SMTP: Memos has no built-in email. First run creates the admin account
+# via the web UI (the first registrant becomes host/admin).
+
+volumes:
+  memos_data:
