@@ -1,0 +1,52 @@
+version: "3"
+services:
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
+    restart: on-failure
+    depends_on:
+      - paperless_broker
+    ports:
+      - "8000:8000"
+    environment:
+      PAPERLESS_REDIS: "redis://paperless_broker:6379"
+      # SQLite — set DBENGINE explicitly so Paperless doesn't expect Postgres.
+      PAPERLESS_DBENGINE: "sqlite"
+      # Public URL so generated links + CSRF/allowed-hosts work behind the proxy.
+      PAPERLESS_URL: "{{ instance_url }}"
+      # Django secret + initial superuser, platform-generated / configurable.
+      PAPERLESS_SECRET_KEY: ""
+      PAPERLESS_ADMIN_USER: "admin"
+      PAPERLESS_ADMIN_PASSWORD: ""
+      # OCR language is hardcoded to English (bundled in the image). It is NOT
+      # exposed as a user config: a non-bundled language (e.g. tur, nld) also
+      # requires PAPERLESS_OCR_LANGUAGES to install the matching Tesseract
+      # package, or Paperless fails its startup check. Supporting arbitrary
+      # languages safely needs both vars paired — deferred to a future version.
+      PAPERLESS_OCR_LANGUAGE: "eng"
+      # SMTP — rendered from the operator's SMTP integration at deploy time;
+      # greffer strips these keys when no integration is selected.
+      PAPERLESS_EMAIL_HOST: "{{ smtp.host }}"
+      PAPERLESS_EMAIL_PORT: "{{ smtp.port }}"
+      PAPERLESS_EMAIL_HOST_USER: "{{ smtp.username }}"
+      PAPERLESS_EMAIL_HOST_PASSWORD: "{{ smtp.password }}"
+      PAPERLESS_EMAIL_FROM: "{{ smtp.from_address }}"
+      # Paperless has two independent booleans. Implicit TLS (465) -> USE_SSL;
+      # STARTTLS -> USE_TLS; plaintext -> neither.
+      PAPERLESS_EMAIL_USE_TLS: '{{ "true" if smtp.tls_mode == "starttls" else "false" }}'
+      PAPERLESS_EMAIL_USE_SSL: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+    volumes:
+      - paperless_data:/usr/src/paperless/data
+      - paperless_media:/usr/src/paperless/media
+      - paperless_consume:/usr/src/paperless/consume
+
+  paperless_broker:
+    image: redis:8
+    restart: on-failure
+    volumes:
+      - paperless_redis:/data
+
+volumes:
+  paperless_data:
+  paperless_media:
+  paperless_consume:
+  paperless_redis:
