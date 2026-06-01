@@ -1,7 +1,7 @@
 {
   "name": "Mealie",
   "logo": "https://avatars.githubusercontent.com/u/92342333",
-  "description": "Self-hosted recipe manager and meal planner",
+  "description": "Self-hosted recipe manager and meal planner. ⚠️ First login uses the default admin account (changeme@example.com / MyPassword) — change the password immediately after first login.",
   "categories": ["productivity"],
   "images": [],
   "configurations": [
