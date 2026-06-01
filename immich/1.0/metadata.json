@@ -1,0 +1,8 @@
+{
+  "name": "Immich",
+  "logo": "https://raw.githubusercontent.com/immich-app/immich/main/design/immich-logo.svg",
+  "description": "Self-hosted photo and video backup — a Google Photos alternative",
+  "categories": ["media"],
+  "images": [],
+  "configurations": []
+}
