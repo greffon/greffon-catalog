@@ -1,0 +1,48 @@
+version: "3"
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.22.5
+    restart: on-failure
+    ports:
+      - "5678:5678"
+    environment:
+      # Host/URL config so n8n generates correct editor + webhook URLs behind
+      # the greffer proxy. N8N_HOST is host[:port]; the rest use the full URL.
+      # Single-quoted YAML + double-quoted Jinja survives the greffer's
+      # yaml.dump -> render round-trip.
+      N8N_HOST: '{{ instance_url.split("://")[1] }}'
+      N8N_PROTOCOL: "https"
+      N8N_PORT: "5678"
+      WEBHOOK_URL: "{{ instance_url }}"
+      N8N_EDITOR_BASE_URL: "{{ instance_url }}"
+      # Behind the greffer's single reverse proxy — lets n8n resolve the real
+      # client IP (one proxy hop) instead of the proxy address.
+      N8N_PROXY_HOPS: "1"
+      # Encrypts stored credentials. n8n auto-generates one if unset, but that
+      # lives only in the volume; pin a platform-generated key so it's stable
+      # and recoverable.
+      N8N_ENCRYPTION_KEY: ""
+      # SQLite out of the box — no separate DB service required.
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no integration is
+      # selected, so an unconfigured instance simply has email (user invites,
+      # password reset) disabled. EMAIL_MODE keys off smtp.host.
+      N8N_EMAIL_MODE: '{{ "smtp" if smtp.host else "" }}'
+      N8N_SMTP_HOST: "{{ smtp.host }}"
+      N8N_SMTP_PORT: "{{ smtp.port }}"
+      N8N_SMTP_USER: "{{ smtp.username }}"
+      N8N_SMTP_PASS: "{{ smtp.password }}"
+      N8N_SMTP_SENDER: "{{ smtp.from_address }}"
+      # n8n has two independent flags. SSL = implicit TLS (465). STARTTLS
+      # defaults to TRUE, so for plaintext ("none") it must be explicitly
+      # disabled or n8n still attempts STARTTLS. Mapping:
+      #   tls      -> SSL=true,  STARTTLS=false (implicit TLS)
+      #   starttls -> SSL=false, STARTTLS=true
+      #   none     -> SSL=false, STARTTLS=false (true plaintext)
+      N8N_SMTP_SSL: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+      N8N_SMTP_STARTTLS: '{{ "true" if smtp.tls_mode == "starttls" else "false" }}'
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:
