@@ -1,7 +1,7 @@
 {
   "name": "Umami",
   "logo": "https://avatars.githubusercontent.com/u/105618662",
-  "description": "Privacy-focused, cookie-free web analytics (Google Analytics alternative)",
+  "description": "Privacy-focused, cookie-free web analytics (Google Analytics alternative). ⚠️ First login uses the default admin account (username: admin, password: umami) — change the password immediately after first login.",
   "categories": ["analytics"],
   "images": [],
   "configurations": [
