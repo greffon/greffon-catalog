@@ -1,0 +1,67 @@
+version: "3"
+services:
+  activepieces:
+    image: ghcr.io/activepieces/activepieces:0.83.0
+    restart: on-failure
+    ports:
+      - "80:80"
+    depends_on:
+      - activepieces_db
+      - activepieces_redis
+    environment:
+      # Public URL — drives webhook + redirect URLs; must match the browser-
+      # facing URL exactly or triggers/webhooks break.
+      AP_FRONTEND_URL: "{{ instance_url }}"
+      # Required secrets, platform-generated (openssl rand -hex 16 / -hex 32).
+      AP_ENCRYPTION_KEY: ""
+      AP_JWT_SECRET: ""
+      # Run the app + worker in one container (single-instance deployment).
+      AP_QUEUE_MODE: "REDIS"
+      AP_EXECUTION_MODE: "UNSANDBOXED"
+      AP_TELEMETRY_ENABLED: "false"
+      # Postgres (pgvector) — internal service, fixed dev/instance credentials.
+      AP_DB_TYPE: "POSTGRES"
+      AP_POSTGRES_HOST: "activepieces_db"
+      AP_POSTGRES_PORT: "5432"
+      AP_POSTGRES_DATABASE: "activepieces"
+      AP_POSTGRES_USERNAME: "activepieces"
+      AP_POSTGRES_PASSWORD: "{{ instance_id }}"
+      # Redis — internal service.
+      AP_REDIS_TYPE: "STANDALONE"
+      AP_REDIS_HOST: "activepieces_redis"
+      AP_REDIS_PORT: "6379"
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no integration is
+      # selected, so an unconfigured instance simply has email disabled.
+      AP_SMTP_HOST: "{{ smtp.host }}"
+      AP_SMTP_PORT: "{{ smtp.port }}"
+      AP_SMTP_USERNAME: "{{ smtp.username }}"
+      AP_SMTP_PASSWORD: "{{ smtp.password }}"
+      AP_SMTP_SENDER_EMAIL: "{{ smtp.from_address }}"
+      # NOTE: Activepieces (0.83.0) has no SSL/TLS-mode env var — its SMTP
+      # transport derives `secure` purely from the port (implicit TLS iff
+      # port == 465). So the integration's tls_mode is honoured by choosing
+      # the matching port (465 for implicit TLS, 587/25 for STARTTLS/plain);
+      # there is no separate flag to set here.
+
+  activepieces_db:
+    image: pgvector/pgvector:0.8.0-pg14
+    restart: on-failure
+    environment:
+      POSTGRES_DB: "activepieces"
+      POSTGRES_USER: "activepieces"
+      # Same per-instance value the app uses for AP_POSTGRES_PASSWORD; instance
+      # id is unique per deploy, so two instances never share a DB password.
+      POSTGRES_PASSWORD: "{{ instance_id }}"
+    volumes:
+      - activepieces_postgres:/var/lib/postgresql/data
+
+  activepieces_redis:
+    image: redis:7.0.7
+    restart: on-failure
+    volumes:
+      - activepieces_redis:/data
+
+volumes:
+  activepieces_postgres:
+  activepieces_redis:
