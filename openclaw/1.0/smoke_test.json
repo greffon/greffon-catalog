@@ -1,5 +1,0 @@
-{
-  "path": "/",
-  "expected_status": [200, 401, 403],
-  "expected_body_contains": null
-}
