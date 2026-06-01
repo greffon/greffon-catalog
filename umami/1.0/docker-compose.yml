@@ -1,0 +1,34 @@
+version: "3"
+services:
+  umami:
+    image: ghcr.io/umami-software/umami:3.1.0
+    restart: on-failure
+    ports:
+      - "3000:3000"
+    depends_on:
+      - umami_db
+    environment:
+      # Umami v3 is Postgres-only (no SQLite). Connection string points at the
+      # internal db service; password keyed off instance_id (unique per deploy;
+      # app + db share the rendered value, no cross-instance reuse).
+      DATABASE_TYPE: "postgresql"
+      DATABASE_URL: "postgresql://umami:{{ instance_id }}@umami_db:5432/umami"
+      # Signs auth tokens / session. Platform-generated.
+      APP_SECRET: ""
+    # NOTE: no SMTP — Umami has no built-in email. First login uses the
+    # bootstrapped admin (admin / umami); ⚠️ change it immediately. There is no
+    # env var to set a generated initial password, so the change-on-first-login
+    # step is the mitigation (documented in metadata description).
+
+  umami_db:
+    image: postgres:16-alpine
+    restart: on-failure
+    environment:
+      POSTGRES_DB: "umami"
+      POSTGRES_USER: "umami"
+      POSTGRES_PASSWORD: "{{ instance_id }}"
+    volumes:
+      - umami_db_data:/var/lib/postgresql/data
+
+volumes:
+  umami_db_data:
