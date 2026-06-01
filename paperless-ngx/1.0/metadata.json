@@ -48,16 +48,6 @@
       ]
     },
     {
-      "title": "PAPERLESS_OCR_LANGUAGE",
-      "schema": {
-        "properties": { "value": { "type": "string", "title": "OCR language" } }
-      },
-      "default_value": { "value": "eng" },
-      "destinations": [
-        { "type": "env", "container": "paperless", "key": "PAPERLESS_OCR_LANGUAGE" }
-      ]
-    },
-    {
       "title": "SMTP",
       "schema": { "properties": {} },
       "default_value": {},

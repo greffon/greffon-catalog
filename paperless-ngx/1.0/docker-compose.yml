@@ -17,6 +17,11 @@ services:
       PAPERLESS_SECRET_KEY: ""
       PAPERLESS_ADMIN_USER: "admin"
       PAPERLESS_ADMIN_PASSWORD: ""
+      # OCR language is hardcoded to English (bundled in the image). It is NOT
+      # exposed as a user config: a non-bundled language (e.g. tur, nld) also
+      # requires PAPERLESS_OCR_LANGUAGES to install the matching Tesseract
+      # package, or Paperless fails its startup check. Supporting arbitrary
+      # languages safely needs both vars paired — deferred to a future version.
       PAPERLESS_OCR_LANGUAGE: "eng"
       # SMTP — rendered from the operator's SMTP integration at deploy time;
       # greffer strips these keys when no integration is selected.
