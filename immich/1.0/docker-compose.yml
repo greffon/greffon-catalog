@@ -45,6 +45,10 @@ services:
       POSTGRES_USER: "immich"
       POSTGRES_PASSWORD: "{{ instance_id }}"
       POSTGRES_INITDB_ARGS: "--data-checksums"
+    # VectorChord queries use shared memory; Docker's small default /dev/shm
+    # gets exhausted on larger libraries/search ("could not resize shared
+    # memory segment ... No space left on device"). Upstream sets 128mb.
+    shm_size: 128mb
     volumes:
       - immich_db_data:/var/lib/postgresql/data
 
