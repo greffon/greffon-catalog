@@ -38,7 +38,12 @@ jobs:
           # (strict validator AND the integration runner) opens files under the
           # dir and fails on a legitimate deletion. Filtering here is the single
           # source of truth so both jobs receive only live entries.
-          CHANGED=$(echo "$CHANGED" | while IFS= read -r d; do [ -n "$d" ] && [ -d "$d" ] && echo "$d"; done)
+          # `|| true`: under the runner's default `set -eo pipefail`, the loop's
+          # last command is the `[ -n ] && [ -d ] && echo` chain, which returns 1
+          # when the final candidate is empty (no greffon files changed — e.g. a
+          # pure-CI PR) or filtered out (a deleted dir). Without this, the command
+          # substitution propagates that 1 and the whole step fails.
+          CHANGED=$(echo "$CHANGED" | while IFS= read -r d; do [ -n "$d" ] && [ -d "$d" ] && echo "$d"; done || true)
           echo "changed_dirs<<EOF" >> "$GITHUB_OUTPUT"
           echo "$CHANGED" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
