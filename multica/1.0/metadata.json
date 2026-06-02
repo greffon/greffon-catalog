@@ -1,6 +1,6 @@
 {
   "name": "Multica",
-  "logo": "https://avatars.githubusercontent.com/u/254743058",
+  "logo": "https://multica.ai/favicon.svg",
   "description": "Open-source platform to manage AI coding agents (Claude Code, Codex, Gemini CLI, …) as team members — assign tasks, track progress, reuse skills. This greffon hosts the Multica SERVER (web + API + Postgres); the agent daemon runs on your own machine and points at this instance.",
   "categories": ["development"],
   "images": [],
