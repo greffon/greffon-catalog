@@ -18,6 +18,12 @@ services:
       MB_DB_USER: "metabase"
       # Per-instance DB password (instance_id unique per deploy; app + db share it).
       MB_DB_PASS: "{{ instance_id }}"
+      # Encrypts warehouse connection credentials (and other secrets) stored in
+      # the app DB at rest, so a leaked Postgres volume/backup doesn't expose
+      # every connected warehouse's credentials. Platform-generated stable
+      # per-instance secret — must stay constant after first boot or existing
+      # encrypted values become unreadable (greffon-secret persists per instance).
+      MB_ENCRYPTION_SECRET_KEY: ""
       # Public URL — used in invite/reset emails and absolute links.
       MB_SITE_URL: "{{ instance_url }}"
       # SMTP — rendered from the operator's SMTP integration at deploy time.
