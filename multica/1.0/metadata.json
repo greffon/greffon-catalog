@@ -23,7 +23,7 @@
       },
       "default_value": { "value": "" },
       "destinations": [
-        { "type": "env", "container": "multica_backend", "key": "JWT_SECRET" }
+        { "type": "env", "container": "backend", "key": "JWT_SECRET" }
       ]
     }
   ]

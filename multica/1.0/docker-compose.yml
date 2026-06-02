@@ -9,30 +9,22 @@ services:
     image: ghcr.io/multica-ai/multica-web:v0.3.13
     restart: on-failure
     depends_on:
-      - multica_backend
+      - backend
     ports:
       - "3000:3000"
     environment:
       HOSTNAME: "0.0.0.0"
 
-  multica_backend:
+  # Service is named literally `backend` ON PURPOSE: the web frontend proxies
+  # /api/* to a HARDCODED host `backend:8080` (no env override). The greffer
+  # renders service names verbatim but strips custom networks/aliases, so a
+  # network alias wouldn't survive — naming the service `backend` is the only
+  # thing that makes the hostname resolve through the platform.
+  backend:
     image: ghcr.io/multica-ai/multica-backend:v0.3.13
     restart: on-failure
-    # The web frontend proxies /api/* to a HARDCODED host `backend:8080`
-    # (no env override). Our service is namespaced `multica_backend`, so we
-    # add a `backend` network alias or the frontend gets ENOTFOUND and every
-    # API call 500s. The alias makes the upstream-expected hostname resolve.
-    networks:
-      default:
-        aliases:
-          - backend
-    # Wait for Postgres to be ACCEPTING CONNECTIONS, not just started — a bare
-    # depends_on lets the backend launch before pgvector is ready, so it exits
-    # and crash-loops until the DB catches up (upstream gates on the same
-    # healthcheck). condition: service_healthy eliminates the startup race.
     depends_on:
-      multica_db:
-        condition: service_healthy
+      - multica_db
     environment:
       PORT: "8080"
       # Per-instance DB password (instance_id unique per deploy; app + db share it).
@@ -53,13 +45,6 @@ services:
       POSTGRES_DB: "multica"
       POSTGRES_USER: "multica"
       POSTGRES_PASSWORD: "{{ instance_id }}"
-    # Gate the backend's startup on this — pg_isready confirms Postgres accepts
-    # connections before the backend (and its migrations) try to connect.
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U multica -d multica"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
     volumes:
       - multica_db_data:/var/lib/postgresql/data
 
