@@ -67,92 +67,66 @@ jobs:
       changed_dirs: ${{ steps.detect.outputs.changed_dirs }}
       has_changes: ${{ steps.detect.outputs.has_changes }}
 
-  # ─── Job 2: Integration Test ───────────────────────────────────────────
+  # ─── Job 2: Integration Test (greffer-only) ────────────────────────────
+  # Deploys each changed greffon through the PUBLIC greffon/greffer and runs
+  # its Playwright smoke spec against the live instance. No manager, no private
+  # repos, no PAT — the greffer is the component that does the real render +
+  # deploy (where catalog bugs live); the thin manager role (token + cert +
+  # /start payload) is reproduced from each entry's metadata.json by the runner.
   integration:
     name: Integration Test
     needs: validate
     if: needs.validate.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # The integration job needs to checkout the private greffon/greffon repo,
-    # which the default GITHUB_TOKEN can't read across repos. Until a PAT
-    # secret is wired up (see .github/SMOKE_TESTING.md), failures here are
-    # informational only and don't block PR merges. Static Validation +
-    # regression tests still gate.
+    # Kept informational until proven green in CI; flip to a hard gate (drop
+    # this line) once the greffer-only harness is confirmed reliable.
     continue-on-error: true
 
     steps:
-      # 1. Checkout parent greffon repo with all submodules
-      - name: Checkout parent greffon repo
+      - name: Checkout PR catalog
         uses: actions/checkout@v4
         with:
-          repository: greffon/greffon
-          submodules: recursive
-          path: greffon
+          fetch-depth: 0
+          path: greffon-catalog
 
-      # 2. Replace catalog submodule with PR code
-      - name: Checkout PR catalog code
+      - name: Checkout public greffer
         uses: actions/checkout@v4
         with:
-          path: greffon/greffon-catalog
+          repository: greffon/greffer
+          path: greffer
 
-      # 3. Setup Python
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 4. Install manager dependencies
-      - name: Install Poetry
-        run: pip install poetry
-
-      - name: Install manager dependencies
-        working-directory: greffon/manager/backend
-        run: poetry install --no-interaction
-
-      # 5. Install test dependencies
-      - name: Install test dependencies
-        run: pip install requests pyyaml
-
-      # 6. Run integration tests for changed greffons
-      - name: Run integration tests
-        working-directory: greffon
-        env:
-          GREFFON_ROOT: ${{ github.workspace }}/greffon
-          CHANGED_DIRS: ${{ needs.validate.outputs.changed_dirs }}
+      # Install the greffer's runtime deps into the CI python (the runner
+      # launches `python -m uvicorn` via sys.executable, so they must live
+      # here, not in a separate poetry venv). Pins mirror greffer/pyproject.toml.
+      - name: Install greffer + runner deps
         run: |
-          python greffon-catalog/.github/scripts/test_greffon.py \
-            --changed-dirs "$CHANGED_DIRS"
+          pip install \
+            "Jinja2>=3.0.3,<4" "requests~=2.26" "urllib3<2" "python-datauri>=1.1.0" \
+            "docker~=5.0" "pyyaml>=6.0.1" "fastapi~=0.110" "uvicorn[standard]~=0.29" \
+            "pydantic>=2.6,<3" "pydantic-settings>=2.2,<3"
 
-      # 7. Playwright smoke tests for changed greffons.
-      # Each greffon's smoke_test.spec.ts is a real-user happy-path check
-      # (login + first action). The test_greffon.py step above must export
-      # ${GREFFON}_URL env vars for each deployed instance for these to run.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Install Playwright
-        working-directory: greffon/greffon-catalog
+        working-directory: greffon-catalog
         run: |
           npm install --silent
           npx playwright install --with-deps chromium
 
-      - name: Run Playwright smoke specs for changed greffons
-        # Each spec uses test.skip(!URL) so it no-ops if test_greffon.py
-        # didn't export <GREFFON>_URL into $GITHUB_ENV. The spec must
-        # actively assert against a deployed instance to provide value;
-        # silently skipping is preferable to silently passing on bad config.
-        working-directory: greffon/greffon-catalog
+      - name: Deploy + smoke each changed greffon (greffer-only)
+        working-directory: greffon-catalog
         env:
+          GREFFER_DIR: ${{ github.workspace }}/greffer
           CHANGED_DIRS: ${{ needs.validate.outputs.changed_dirs }}
         run: |
-          # Filter changed dirs to those that have a smoke spec, run only those.
-          for dir in $CHANGED_DIRS; do
-            spec="$dir/smoke_test.spec.ts"
-            if [ -f "$spec" ]; then
-              npx playwright test "$spec" --workers=1
-            fi
-          done
+          python .github/scripts/ci_greffer_smoke.py --changed-dirs "$CHANGED_DIRS"
 
       - name: Upload Playwright artifacts on failure
         if: failure()
@@ -160,4 +134,5 @@ jobs:
         with:
           name: playwright-results
           path: |
-            greffon/greffon-catalog/.playwright/
+            greffon-catalog/test-results/
+            greffon-catalog/playwright-report/

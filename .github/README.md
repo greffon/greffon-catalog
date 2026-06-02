@@ -157,4 +157,4 @@ mygreffon/1.0/
 | Script | Purpose |
 |--------|---------|
 | `scripts/validate_catalog.py` | Static validation of metadata + compose + smoke_test |
-| `scripts/test_greffon.py` | Integration test: deploy, start, and smoke test the greffon |
+| `scripts/ci_greffer_smoke.py` | Integration test: deploy each greffon through the public greffer (no manager/PAT) and run its Playwright smoke spec |
