@@ -202,6 +202,7 @@ def run_smoke(entry_dir: str, url: str) -> bool:
 def start_greffer(tmp_data: str) -> subprocess.Popen:
     env = {
         **os.environ,
+        "GREFFER_ID": os.environ.get("CI_GREFFER_ID", "ci-greffer"),  # required setting (register payload only; workers off)
         "GREFFER_TOKEN": GREFFER_TOKEN,
         "GREFFON_PATH": tmp_data,
         "GREFFER_PUBLIC_HOST": PUBLIC_HOST,

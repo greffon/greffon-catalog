@@ -115,6 +115,18 @@ jobs:
             "docker~=5.0" "pyyaml>=6.0.1" "fastapi~=0.110" "uvicorn[standard]~=0.29" \
             "pydantic>=2.6,<3" "pydantic-settings>=2.2,<3"
 
+      # The greffer shells out to `docker-compose` (v1, hyphenated). ubuntu-24.04
+      # ships only the `docker compose` v2 plugin, so provide a `docker-compose`
+      # on PATH (the v2 binary works as a standalone `docker-compose`).
+      - name: Ensure docker-compose binary
+        run: |
+          if ! command -v docker-compose >/dev/null 2>&1; then
+            sudo curl -fsSL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-$(uname -s)-$(uname -m)" \
+              -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+          fi
+          docker-compose version
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -139,5 +151,4 @@ jobs:
         with:
           name: playwright-results
           path: |
-            greffon-catalog/test-results/
-            greffon-catalog/playwright-report/
+            greffon-catalog/.playwright/
