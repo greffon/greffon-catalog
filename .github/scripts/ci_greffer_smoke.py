@@ -135,7 +135,10 @@ def wait_port(port: int, name: str, timeout: int = 30) -> None:
 
 def deploy(entry_dir: str, metadata: dict, cert: dict) -> tuple[str, str]:
     """POST /start/, wait for running, return (instance_id, url)."""
-    instance_id = "ci-" + uuid.uuid4().hex[:16]
+    # Must be a real UUID: /start/ accepts any [A-Za-z0-9_-] id, but the status
+    # route is typed `greffon_id: UUID` and 422s on anything else, so the poll
+    # below would never see "running". A UUID satisfies both.
+    instance_id = str(uuid.uuid4())
     greffon_path, version = entry_dir.split("/", 1)
     repo_url = f"http://127.0.0.1:{CATALOG_PORT}/{greffon_path}/{version}/docker-compose.yml"
     payload = {
