@@ -26,8 +26,13 @@ services:
       default:
         aliases:
           - backend
+    # Wait for Postgres to be ACCEPTING CONNECTIONS, not just started — a bare
+    # depends_on lets the backend launch before pgvector is ready, so it exits
+    # and crash-loops until the DB catches up (upstream gates on the same
+    # healthcheck). condition: service_healthy eliminates the startup race.
     depends_on:
-      - multica_db
+      multica_db:
+        condition: service_healthy
     environment:
       PORT: "8080"
       # Per-instance DB password (instance_id unique per deploy; app + db share it).
@@ -48,6 +53,13 @@ services:
       POSTGRES_DB: "multica"
       POSTGRES_USER: "multica"
       POSTGRES_PASSWORD: "{{ instance_id }}"
+    # Gate the backend's startup on this — pg_isready confirms Postgres accepts
+    # connections before the backend (and its migrations) try to connect.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multica -d multica"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     volumes:
       - multica_db_data:/var/lib/postgresql/data
 
