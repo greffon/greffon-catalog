@@ -4,5 +4,54 @@
   "description": "The world's most popular CMS — build blogs, sites, and stores. First visit runs the install wizard where you create the admin account. Email needs an SMTP plugin (WordPress core has no built-in mail).",
   "categories": ["productivity"],
   "images": [],
-  "configurations": []
+  "configurations": [
+    {
+      "title": "WORDPRESS_AUTH_KEY",
+      "schema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string", "title": "Auth key", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+      "default_value": { "value": "" },
+      "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_AUTH_KEY" } ]
+    },
+    {
+      "title": "WORDPRESS_SECURE_AUTH_KEY",
+      "schema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string", "title": "Secure auth key", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+      "default_value": { "value": "" },
+      "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_SECURE_AUTH_KEY" } ]
+    },
+    {
+      "title": "WORDPRESS_LOGGED_IN_KEY",
+      "schema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string", "title": "Logged-in key", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+      "default_value": { "value": "" },
+      "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_LOGGED_IN_KEY" } ]
+    },
+    {
+      "title": "WORDPRESS_NONCE_KEY",
+      "schema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string", "title": "Nonce key", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+      "default_value": { "value": "" },
+      "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_NONCE_KEY" } ]
+    },
+    {
+      "title": "WORDPRESS_AUTH_SALT",
+      "schema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string", "title": "Auth salt", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+      "default_value": { "value": "" },
+      "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_AUTH_SALT" } ]
+    },
+    {
+      "title": "WORDPRESS_SECURE_AUTH_SALT",
+      "schema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string", "title": "Secure auth salt", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+      "default_value": { "value": "" },
+      "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_SECURE_AUTH_SALT" } ]
+    },
+    {
+      "title": "WORDPRESS_LOGGED_IN_SALT",
+      "schema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string", "title": "Logged-in salt", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+      "default_value": { "value": "" },
+      "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_LOGGED_IN_SALT" } ]
+    },
+    {
+      "title": "WORDPRESS_NONCE_SALT",
+      "schema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string", "title": "Nonce salt", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+      "default_value": { "value": "" },
+      "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_NONCE_SALT" } ]
+    }
+  ]
 }
