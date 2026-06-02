@@ -1,7 +1,7 @@
 {
   "name": "Multica",
   "logo": "https://multica.ai/favicon.svg",
-  "description": "Open-source platform to manage AI coding agents (Claude Code, Codex, Gemini CLI, …) as team members — assign tasks, track progress, reuse skills. This greffon hosts the Multica SERVER (web + API + Postgres); the agent daemon runs on your own machine and points at this instance. Login is by emailed verification code, so you MUST link an SMTP integration to this instance — without one, the code is only written to the server logs and never delivered. Multica supports STARTTLS or implicit TLS (SSL); plaintext SMTP is not supported.",
+  "description": "Open-source platform to manage AI coding agents (Claude Code, Codex, Gemini CLI, …) as team members — assign tasks, track progress, reuse skills. This greffon hosts the Multica SERVER (web + API + Postgres); the agent daemon runs on your own machine and points at this instance. Login is by emailed verification code, so you MUST link an SMTP integration to this instance — without one, the code is only written to the server logs and never delivered. Multica supports STARTTLS or implicit TLS (SSL); plaintext SMTP is not supported. Note: the Usage and Runtime dashboards stay at zero unless a periodic rollup_task_usage_hourly() job is scheduled (the bundled Postgres has no pg_cron); core features (issues, agents, chat, real-time updates) are unaffected.",
   "categories": ["development"],
   "images": [],
   "configurations": [
