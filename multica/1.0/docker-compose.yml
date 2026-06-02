@@ -44,8 +44,11 @@ services:
       # if the user hasn't linked one, the greffer strips every {{ smtp.* }}
       # env key (absent SMTP_HOST -> the log-only fallback). Link an SMTP
       # integration to the instance to actually receive login codes.
-      # Note: Multica has no SMTP "from" override — it sends as
-      # noreply@multica.ai regardless of the integration's from_address.
+      # RESEND_FROM_EMAIL doubles as the SMTP "From" header (verified against
+      # v0.3.13 — the SMTP path reuses it), so wire it to the integration's
+      # from_address; otherwise Multica sends as noreply@multica.ai, which
+      # relays that enforce sender alignment will reject.
+      RESEND_FROM_EMAIL: "{{ smtp.from_address }}"
       SMTP_HOST: "{{ smtp.host }}"
       SMTP_PORT: "{{ smtp.port }}"
       SMTP_USERNAME: "{{ smtp.username }}"

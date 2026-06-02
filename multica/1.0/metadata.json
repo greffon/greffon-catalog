@@ -31,6 +31,7 @@
       "schema": { "properties": {} },
       "default_value": {},
       "destinations": [
+        { "type": "smtp", "container": "backend", "key": "RESEND_FROM_EMAIL" },
         { "type": "smtp", "container": "backend", "key": "SMTP_HOST" },
         { "type": "smtp", "container": "backend", "key": "SMTP_PORT" },
         { "type": "smtp", "container": "backend", "key": "SMTP_USERNAME" },
