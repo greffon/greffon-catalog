@@ -51,7 +51,10 @@ test.describe('WordPress', () => {
     await page.goto(`${base}/wp-login.php`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.fill('#user_login', ADMIN_USER);
     await page.fill('#user_pass', ADMIN_PASS);
-    await page.click('#wp-submit');
+    // Don't await the post-login navigation: it heads to the canonical
+    // WP_SITEURL, which in the live-smoke harness is a portless placeholder
+    // (dead from the test's perspective). noWaitAfter lets the cookie poll run.
+    await page.click('#wp-submit', { noWaitAfter: true });
 
     // Post-auth signal: the WordPress logged-in cookie. We assert the cookie
     // rather than the dashboard chrome because WP canonicalizes redirects to
