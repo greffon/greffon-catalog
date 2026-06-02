@@ -37,6 +37,27 @@ services:
       MULTICA_APP_URL: "{{ instance_url }}"
       FRONTEND_ORIGIN: "{{ instance_url }}"
       CORS_ALLOWED_ORIGINS: "{{ instance_url }}"
+      # Mail backend — REQUIRED for a usable deploy: Multica login is
+      # email-code-only (no password). With no mail backend the backend
+      # only logs the code to stdout ("[DEV] Verification code ...") and
+      # nothing is delivered. These reference the platform SMTP integration;
+      # if the user hasn't linked one, the greffer strips every {{ smtp.* }}
+      # env key (absent SMTP_HOST -> the log-only fallback). Link an SMTP
+      # integration to the instance to actually receive login codes.
+      # Note: Multica has no SMTP "from" override — it sends as
+      # noreply@multica.ai regardless of the integration's from_address.
+      SMTP_HOST: "{{ smtp.host }}"
+      SMTP_PORT: "{{ smtp.port }}"
+      SMTP_USERNAME: "{{ smtp.username }}"
+      SMTP_PASSWORD: "{{ smtp.password }}"
+      # Map the platform tls_mode (tls|starttls|none) to Multica's SMTP_TLS.
+      # Multica v0.3.13 accepts ONLY "starttls" (default) or "implicit" (SSL on
+      # connect, port 465) — verified against the binary; any other value logs
+      # "not recognized" and falls back to starttls. There is NO plaintext mode,
+      # so tls_mode=none maps to starttls (STARTTLS is the floor). Double quotes
+      # inside the single-quoted YAML scalar survive the greffer's yaml.dump
+      # round-trip.
+      SMTP_TLS: '{{ {"tls": "implicit", "starttls": "starttls", "none": "starttls"}[smtp.tls_mode] }}'
 
   multica_db:
     image: pgvector/pgvector:pg17

@@ -1,7 +1,7 @@
 {
   "name": "Multica",
   "logo": "https://multica.ai/favicon.svg",
-  "description": "Open-source platform to manage AI coding agents (Claude Code, Codex, Gemini CLI, …) as team members — assign tasks, track progress, reuse skills. This greffon hosts the Multica SERVER (web + API + Postgres); the agent daemon runs on your own machine and points at this instance.",
+  "description": "Open-source platform to manage AI coding agents (Claude Code, Codex, Gemini CLI, …) as team members — assign tasks, track progress, reuse skills. This greffon hosts the Multica SERVER (web + API + Postgres); the agent daemon runs on your own machine and points at this instance. Login is by emailed verification code, so you MUST link an SMTP integration to this instance — without one, the code is only written to the server logs and never delivered. Multica supports STARTTLS or implicit TLS (SSL); plaintext SMTP is not supported.",
   "categories": ["development"],
   "images": [],
   "configurations": [
@@ -24,6 +24,18 @@
       "default_value": { "value": "" },
       "destinations": [
         { "type": "env", "container": "backend", "key": "JWT_SECRET" }
+      ]
+    },
+    {
+      "title": "SMTP",
+      "schema": { "properties": {} },
+      "default_value": {},
+      "destinations": [
+        { "type": "smtp", "container": "backend", "key": "SMTP_HOST" },
+        { "type": "smtp", "container": "backend", "key": "SMTP_PORT" },
+        { "type": "smtp", "container": "backend", "key": "SMTP_USERNAME" },
+        { "type": "smtp", "container": "backend", "key": "SMTP_PASSWORD" },
+        { "type": "smtp", "container": "backend", "key": "SMTP_TLS" }
       ]
     }
   ]
