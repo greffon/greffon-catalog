@@ -58,6 +58,12 @@ services:
       # inside the single-quoted YAML scalar survive the greffer's yaml.dump
       # round-trip.
       SMTP_TLS: '{{ {"tls": "implicit", "starttls": "starttls", "none": "starttls"}[smtp.tls_mode] }}'
+    volumes:
+      # Persist locally-stored attachments. Multica writes uploads to
+      # /app/data/uploads by default (matches upstream docker-compose.selfhost.yml);
+      # without this they live in the container layer and are lost on every
+      # restart/upgrade. The greffer namespaces named volumes per instance.
+      - multica_uploads:/app/data/uploads
 
   multica_db:
     image: pgvector/pgvector:pg17
@@ -71,3 +77,4 @@ services:
 
 volumes:
   multica_db_data:
+  multica_uploads:
