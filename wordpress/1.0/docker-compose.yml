@@ -1,0 +1,62 @@
+version: "3"
+services:
+  wordpress:
+    image: wordpress:7.0-php8.3-apache
+    restart: on-failure
+    depends_on:
+      - wordpress_db
+    ports:
+      - "80:80"
+    environment:
+      WORDPRESS_DB_HOST: "wordpress_db"
+      WORDPRESS_DB_NAME: "wordpress"
+      WORDPRESS_DB_USER: "wordpress"
+      # Per-instance DB password (instance_id is unique per deploy; app + db
+      # share the rendered value, so no cross-instance reuse).
+      WORDPRESS_DB_PASSWORD: "{{ instance_id }}"
+      # Authentication keys + salts. Left unset, the official image's
+      # wp-config-docker.php falls back to the public "put your unique phrase
+      # here" placeholder for every cookie/nonce secret — identical across all
+      # instances. The platform injects a distinct per-instance greffon-secret
+      # into each (see metadata.json); the "" defaults are placeholders the
+      # greffer overwrites.
+      WORDPRESS_AUTH_KEY: ""
+      WORDPRESS_SECURE_AUTH_KEY: ""
+      WORDPRESS_LOGGED_IN_KEY: ""
+      WORDPRESS_NONCE_KEY: ""
+      WORDPRESS_AUTH_SALT: ""
+      WORDPRESS_SECURE_AUTH_SALT: ""
+      WORDPRESS_LOGGED_IN_SALT: ""
+      WORDPRESS_NONCE_SALT: ""
+      # WP_HOME/WP_SITEURL so generated links resolve behind the greffer proxy.
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_HOME', '{{ instance_url }}');
+        define('WP_SITEURL', '{{ instance_url }}');
+        // The greffer's per-instance nginx terminates TLS and forwards
+        // X-Forwarded-Proto: https, but WordPress/PHP behind Apache won't treat
+        // the request as HTTPS unless told to. Without this, is_ssl() is false,
+        // mismatches the https WP_SITEURL, and the admin/login flow 301-loops.
+        if ( isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https' ) {
+            $_SERVER['HTTPS'] = 'on';
+        }
+      # NOTE: no SMTP wiring — WordPress core has no built-in SMTP; email
+      # requires a plugin (e.g. WP Mail SMTP), configured in the admin UI.
+      # Admin account is created via the install wizard on first visit.
+    volumes:
+      - wordpress_data:/var/www/html
+
+  wordpress_db:
+    image: mariadb:11
+    restart: on-failure
+    environment:
+      MARIADB_DATABASE: "wordpress"
+      MARIADB_USER: "wordpress"
+      MARIADB_PASSWORD: "{{ instance_id }}"
+      # Root password also keyed off instance_id (unique per deploy).
+      MARIADB_ROOT_PASSWORD: "{{ instance_id }}"
+    volumes:
+      - wordpress_db_data:/var/lib/mysql
+
+volumes:
+  wordpress_data:
+  wordpress_db_data:
