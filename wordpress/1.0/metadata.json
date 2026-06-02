@@ -1,7 +1,7 @@
 {
   "name": "WordPress",
   "logo": "https://avatars.githubusercontent.com/u/276006",
-  "description": "The world's most popular CMS — build blogs, sites, and stores. First visit runs the install wizard where you create the admin account. Email needs an SMTP plugin (WordPress core has no built-in mail).",
+  "description": "The world's most popular CMS — build blogs, sites, and stores. First visit runs the install wizard where you create the admin account — complete it promptly after deploying and keep your instance URL private until you do, since the first visitor to reach the wizard claims the admin account. Email needs an SMTP plugin (WordPress core has no built-in mail).",
   "categories": ["productivity"],
   "images": [],
   "configurations": [
