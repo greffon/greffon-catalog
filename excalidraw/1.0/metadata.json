@@ -1,7 +1,7 @@
 {
   "name": "Excalidraw",
   "logo": "https://raw.githubusercontent.com/excalidraw/excalidraw/master/public/apple-touch-icon.png",
-  "description": "Virtual whiteboard for sketching hand-drawn-like diagrams.",
+  "description": "Virtual whiteboard for sketching hand-drawn-like diagrams",
   "categories": ["productivity"],
   "images": [],
   "configurations": []
