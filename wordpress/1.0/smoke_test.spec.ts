@@ -53,8 +53,17 @@ test.describe('WordPress', () => {
     await page.fill('#user_pass', ADMIN_PASS);
     await page.click('#wp-submit');
 
-    // Post-auth signal: the authenticated dashboard chrome.
-    await expect(page.locator('#wpadminbar, body.wp-admin').first()).toBeVisible({ timeout: 30_000 });
-    await expect(page).toHaveURL(/\/wp-admin\/?/);
+    // Post-auth signal: the WordPress logged-in cookie. We assert the cookie
+    // rather than the dashboard chrome because WP canonicalizes redirects to
+    // WP_SITEURL; in the live-smoke harness that's a placeholder host without
+    // the allocated port, so following the post-login redirect would leave the
+    // reachable endpoint. The wordpress_logged_in_* cookie proves auth worked.
+    await expect
+      .poll(
+        async () =>
+          (await page.context().cookies()).some((c) => c.name.startsWith('wordpress_logged_in')),
+        { timeout: 30_000 },
+      )
+      .toBe(true);
   });
 });

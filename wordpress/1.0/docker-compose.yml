@@ -32,6 +32,13 @@ services:
       WORDPRESS_CONFIG_EXTRA: |
         define('WP_HOME', '{{ instance_url }}');
         define('WP_SITEURL', '{{ instance_url }}');
+        // The greffer's per-instance nginx terminates TLS and forwards
+        // X-Forwarded-Proto: https, but WordPress/PHP behind Apache won't treat
+        // the request as HTTPS unless told to. Without this, is_ssl() is false,
+        // mismatches the https WP_SITEURL, and the admin/login flow 301-loops.
+        if ( isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https' ) {
+            $_SERVER['HTTPS'] = 'on';
+        }
       # NOTE: no SMTP wiring — WordPress core has no built-in SMTP; email
       # requires a plugin (e.g. WP Mail SMTP), configured in the admin UI.
       # Admin account is created via the install wizard on first visit.
