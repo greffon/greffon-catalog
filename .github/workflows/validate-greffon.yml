@@ -105,15 +105,18 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Install the greffer's runtime deps into the CI python (the runner
-      # launches `python -m uvicorn` via sys.executable, so they must live
-      # here, not in a separate poetry venv). Pins mirror greffer/pyproject.toml.
-      - name: Install greffer + runner deps
+      # Install the greffer's runtime deps via its OWN poetry lock. Manual pins
+      # are fragile here: docker SDK 5.x speaks the `http+docker://` scheme that
+      # urllib3 v2 rejects, and a loose `requests`/`urllib3` resolution pulls
+      # urllib3 v2 (-> "Not supported URL scheme http+docker" at greffer boot).
+      # poetry resolves the exact, known-good set. The runner then runs under
+      # this env (`poetry run`), so its uvicorn subprocess (sys.executable)
+      # inherits the same interpreter + deps.
+      - name: Install greffer deps (poetry)
+        working-directory: greffer
         run: |
-          pip install \
-            "Jinja2>=3.0.3,<4" "requests~=2.26" "urllib3<2" "python-datauri>=1.1.0" \
-            "docker~=5.0" "pyyaml>=6.0.1" "fastapi~=0.110" "uvicorn[standard]~=0.29" \
-            "pydantic>=2.6,<3" "pydantic-settings>=2.2,<3"
+          pip install poetry
+          poetry install --no-interaction
 
       # The greffer shells out to `docker-compose` (v1, hyphenated). ubuntu-24.04
       # ships only the `docker compose` v2 plugin, so provide a `docker-compose`
@@ -138,12 +141,15 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Deploy + smoke each changed greffon (greffer-only)
-        working-directory: greffon-catalog
+        working-directory: greffer
         env:
           GREFFER_DIR: ${{ github.workspace }}/greffer
           CHANGED_DIRS: ${{ needs.validate.outputs.changed_dirs }}
         run: |
-          python .github/scripts/ci_greffer_smoke.py --changed-dirs "$CHANGED_DIRS"
+          # Run under the greffer's poetry env so uvicorn + docker SDK (with the
+          # correct urllib3<2) are on the interpreter the runner launches.
+          poetry run python "$GITHUB_WORKSPACE/greffon-catalog/.github/scripts/ci_greffer_smoke.py" \
+            --changed-dirs "$CHANGED_DIRS"
 
       - name: Upload Playwright artifacts on failure
         if: failure()
