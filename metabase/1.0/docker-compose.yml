@@ -1,0 +1,29 @@
+version: "3"
+services:
+  metabase:
+    image: metabase/metabase:v0.61.2
+    restart: on-failure
+    ports:
+      - "3000:3000"
+    environment:
+      # Embedded H2 out of the box — no separate DB service. Persist the H2
+      # file in the named volume so data survives a container recreate.
+      MB_DB_TYPE: "h2"
+      MB_DB_FILE: "/metabase-data/metabase.db"
+      # Public URL — used in invite/reset emails and absolute links.
+      MB_SITE_URL: "{{ instance_url }}"
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no integration is
+      # selected, so an unconfigured instance simply has email disabled.
+      MB_EMAIL_SMTP_HOST: "{{ smtp.host }}"
+      MB_EMAIL_SMTP_PORT: "{{ smtp.port }}"
+      MB_EMAIL_SMTP_USERNAME: "{{ smtp.username }}"
+      MB_EMAIL_SMTP_PASSWORD: "{{ smtp.password }}"
+      MB_EMAIL_FROM_ADDRESS: "{{ smtp.from_address }}"
+      # Metabase security: ssl (implicit TLS/465), tls (STARTTLS), none (plain).
+      MB_EMAIL_SMTP_SECURITY: '{{ {"tls": "ssl", "starttls": "tls", "none": "none"}[smtp.tls_mode] }}'
+    volumes:
+      - metabase_data:/metabase-data
+
+volumes:
+  metabase_data:
