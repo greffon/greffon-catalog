@@ -1,0 +1,55 @@
+version: "3"
+services:
+  metabase:
+    image: metabase/metabase:v0.61.2
+    restart: on-failure
+    depends_on:
+      - metabase_db
+    ports:
+      - "3000:3000"
+    environment:
+      # Application database: a dedicated Postgres service. Metabase documents
+      # the embedded H2 as demo-only and prone to corruption / total data loss,
+      # so any real deploy must use an external DB.
+      MB_DB_TYPE: "postgres"
+      MB_DB_HOST: "metabase_db"
+      MB_DB_PORT: "5432"
+      MB_DB_DBNAME: "metabase"
+      MB_DB_USER: "metabase"
+      # Per-instance DB password (instance_id unique per deploy; app + db share it).
+      MB_DB_PASS: "{{ instance_id }}"
+      # Encrypts warehouse connection credentials (and other secrets) stored in
+      # the app DB at rest, so a leaked Postgres volume/backup doesn't expose
+      # every connected warehouse's credentials. Platform-generated stable
+      # per-instance secret — must stay constant after first boot or existing
+      # encrypted values become unreadable (greffon-secret persists per instance).
+      MB_ENCRYPTION_SECRET_KEY: ""
+      # Public URL — used in invite/reset emails and absolute links.
+      MB_SITE_URL: "{{ instance_url }}"
+      # SMTP — rendered from the operator's SMTP integration at deploy time.
+      # The greffer strips every one of these keys when no integration is
+      # selected, so an unconfigured instance simply has email disabled.
+      MB_EMAIL_SMTP_HOST: "{{ smtp.host }}"
+      MB_EMAIL_SMTP_PORT: "{{ smtp.port }}"
+      MB_EMAIL_SMTP_USERNAME: "{{ smtp.username }}"
+      MB_EMAIL_SMTP_PASSWORD: "{{ smtp.password }}"
+      MB_EMAIL_FROM_ADDRESS: "{{ smtp.from_address }}"
+      # Map platform tls_mode -> Metabase MB_EMAIL_SMTP_SECURITY. Metabase
+      # accepts none|ssl|tls|starttls and treats them distinctly: ssl/tls are
+      # implicit TLS, and ONLY "starttls" enables (and requires) STARTTLS. So
+      # platform tls(implicit)->ssl, starttls->starttls, none->none. Double
+      # quotes inside the single-quoted scalar survive the yaml.dump round-trip.
+      MB_EMAIL_SMTP_SECURITY: '{{ {"tls": "ssl", "starttls": "starttls", "none": "none"}[smtp.tls_mode] }}'
+
+  metabase_db:
+    image: postgres:16
+    restart: on-failure
+    environment:
+      POSTGRES_DB: "metabase"
+      POSTGRES_USER: "metabase"
+      POSTGRES_PASSWORD: "{{ instance_id }}"
+    volumes:
+      - metabase_db_data:/var/lib/postgresql/data
+
+volumes:
+  metabase_db_data:
