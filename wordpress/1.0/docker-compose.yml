@@ -1,7 +1,7 @@
 version: "3"
 services:
   wordpress:
-    image: wordpress:6.9-php8.3-apache
+    image: wordpress:7.0-php8.3-apache
     restart: on-failure
     depends_on:
       - wordpress_db
