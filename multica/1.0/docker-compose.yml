@@ -18,6 +18,14 @@ services:
   multica_backend:
     image: ghcr.io/multica-ai/multica-backend:v0.3.13
     restart: on-failure
+    # The web frontend proxies /api/* to a HARDCODED host `backend:8080`
+    # (no env override). Our service is namespaced `multica_backend`, so we
+    # add a `backend` network alias or the frontend gets ENOTFOUND and every
+    # API call 500s. The alias makes the upstream-expected hostname resolve.
+    networks:
+      default:
+        aliases:
+          - backend
     depends_on:
       - multica_db
     environment:
