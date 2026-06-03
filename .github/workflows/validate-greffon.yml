@@ -83,10 +83,12 @@ jobs:
     needs: validate
     if: needs.validate.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # Kept informational until proven green in CI; flip to a hard gate (drop
-    # this line) once the greffer-only harness is confirmed reliable.
-    continue-on-error: true
+    # Generous timeout: heavy entries (large images, multi-service stacks like
+    # Immich/Multica) must pull + boot within this. Bump if a legitimate greffon
+    # needs more rather than weakening the gate.
+    timeout-minutes: 45
+    # Hard gate: proven end-to-end in CI on a static app (Excalidraw) and a
+    # stateful/volume app (Memos). A failing smoke now blocks merge.
 
     steps:
       - name: Checkout PR catalog
