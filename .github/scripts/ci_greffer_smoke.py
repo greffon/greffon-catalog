@@ -55,6 +55,9 @@ CATALOG_PORT = int(os.environ.get("CI_CATALOG_PORT", "9999"))
 PUBLIC_HOST = os.environ.get("CI_PUBLIC_HOST", "localhost")
 GREFFER_BASE = f"http://127.0.0.1:{GREFFER_PORT}"
 TOKEN_HEADER = "X-GREFFON-TOKEN"
+# GREFFON_PATH for the greffer: each instance's rendered compose lands at
+# DATA_DIR/<instance_id>/docker-compose.yml. Teardown targets that exact file.
+DATA_DIR = os.environ.get("CI_GREFFON_DATA", os.path.join("/tmp", "ci-greffon-data"))
 
 ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -180,9 +183,16 @@ def teardown(instance_id: str) -> None:
                       headers={TOKEN_HEADER: GREFFER_TOKEN}, timeout=120)
     except requests.RequestException:
         pass
-    # Best-effort: drop the project's containers + namespaced volumes.
-    subprocess.run(["docker", "compose", "-p", instance_id, "down", "-v", "--remove-orphans"],
-                   capture_output=True)
+    # Drop the project's containers + its namespaced named volumes. Must pass
+    # the generated per-instance compose with `-f`: `down -v` only removes
+    # volumes declared in the loaded compose file, and the file's parent dir
+    # basename (== instance_id) is the project name the greffer created it under.
+    # Without `-f` this would run against the greffer checkout's cwd and leak the
+    # app's namespaced volumes across entries.
+    compose_file = os.path.join(DATA_DIR, instance_id, "docker-compose.yml")
+    if os.path.isfile(compose_file):
+        subprocess.run(["docker", "compose", "-f", compose_file, "down", "-v", "--remove-orphans"],
+                       capture_output=True)
 
 
 def run_smoke(entry_dir: str, url: str) -> bool:
@@ -258,7 +268,7 @@ def main() -> int:
     log(f"entries: {entries}")
 
     import json
-    tmp_data = os.path.join("/tmp", "ci-greffon-data")
+    tmp_data = DATA_DIR
     shutil.rmtree(tmp_data, ignore_errors=True)
     os.makedirs(tmp_data, exist_ok=True)
 
