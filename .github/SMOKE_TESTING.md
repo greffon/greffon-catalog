@@ -73,22 +73,31 @@ npx playwright test
 
 ## CI infrastructure note
 
-The Integration Test job in `.github/workflows/validate-greffon.yml` checks
-out the parent `greffon/greffon` repo to deploy and probe each greffon
-end-to-end. That repo is private, so the default `GITHUB_TOKEN` can't
-read it cross-repo and the job currently fails at the checkout step.
+The Integration Test job in `.github/workflows/validate-greffon.yml` deploys
+each changed greffon through the **public `greffon/greffer`** and runs its
+smoke spec against the live instance — see `.github/scripts/ci_greffer_smoke.py`.
 
-**To enable end-to-end CI**, add a PAT secret with `repo` scope on the
-catalog repo:
+It needs **no private repo and no PAT**: the greffer is the component that does
+the real render + deploy (verbatim service names, stripped networks,
+per-instance nginx with X-Forwarded-Proto, SMTP injection, secret rendering —
+where catalog bugs actually live). The thin manager role at deploy time (mint a
+token, issue a cert, POST the `/start` payload) is reproduced by the runner from
+each entry's own `metadata.json`:
 
-1. Generate a fine-grained PAT with read access to `greffon/greffon`.
-2. Add it as a repo secret named `GREFFON_REPO_TOKEN`.
-3. In `.github/workflows/validate-greffon.yml`, on the `Checkout parent
-   greffon repo` step add `token: ${{ secrets.GREFFON_REPO_TOKEN }}`.
-4. Remove the `continue-on-error: true` line on the `integration:` job.
+- boots the public greffer with a known `GREFFER_TOKEN` (the greffer exposes
+  this env "primarily for tests");
+- self-signs a per-instance cert (Playwright ignores cert errors);
+- builds `configurations[]` from `metadata.json`, generating values for
+  `greffon-secret`/`greffon-secret-alnum` fields;
+- sends an empty `ports` map so the greffer's dev/test fallback builds
+  `instance_url = https://<host>:<port>` (with the real port — no portless
+  placeholder), then runs the entry's Playwright spec against it.
 
-Until then the integration job is informational; Static Validation +
-the regression test suite still gate every PR.
+The job is a **hard gate**: a failing smoke blocks merge (proven end-to-end in
+CI on a static app and a stateful/volume app). It runs only when a PR changes a
+greffon entry. If a legitimately heavy greffon needs more than the 45-minute
+timeout, raise the timeout rather than weakening the gate. Static Validation +
+the regression suite gate every PR regardless.
 
 ## What the linter catches before merge
 
