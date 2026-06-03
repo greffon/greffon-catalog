@@ -93,9 +93,11 @@ each entry's own `metadata.json`:
   `instance_url = https://<host>:<port>` (with the real port — no portless
   placeholder), then runs the entry's Playwright spec against it.
 
-The job is `continue-on-error: true` until proven reliable in CI; drop that line
-to make smoke a hard gate. Static Validation + the regression suite still gate
-every PR regardless.
+The job is a **hard gate**: a failing smoke blocks merge (proven end-to-end in
+CI on a static app and a stateful/volume app). It runs only when a PR changes a
+greffon entry. If a legitimately heavy greffon needs more than the 45-minute
+timeout, raise the timeout rather than weakening the gate. Static Validation +
+the regression suite gate every PR regardless.
 
 ## What the linter catches before merge
 
