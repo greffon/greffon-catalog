@@ -1,7 +1,7 @@
 {
   "name": "WireGuard",
   "logo": "https://www.wireguard.com/img/logo.svg",
-  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy)",
+  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. One-time setup: after your first login, open Admin Panel > Interface and set Port to 51820 so the tunnel matches the published port. VPN access itself is secured by WireGuard keys.",
   "categories": ["networking"],
   "images": [],
   "min_greffer_version": "0.2.0",
@@ -29,15 +29,15 @@
           "value": {
             "type": "string",
             "title": "Admin password",
-            "description": "Password for the wg-easy web UI where you add and manage VPN peers.",
+            "description": "Password for the wg-easy web UI (username: admin). Applied on first start only; change it later from the UI itself.",
             "writeOnly": true,
-            "minLength": 8
+            "minLength": 12
           }
         }
       },
       "default_value": { "value": "" },
       "destinations": [
-        { "type": "env", "container": "wg-easy", "key": "PASSWORD" }
+        { "type": "env", "container": "wg-easy", "key": "INIT_PASSWORD" }
       ]
     }
   ]

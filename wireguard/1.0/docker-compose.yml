@@ -1,22 +1,39 @@
 version: "3"
 
 # ============================================================================
-# DRAFT — L4 (Tier-C) reference greffon for the l4-network-exposure epic.
-# Validator-green, but NOT yet deploy-verified. Open items before this ships:
-#   1. PASSWORD vs PASSWORD_HASH: wg-easy v14 accepts plaintext PASSWORD
-#      (deprecated); v15 requires PASSWORD_HASH (bcrypt), which the platform's
-#      config model can't generate from a user password. Pinned to :14 here so
-#      PASSWORD works; revisit for v15 (e.g. a bcrypt-at-deploy step).
-#   2. Advertised vs listen UDP port: the greffer publishes the container's
-#      51820 to a random host port (port_host) and clients must dial that, so
-#      WG_PORT is set to {{ instance_l4_port }} (the published host port).
-#      VERIFY wg-easy advertises WG_PORT in client configs while still
-#      listening on the container's 51820 — needs a real deploy + WG client.
-#   3. Caps: cap_add NET_ADMIN + /dev/net/tun is the minimized posture. On
-#      kernels >= 5.6 (WireGuard in-tree) SYS_MODULE is NOT needed; VERIFY on
-#      the target greffer host.
-# Activation also depends on the catalog importer populating the metadata
-# `ports` tier/protocol + min_greffer_version (separate PR).
+# L4 (Tier-C) reference greffon for the l4-network-exposure epic.
+# Deploy-verified 2026-06 on a proxy-mode greffer. Resolution of the three
+# draft open items:
+#   1. Web-UI auth across wg-easy majors (why :15 is the only viable pin):
+#      - v13: accepts plaintext PASSWORD but has no advertise/listen port
+#        split (WG_PORT is both), so client configs can never point at the
+#        greffer-allocated public port. Broken datapath.
+#      - v14: has the split (WG_CONFIG_PORT) but HARD REJECTS plaintext
+#        PASSWORD (crash loop) and only takes a bcrypt PASSWORD_HASH, which
+#        the platform's config model can't generate. Running it password-less
+#        is NOT acceptable: the per-instance greffer nginx is TLS-only (no
+#        auth gate — the platform auth_request gate lives at the manager edge
+#        proxy), so in proxy mode the UI port is directly reachable.
+#      - v15: INIT_USERNAME/INIT_PASSWORD create the admin account from a
+#        plaintext value at FIRST BOOT only (then persisted in the app DB and
+#        the env is ignored). Auth + config-friendly password.
+#   2. Advertised vs listen UDP port: v15 dropped v14's WG_CONFIG_PORT split,
+#      so INIT_PORT sets BOTH the client-config endpoint AND the wg device
+#      listen port (deploy-verified: wg0 listens on INIT_PORT). We set
+#      INIT_PORT to the greffer-allocated public port so client configs are
+#      right, which leaves the device listening on that port in-container
+#      while the compose publishes 51820. ONE-TIME STEP after first login:
+#      Admin Panel -> Interface -> set Port to 51820. Verified end-to-end:
+#      after the step, wg0 listens on 51820 (the published container port)
+#      and generated peer configs dial {{ instance_l4_host }}:
+#      {{ instance_l4_port }}. The clean fix is a greffer-side "container
+#      port follows allocated host port" publish flag (proposed follow-up),
+#      which would remove the manual step.
+#   3. Caps: NET_ADMIN alone is NOT enough — wg-quick's iptables step needs
+#      NET_RAW too ("can't initialize iptables table `nat': Permission
+#      denied"). Verified posture: cap_drop ALL + NET_ADMIN + NET_RAW +
+#      /dev/net/tun. Kernel >= 5.6 in-tree WireGuard confirmed working
+#      (no SYS_MODULE).
 # ============================================================================
 #
 # Mixed-tier entry:
@@ -27,28 +44,40 @@ version: "3"
 
 services:
   wg-easy:
-    image: ghcr.io/wg-easy/wg-easy:14   # pinned: v14 accepts PASSWORD (see note 1)
+    image: ghcr.io/wg-easy/wg-easy:15   # pinned: INIT_* first-boot auth + endpoint/listen split (see notes 1+2)
     restart: unless-stopped
-    # Minimized cap posture for a WG server (a TUN interface needs NET_ADMIN,
-    # userspace or not). Drop everything else; no privileged, no host network.
+    # Minimized cap posture for a WG server: NET_ADMIN for the TUN interface
+    # and routes, NET_RAW for wg-quick's iptables rules (verified required).
+    # Drop everything else; no privileged, no host network.
     cap_drop:
       - ALL
     cap_add:
       - NET_ADMIN
+      - NET_RAW
     devices:
       - "/dev/net/tun:/dev/net/tun"
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
     environment:
-      # Public endpoint clients dial — from the greffer L4 endpoint vars (#52).
-      WG_HOST: "{{ instance_l4_host }}"
-      WG_PORT: "{{ instance_l4_port }}"
-      # Web-UI port (Tier A, nginx-fronted).
+      # Web-UI port (Tier A; the per-instance greffer nginx TLS-fronts it).
       PORT: "51821"
-      # Admin password for the web UI. Empty placeholder filled at deploy from
-      # the metadata `configurations` destination (env -> wg-easy -> PASSWORD).
-      PASSWORD: ""
+      # The UI itself listens on plain HTTP behind that TLS proxy.
+      INSECURE: "true"
+      # Compose networks here are IPv4-only; skip the ip6tables hooks.
+      DISABLE_IPV6: "true"
+      # First-boot initialization (applied once, then persisted in the app
+      # DB on the volume; the env is ignored afterwards). INIT_PASSWORD is
+      # filled at deploy from the metadata `configurations` destination.
+      INIT_ENABLED: "true"
+      INIT_USERNAME: "admin"
+      INIT_PASSWORD: ""
+      # Public endpoint written into client configs — from the greffer L4
+      # endpoint vars (#52). The wg device itself listens on the container's
+      # 51820 (the port the compose publishes); INIT_HOST/INIT_PORT only set
+      # what peers dial.
+      INIT_HOST: "{{ instance_l4_host }}"
+      INIT_PORT: "{{ instance_l4_port }}"
     ports:
       - "51821:51821"        # web UI (Tier A)
       - "51820:51820/udp"    # WireGuard tunnel (Tier C / L4)
