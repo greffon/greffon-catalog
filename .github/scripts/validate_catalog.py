@@ -80,8 +80,10 @@ KNOWN_INTEGRATION_NAMESPACES = ("smtp",)
 _CONFIG_DICT_BUILTINS = {
     "items", "keys", "values", "get", "update", "pop", "copy", "clear", "setdefault",
 }
-# A `{{ ... }}` expression block, and a `config.<name>` attribute inside one.
+# A `{{ ... }}` expression block, a `{% ... %}` statement block, and a
+# `config.<name>` attribute inside one.
 _JINJA_BLOCK_RE = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
+_JINJA_STMT_RE = re.compile(r"\{%(.*?)%\}", re.DOTALL)
 _CONFIG_NAME_RE = re.compile(r"\bconfig\.([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -100,9 +102,14 @@ def _config_refs(text):
 
 
 def _search_in_blocks(rx, text):
-    """First regex match found inside any `{{ }}` expression block (so literal
-    file prose/comments outside Jinja can't trigger a false positive)."""
-    for block in _JINJA_BLOCK_RE.findall(text):
+    """First regex match found inside any Jinja block — both `{{ }}` expression
+    AND `{% %}` statement blocks (so literal file prose/comments outside Jinja
+    can't trigger a false positive, while a bypass idiom hidden in a
+    `{% set x = config.get('X') %}` statement is still caught). Used for the
+    StrictUndefined-bypass check, which must cover statement blocks because
+    `{% set %}` binds a name that then renders without re-triggering the guard.
+    """
+    for block in _JINJA_BLOCK_RE.findall(text) + _JINJA_STMT_RE.findall(text):
         m = rx.search(block)
         if m:
             return m

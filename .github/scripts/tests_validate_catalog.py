@@ -853,6 +853,15 @@ class RenderFlagTest(unittest.TestCase):
         )
         self.assertTrue(any("bypasses" in e for e in errs), errs)
 
+    def test_bypass_in_statement_block_rejected(self):
+        # A bypass idiom inside a {% set %} statement block also evades
+        # StrictUndefined at render time, so it must be rejected too.
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("{% set s = config.get('X') %}secret={{ s }}")},
+        )
+        self.assertTrue(any("bypasses" in e for e in errs), errs)
+
     def test_default_filter_bypass_rejected(self):
         errs = self._run(
             {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
