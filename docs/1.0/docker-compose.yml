@@ -1,0 +1,266 @@
+version: "3"
+
+# Docs — La Suite numérique (suitenumerique/docs, app codename "impress").
+# Collaborative document editor by DINUM + ZenDiS.
+#
+# SELF-CONTAINED DEMO TOPOLOGY
+# ----------------------------
+# Docs authenticates ONLY via OIDC (no local password login). To make a single
+# greffon instance work without any external identity provider, this entry
+# bundles its own Keycloak and routes everything under ONE public origin
+# ({{ instance_url }}) through an in-compose nginx gateway:
+#
+#   {{ instance_url }}/                 -> frontend   (Next.js)
+#   {{ instance_url }}/api  /admin /static -> backend  (Django/DRF)
+#   {{ instance_url }}/collaboration/  -> y-provider  (Yjs/Hocuspocus, WebSocket)
+#   {{ instance_url }}/media/          -> minio       (S3, via backend media-auth)
+#   {{ instance_url }}/identity/       -> keycloak    (embedded OIDC provider)
+#
+# Why single-origin: the greffer allocates ONE public host port per instance and
+# does not expose the dynamically-assigned port back to this template, so a
+# second public hostname for the IdP is not addressable at render time. Keycloak
+# is therefore path-mounted under /identity and derives its public base URL from
+# the X-Forwarded-* headers the gateway passes through (KC_PROXY_HEADERS).
+# We deliberately avoid the /auth prefix (it collides with a reserved greffer
+# nginx location) and use /identity instead.
+#
+# The gateway nginx config and the Keycloak realm are shipped as baked files via
+# `file` config destinations (see metadata.json) because the greffer copies them
+# verbatim (no Jinja). Anything per-instance (OIDC endpoint URLs) lives in the
+# env below, which IS Jinja-rendered.
+#
+# HEAVY: ~10 services. First boot pulls several GB and Keycloak takes ~30-60s to
+# import the realm before the app is usable.
+#
+# Resolved against the published v5.2.1 images: backend serves via uvicorn/ASGI
+# (not gunicorn); frontend exposes 8080 and calls /api same-origin; y-provider
+# listens on 4444. OIDC back-channel points at the internal Keycloak so the
+# backend never has to hairpin out to the public URL. Remaining item to confirm
+# on a live greffer: Keycloak 26 derives the right public base from the proxy
+# headers under the /identity relative path.
+
+services:
+  postgresql:
+    image: postgres:16
+    restart: on-failure
+    environment:
+      POSTGRES_DB: docs
+      POSTGRES_USER: docs
+      # POSTGRES_PASSWORD injected from the same generated secret as the
+      # backend's DB_PASSWORD (metadata.json -> two env destinations).
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:5
+    restart: on-failure
+
+  minio:
+    image: minio/minio
+    restart: on-failure
+    # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD injected (generated per instance,
+    # shared with createbuckets + the backend/celery S3 client).
+    command: minio server --console-address ":9001" /data
+    volumes:
+      - minio_data:/data
+
+  createbuckets:
+    image: minio/mc
+    restart: on-failure
+    depends_on:
+      - minio
+    entrypoint: >
+      sh -c "
+      until /usr/bin/mc alias set docs http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done &&
+      /usr/bin/mc mb --ignore-existing docs/docs-media-storage &&
+      /usr/bin/mc version enable docs/docs-media-storage &&
+      exit 0;"
+
+  backend:
+    image: lasuite/impress-backend:v5.2.1
+    restart: on-failure
+    # The published image serves via uvicorn/ASGI (confirmed from the image
+    # Cmd). Run migrations inline first, then exec the same ASGI server the
+    # image's default CMD uses.
+    command: >
+      sh -c "python manage.py migrate --no-input &&
+             exec uvicorn --app-dir=/app --host=0.0.0.0 --port=8000 --lifespan=off impress.asgi:application"
+    depends_on:
+      - postgresql
+      - redis
+      - minio
+      - keycloak
+    environment:
+      # Django
+      DJANGO_SETTINGS_MODULE: impress.settings
+      DJANGO_CONFIGURATION: Production
+      PYTHONPATH: /app
+      # Double quotes inside the Jinja split() are deliberate: the greffer
+      # round-trips this compose through yaml.dump before rendering, and PyYAML
+      # emits a `{`-leading scalar single-quoted, doubling any inner single
+      # quotes and breaking Jinja. Double quotes survive that round-trip.
+      DJANGO_ALLOWED_HOSTS: '{{ instance_url.split("://")[1] }},localhost,backend'
+      DJANGO_CSRF_TRUSTED_ORIGINS: "{{ instance_url }}"
+      # DJANGO_SECRET_KEY injected (generated secret)
+      # Database
+      DB_HOST: postgresql
+      DB_NAME: docs
+      DB_USER: docs
+      DB_PORT: "5432"
+      # DB_PASSWORD injected (generated secret, shared with postgresql)
+      # Cache / broker
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      # Object storage (server-side talks to minio directly; browsers go through
+      # the gateway /media/ path which is rewritten to MEDIA_BASE_URL).
+      AWS_S3_ENDPOINT_URL: http://minio:9000
+      # AWS_S3_ACCESS_KEY_ID / AWS_S3_SECRET_ACCESS_KEY injected (same generated
+      # values as the MinIO root creds).
+      AWS_STORAGE_BUCKET_NAME: docs-media-storage
+      MEDIA_BASE_URL: "{{ instance_url }}"
+      # OIDC — split between browser-facing and back-channel endpoints.
+      #   - authorization / logout: the BROWSER is redirected here, so they must
+      #     be the PUBLIC url.
+      #   - jwks / token / userinfo: the BACKEND container calls these directly,
+      #     so they point at the internal Keycloak (no hairpin out to the public
+      #     URL, no self-signed-cert verification problem). Keycloak still mints
+      #     a consistent token `iss` from the gateway's forwarded headers, and
+      #     mozilla-django-oidc validates the id_token by JWKS signature.
+      OIDC_OP_AUTHORIZATION_ENDPOINT: "{{ instance_url }}/identity/realms/docs/protocol/openid-connect/auth"
+      OIDC_OP_LOGOUT_ENDPOINT: "{{ instance_url }}/identity/realms/docs/protocol/openid-connect/logout"
+      OIDC_OP_JWKS_ENDPOINT: "http://keycloak:8080/identity/realms/docs/protocol/openid-connect/certs"
+      OIDC_OP_TOKEN_ENDPOINT: "http://keycloak:8080/identity/realms/docs/protocol/openid-connect/token"
+      OIDC_OP_USER_ENDPOINT: "http://keycloak:8080/identity/realms/docs/protocol/openid-connect/userinfo"
+      OIDC_RP_CLIENT_ID: docs
+      # OIDC_RP_CLIENT_SECRET injected (must match the baked realm client secret)
+      OIDC_RP_SIGN_ALGO: RS256
+      OIDC_RP_SCOPES: "openid email"
+      LOGIN_REDIRECT_URL: "{{ instance_url }}"
+      LOGIN_REDIRECT_URL_FAILURE: "{{ instance_url }}"
+      LOGOUT_REDIRECT_URL: "{{ instance_url }}"
+      OIDC_REDIRECT_ALLOWED_HOSTS: '["{{ instance_url }}"]'
+      # Collaboration (Yjs / y-provider)
+      Y_PROVIDER_API_BASE_URL: http://y-provider:4444/api/
+      # Server-to-server (backend <-> y-provider): use the internal address, not
+      # the public origin. The public URL hairpins through the greffer's TLS
+      # proxy whose built-in-CA cert the Node/Python HTTP clients don't trust,
+      # so collaboration auth calls fail. Browser-facing SERVER_ORIGIN/WS_URL
+      # stay public.
+      COLLABORATION_API_URL: "http://y-provider:4444/collaboration/api/"
+      COLLABORATION_SERVER_ORIGIN: "{{ instance_url }}"
+      COLLABORATION_BACKEND_BASE_URL: "http://backend:8000"
+      COLLABORATION_WS_URL: 'wss://{{ instance_url.split("://")[1] }}/collaboration/ws/'
+      # Y_PROVIDER_API_KEY and COLLABORATION_SERVER_SECRET injected (generated,
+      # shared with the y-provider service)
+      # Mail (rendered from the operator's SMTP integration; greffer strips
+      # these keys entirely when no SMTP integration is selected).
+      DJANGO_EMAIL_HOST: "{{ smtp.host }}"
+      DJANGO_EMAIL_PORT: "{{ smtp.port }}"
+      DJANGO_EMAIL_HOST_USER: "{{ smtp.username }}"
+      DJANGO_EMAIL_HOST_PASSWORD: "{{ smtp.password }}"
+      DJANGO_EMAIL_FROM: "{{ smtp.from_address }}"
+      DJANGO_EMAIL_USE_TLS: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+
+  celery:
+    image: lasuite/impress-backend:v5.2.1
+    restart: on-failure
+    command: ["celery", "-A", "impress.celery_app", "worker", "-l", "INFO"]
+    depends_on:
+      - backend
+    environment:
+      DJANGO_SETTINGS_MODULE: impress.settings
+      DJANGO_CONFIGURATION: Production
+      PYTHONPATH: /app
+      DB_HOST: postgresql
+      DB_NAME: docs
+      DB_USER: docs
+      DB_PORT: "5432"
+      # DB_PASSWORD injected (shared)
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      AWS_S3_ENDPOINT_URL: http://minio:9000
+      # AWS_S3_ACCESS_KEY_ID / AWS_S3_SECRET_ACCESS_KEY injected (same generated
+      # values as the MinIO root creds).
+      AWS_STORAGE_BUCKET_NAME: docs-media-storage
+
+  y-provider:
+    image: lasuite/impress-y-provider:v5.2.1
+    restart: on-failure
+    environment:
+      Y_PROVIDER_API_BASE_URL: http://y-provider:4444/api/
+      COLLABORATION_SERVER_ORIGIN: "{{ instance_url }}"
+      # Server-to-server (backend <-> y-provider): use the internal address, not
+      # the public origin. The public URL hairpins through the greffer's TLS
+      # proxy whose built-in-CA cert the Node/Python HTTP clients don't trust,
+      # so collaboration auth calls fail. Browser-facing SERVER_ORIGIN/WS_URL
+      # stay public.
+      COLLABORATION_API_URL: "http://y-provider:4444/collaboration/api/"
+      COLLABORATION_BACKEND_BASE_URL: "http://backend:8000"
+      COLLABORATION_LOGGING: "true"
+      # Y_PROVIDER_API_KEY and COLLABORATION_SERVER_SECRET injected (shared
+      # with backend)
+    # No `ports:` — internal-only. The greffer publishes a public TLS port for
+    # EVERY service that declares ports, so only the gateway declares one. The
+    # gateway reaches this service at y-provider:4444 over the internal network.
+
+  frontend:
+    image: lasuite/impress-frontend:v5.2.1
+    restart: on-failure
+    depends_on:
+      - backend
+    # No `ports:` — internal-only. Image exposes 8080 (nginx) and calls /api
+    # same-origin, which the gateway serves. Reached at frontend:8080.
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    restart: on-failure
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      # KC_BOOTSTRAP_ADMIN_PASSWORD injected (generated secret)
+      # Path-mount under /identity and derive the public base URL from the
+      # gateway's forwarded headers (dev mode uses an embedded H2 store).
+      KC_HTTP_RELATIVE_PATH: /identity
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: "false"
+      # Pin the public base URL so the token `iss` is identical whether Keycloak
+      # is reached via the browser (public host) or the backend back-channel
+      # (internal keycloak:8080). Without this, the back-channel userinfo/token
+      # calls compute a different issuer and Keycloak 401s the access token.
+      # Include the /identity path so Keycloak's generated URLs (login form
+      # actions, issuer) keep the relative path — origin-only drops it and the
+      # login POST 404s at /realms/... instead of /identity/realms/...
+      KC_HOSTNAME: "{{ instance_url }}/identity"
+    volumes:
+      # Only the realm import is mounted. We deliberately do NOT mount a volume
+      # at /opt/keycloak/data/h2: a fresh named volume there is root-owned and
+      # Keycloak (uid 1000) can't create its H2 db file, which crash-loops the
+      # container. The dev-mode H2 store lives in the image's own writable dir
+      # instead; the realm re-imports on every start (--import-realm), so the
+      # demo is stateless-by-design and this costs nothing.
+      - keycloak_import:/opt/keycloak/data/import
+    # No `ports:` — internal-only (reached at keycloak:8080 by the gateway).
+
+  gateway:
+    # Single public entry point. The greffer reads this port to wire its own
+    # TLS-terminating greffon_nginx, then strips it. This gateway routes the one
+    # public origin to every internal service (see baked default.conf).
+    image: nginx:1.25
+    restart: on-failure
+    depends_on:
+      - backend
+      - frontend
+      - y-provider
+      - keycloak
+      - minio
+    volumes:
+      - gateway_conf:/etc/nginx/conf.d
+    ports:
+      - "8083:8083"
+
+volumes:
+  postgres_data:
+  minio_data:
+  keycloak_import:
+  gateway_conf:
