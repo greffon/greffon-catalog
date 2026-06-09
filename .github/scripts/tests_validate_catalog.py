@@ -888,6 +888,14 @@ class RenderFlagTest(unittest.TestCase):
             self.assertTrue(any("render-flagged" in e and "unsafe" in e for e in errs),
                             f"{body!r} should be rejected, got {errs}")
 
+    def test_config_dict_method_rejected(self):
+        # {{ config.get }} (a dict method, uncalled) renders garbage, not a value.
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("x = {{ config.get }}")},
+        )
+        self.assertTrue(any("dict method" in e for e in errs), errs)
+
     def test_tojson_filter_and_concat_allowed(self):
         with tempfile.TemporaryDirectory() as tmp:
             rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[

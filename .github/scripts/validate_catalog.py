@@ -128,6 +128,10 @@ def _unsafe_render_expr(inner):
         ref = m.group(0)
         head, _, tail = ref.partition(".")
         if head == "config" and tail and "." not in tail:
+            if tail in _CONFIG_DICT_BUILTINS:
+                # config.get/items/keys/... is a dict METHOD — renders a garbage
+                # "<built-in method ...>" string, not a config value.
+                return f"dict method 'config.{tail}'"
             continue  # config.NAME
         if ref in _RENDER_ALLOWED_BARE:
             continue  # bare instance_* var
