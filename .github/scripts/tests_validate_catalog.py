@@ -798,7 +798,7 @@ class RenderFlagTest(unittest.TestCase):
             {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
             {"file": _data_uri("host = {{ smtp.host }}")},
         )
-        self.assertTrue(any("integration namespace" in e for e in errs), errs)
+        self.assertTrue(any("render-flagged" in e and "smtp" in e for e in errs), errs)
 
     def test_render_file_config_ref_without_env_key_rejected(self):
         errs = self._run(
@@ -851,23 +851,56 @@ class RenderFlagTest(unittest.TestCase):
             {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
             {"file": _data_uri("secret = {{ config.get('X') }}")},
         )
-        self.assertTrue(any("bypasses" in e for e in errs), errs)
+        self.assertTrue(any("render-flagged" in e and "unsafe" in e for e in errs), errs)
 
     def test_bypass_in_statement_block_rejected(self):
-        # A bypass idiom inside a {% set %} statement block also evades
-        # StrictUndefined at render time, so it must be rejected too.
+        # A {% %} statement is not allowed in a baked file (bypass-prone).
         errs = self._run(
             {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
             {"file": _data_uri("{% set s = config.get('X') %}secret={{ s }}")},
         )
-        self.assertTrue(any("bypasses" in e for e in errs), errs)
+        self.assertTrue(any("statement block" in e for e in errs), errs)
 
     def test_default_filter_bypass_rejected(self):
         errs = self._run(
             {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
             {"file": _data_uri("secret = {{ config.X | default('') }}")},
         )
-        self.assertTrue(any("bypasses" in e for e in errs), errs)
+        self.assertTrue(any("render-flagged" in e and "default" in e for e in errs), errs)
+
+    def test_d_alias_filter_bypass_rejected(self):
+        # The `| d` alias for `default` must be caught too (blocklist missed it).
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("secret = {{ config.X | d('') }}")},
+        )
+        self.assertTrue(any("render-flagged" in e and "'|d'" in e for e in errs), errs)
+
+    def test_attr_filter_and_paren_get_rejected(self):
+        # config|attr('get')(...) and (config).get(...) bypass StrictUndefined
+        # silently — the allowlist rejects them (any call/subscript).
+        for body in ("{{ config|attr('get')('X') }}", "{{ (config).get('X') }}",
+                     "{{ config['X'] }}", "{{ config.X or 'fallback' }}"):
+            errs = self._run(
+                {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+                {"file": _data_uri(body)},
+            )
+            self.assertTrue(any("render-flagged" in e and "unsafe" in e for e in errs),
+                            f"{body!r} should be rejected, got {errs}")
+
+    def test_tojson_filter_and_concat_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[
+                {"title": "S", "schema": {"properties": {"value": {"type": "string"}}},
+                 "default_value": {"value": "x"},
+                 "destinations": [{"type": "env", "container": "app", "key": "S"}]},
+                {"title": "Realm",
+                 "schema": {"properties": {"file": {"type": "string", "format": "data-url"}}},
+                 "default_value": {"file": _data_uri('{"u": "{{ instance_url }}/cb", "s": {{ config.S | tojson }}}')},
+                 "destinations": [{"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}]},
+            ]))
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertFalse(_feature_errors(errs), errs)
 
     def test_bypass_idiom_in_plain_prose_not_flagged(self):
         # A literal "| default" / "config.get(" in file prose (outside any
@@ -877,7 +910,7 @@ class RenderFlagTest(unittest.TestCase):
             {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
             {"file": _data_uri(body)},
         )
-        self.assertFalse(any("bypasses" in e for e in errs), errs)
+        self.assertFalse(any("render-flagged" in e and "unsafe" in e for e in errs), errs)
 
     def test_multiple_config_refs_in_one_block_all_checked(self):
         # Two refs in a SINGLE {{ }} block; the second is a typo with no env key.
@@ -906,7 +939,7 @@ class RenderFlagTest(unittest.TestCase):
             {"host": "{{ smtp.host }}"},
             schema={"properties": {}},
         )
-        self.assertTrue(any("integration namespace" in e for e in errs), errs)
+        self.assertTrue(any("render-flagged" in e and "smtp" in e for e in errs), errs)
 
     def test_render_json_config_ref_without_env_key_rejected(self):
         errs = self._run(

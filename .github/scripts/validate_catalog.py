@@ -101,35 +101,53 @@ def _config_refs(text):
     return names
 
 
-def _search_in_blocks(rx, text):
-    """First regex match found inside any Jinja block — both `{{ }}` expression
-    AND `{% %}` statement blocks (so literal file prose/comments outside Jinja
-    can't trigger a false positive, while a bypass idiom hidden in a
-    `{% set x = config.get('X') %}` statement is still caught). Used for the
-    StrictUndefined-bypass check, which must cover statement blocks because
-    `{% set %}` binds a name that then renders without re-triggering the guard.
-    """
-    for block in _JINJA_BLOCK_RE.findall(text) + _JINJA_STMT_RE.findall(text):
-        m = rx.search(block)
-        if m:
-            return m
+# ALLOWLIST for the Jinja in a render-flagged baked file. Only bare instance
+# vars, ``config.<NAME>``, string literals, ``~`` concatenation, and the
+# ``tojson`` filter are permitted; everything else is rejected. A blocklist of
+# bypass idioms (``config.get`` / ``| default`` / ``config|attr('get')`` /
+# ``| d`` / ``... or 'x'`` / ``config['X']`` / ``{{ smtp.host }}`` …) loses the
+# arms race — Jinja has too many equivalent spellings, each of which silently
+# bakes an empty/wrong value into a secret, and integration refs only fail at
+# deploy. An allowlist can't be spelled around, and subsumes the old integration
+# /bypass checks (a non-``config``/``instance_*`` name like ``smtp`` is rejected).
+_RENDER_ALLOWED_BARE = {"instance_id", "instance_url", "instance_host", "instance_port"}
+_RENDER_SAFE_FILTERS = {"tojson"}
+
+
+def _unsafe_render_expr(inner):
+    """Reason a render-flagged ``{{ ... }}`` block is not a safe baked
+    expression, else None."""
+    s = re.sub(r"'[^']*'|\"[^\"]*\"", "", inner)  # drop string literals
+    for fm in re.finditer(r"\|\s*([A-Za-z_]\w*)", s):
+        if fm.group(1) not in _RENDER_SAFE_FILTERS:
+            return f"filter '|{fm.group(1)}'"
+    s = re.sub(r"\|\s*[A-Za-z_]\w*", " ", s)  # strip the now-vetted filters
+    if "(" in s or "[" in s:
+        return "a call or subscript"
+    for m in re.finditer(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", s):
+        ref = m.group(0)
+        head, _, tail = ref.partition(".")
+        if head == "config" and tail and "." not in tail:
+            continue  # config.NAME
+        if ref in _RENDER_ALLOWED_BARE:
+            continue  # bare instance_* var
+        return f"reference '{ref}'"
     return None
 
 
-def _integration_ref_re(namespaces):
-    """Regex matching `{{ <ns>.<field> }}` for any known integration namespace."""
-    alt = "|".join(re.escape(n) for n in namespaces)
-    return re.compile(
-        r"\{\{(?:(?!\}\}).)*?\b(?:" + alt + r")\.[a-z_][a-z0-9_]*(?:(?!\}\}).)*?\}\}"
-    )
-
-
-# Jinja idioms that bypass StrictUndefined (would silently render a missing
-# value as empty/fallback instead of failing the deploy): ``config.get('X')``
-# or ``<ns>.get(...)``, and the ``| default`` filter.
-def _bypass_re(namespaces):
-    alt = "|".join(re.escape(n) for n in ("config",) + tuple(namespaces))
-    return re.compile(r"\b(?:" + alt + r")\.get\s*\(|\|\s*default\b")
+def _render_block_problem(text):
+    """First problem with a render-flagged file's Jinja: a ``{% %}`` statement
+    (control flow is unneeded in a baked config and is bypass-prone) or an
+    unsafe ``{{ }}`` expression. Returns a message, or None."""
+    if _JINJA_STMT_RE.search(text):
+        return "{% %} statement blocks are not allowed (use plain {{ ... }} substitutions)"
+    for inner in _JINJA_BLOCK_RE.findall(text):
+        reason = _unsafe_render_expr(inner)
+        if reason:
+            return (f"unsafe expression — {reason}; baked files may only use "
+                    "{{ config.NAME }}, {{ instance_url/_id/_host/_port }}, string "
+                    "concatenation (~), and the | tojson filter")
+    return None
 
 
 def decode_data_uri(data_uri):
@@ -462,13 +480,10 @@ def validate_greffon_dir(catalog_root, rel_dir):
 
             # --- baked-config-files: render-flagged content checks (file + json) ---
             # A render-flagged destination's baked content must (a) for `file`,
-            # decode as UTF-8 (the greffer renders it as text); (b) not reference
-            # an integration namespace (StrictUndefined aborts when it's unset);
-            # (c) not use a StrictUndefined-bypass idiom (config.get / | default)
-            # that would silently bake an empty value. Collect the text for the
-            # post-loop config.X bidirectional check.
-            integ_ref_re = _integration_ref_re(KNOWN_INTEGRATION_NAMESPACES)
-            bypass_re = _bypass_re(KNOWN_INTEGRATION_NAMESPACES)
+            # decode as UTF-8 (the greffer renders it as text); (b) contain only
+            # allowlisted Jinja (bare instance vars, config.NAME, ~, | tojson) —
+            # which rejects integration refs, bypass idioms, and statements in one
+            # check. Collect the text for the post-loop config.X bidirectional check.
             for dest in destinations:
                 if not isinstance(dest, dict) or not dest.get("x-greffon-render"):
                     continue
@@ -489,19 +504,9 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     text = json.dumps(default_value)
                 else:
                     continue
-                m = integ_ref_re.search(text)
-                if m:
-                    errors.append(
-                        f"{prefix} render-flagged {dtype} references an integration namespace "
-                        f"('{m.group(0)}'); unset integrations render to '{{}}' and abort the deploy"
-                    )
-                b = _search_in_blocks(bypass_re, text)
-                if b:
-                    errors.append(
-                        f"{prefix} render-flagged {dtype} uses '{b.group(0).strip()}', which "
-                        "bypasses the greffer's StrictUndefined guard (a missing value would render "
-                        "empty instead of failing); use the plain '{{ config.X }}' attribute form"
-                    )
+                problem = _render_block_problem(text)
+                if problem:
+                    errors.append(f"{prefix} render-flagged {dtype}: {problem}")
                 render_flagged_files.append((prefix, text))
 
             # Rule: configs whose title or any env-key looks like a secret must be required
