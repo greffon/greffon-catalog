@@ -28,7 +28,9 @@ version: "3"
 #      and generated peer configs dial {{ instance_l4_host }}:
 #      {{ instance_l4_port }}. The clean fix is a greffer-side "container
 #      port follows allocated host port" publish flag (proposed follow-up),
-#      which would remove the manual step.
+#      which would remove the manual step. Datapath verified with a live
+#      WireGuard client: Noise handshake + bidirectional traffic (ping over
+#      the tunnel) through the published UDP port.
 #   3. Caps: NET_ADMIN alone is NOT enough — wg-quick's iptables step needs
 #      NET_RAW too ("can't initialize iptables table `nat': Permission
 #      denied"). Verified posture: cap_drop ALL + NET_ADMIN + NET_RAW +
