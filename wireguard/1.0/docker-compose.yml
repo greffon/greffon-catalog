@@ -1,0 +1,59 @@
+version: "3"
+
+# ============================================================================
+# DRAFT — L4 (Tier-C) reference greffon for the l4-network-exposure epic.
+# Validator-green, but NOT yet deploy-verified. Open items before this ships:
+#   1. PASSWORD vs PASSWORD_HASH: wg-easy v14 accepts plaintext PASSWORD
+#      (deprecated); v15 requires PASSWORD_HASH (bcrypt), which the platform's
+#      config model can't generate from a user password. Pinned to :14 here so
+#      PASSWORD works; revisit for v15 (e.g. a bcrypt-at-deploy step).
+#   2. Advertised vs listen UDP port: the greffer publishes the container's
+#      51820 to a random host port (port_host) and clients must dial that, so
+#      WG_PORT is set to {{ instance_l4_port }} (the published host port).
+#      VERIFY wg-easy advertises WG_PORT in client configs while still
+#      listening on the container's 51820 — needs a real deploy + WG client.
+#   3. Caps: cap_add NET_ADMIN + /dev/net/tun is the minimized posture. On
+#      kernels >= 5.6 (WireGuard in-tree) SYS_MODULE is NOT needed; VERIFY on
+#      the target greffer host.
+# Activation also depends on the catalog importer populating the metadata
+# `ports` tier/protocol + min_greffer_version (separate PR).
+# ============================================================================
+#
+# Mixed-tier entry:
+#   - 51821 (web UI)  -> Tier A: greffer nginx fronts it (peer management + the
+#     smoke-test target). Reachable at {{ instance_url }}.
+#   - 51820/udp (WG)  -> Tier C (L4): published directly on the greffer host;
+#     clients dial {{ instance_l4_host }}:{{ instance_l4_port }}.
+
+services:
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:14   # pinned: v14 accepts PASSWORD (see note 1)
+    restart: unless-stopped
+    # Minimized cap posture for a WG server (a TUN interface needs NET_ADMIN,
+    # userspace or not). Drop everything else; no privileged, no host network.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - "/dev/net/tun:/dev/net/tun"
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+    environment:
+      # Public endpoint clients dial — from the greffer L4 endpoint vars (#52).
+      WG_HOST: "{{ instance_l4_host }}"
+      WG_PORT: "{{ instance_l4_port }}"
+      # Web-UI port (Tier A, nginx-fronted).
+      PORT: "51821"
+      # Admin password for the web UI. Empty placeholder filled at deploy from
+      # the metadata `configurations` destination (env -> wg-easy -> PASSWORD).
+      PASSWORD: ""
+    ports:
+      - "51821:51821"        # web UI (Tier A)
+      - "51820:51820/udp"    # WireGuard tunnel (Tier C / L4)
+    volumes:
+      - wg_easy_config:/etc/wireguard
+
+volumes:
+  wg_easy_config:

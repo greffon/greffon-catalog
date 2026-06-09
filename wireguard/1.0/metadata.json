@@ -1,0 +1,44 @@
+{
+  "name": "WireGuard",
+  "logo": "https://www.wireguard.com/img/logo.svg",
+  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy)",
+  "categories": ["networking"],
+  "images": [],
+  "min_greffer_version": "0.2.0",
+  "ports": [
+    {
+      "name": "wg-easy_51820",
+      "exposure_tier": "l4",
+      "protocol": "udp",
+      "udp_reviewed": true,
+      "review_note": "WireGuard sends no response before a valid Noise handshake, so it cannot be used for UDP reflection/amplification. Non-amplifiable. Reviewed 2026-06."
+    },
+    {
+      "name": "wg-easy_51821",
+      "exposure_tier": "http",
+      "protocol": "tcp"
+    }
+  ],
+  "configurations": [
+    {
+      "title": "Admin password",
+      "schema": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Admin password",
+            "description": "Password for the wg-easy web UI where you add and manage VPN peers.",
+            "writeOnly": true,
+            "minLength": 8
+          }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "wg-easy", "key": "PASSWORD" }
+      ]
+    }
+  ]
+}
