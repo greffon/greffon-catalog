@@ -11,10 +11,12 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import os
 import re
 import sys
+from urllib.parse import unquote
 
 import yaml
 
@@ -59,6 +61,56 @@ def _value_references_smtp(value) -> bool:
     validator rejects it.
     """
     return isinstance(value, str) and bool(_SMTP_JINJA_RE.search(value))
+
+
+# --- baked-config-files feature ----------------------------------------------
+# Config visibility tiers (declared INSIDE a config's `schema`).
+VALID_VISIBILITIES = {"visible", "advanced", "hidden"}
+
+# Integration namespaces a render-flagged `file` MUST NOT reference: an unset
+# integration renders to `{}` and the greffer's StrictUndefined file env would
+# hard-abort the deploy. This set MUST stay in sync with the greffer's
+# ``KNOWN_INTEGRATION_TYPES`` (greffer/apps/utils/docker/compose.py) — the two
+# repos are coupled. ``tests_validate_catalog.py`` asserts this exact value so a
+# greffer-side change can't silently drift the validator open. When a new
+# integration type is added to the greffer, add it here too.
+KNOWN_INTEGRATION_NAMESPACES = ("smtp",)
+
+# dict built-ins a naive ``config\.(\w+)`` regex would falsely flag.
+_CONFIG_DICT_BUILTINS = {
+    "items", "keys", "values", "get", "update", "pop", "copy", "clear", "setdefault",
+}
+# `{{ config.NAME }}` reference inside a Jinja expression block (attribute form).
+_CONFIG_REF_RE = re.compile(
+    r"\{\{(?:(?!\}\}).)*?\bconfig\.([A-Za-z_][A-Za-z0-9_]*)(?:(?!\}\}).)*?\}\}"
+)
+
+
+def _integration_ref_re(namespaces):
+    """Regex matching `{{ <ns>.<field> }}` for any known integration namespace."""
+    alt = "|".join(re.escape(n) for n in namespaces)
+    return re.compile(
+        r"\{\{(?:(?!\}\}).)*?\b(?:" + alt + r")\.[a-z_][a-z0-9_]*(?:(?!\}\}).)*?\}\}"
+    )
+
+
+def decode_data_uri(data_uri):
+    """Decode a data-URI the way the greffer's python-datauri does, so a
+    render-flagged file that passes validation decodes identically at deploy.
+
+    Returns the decoded text (str). Raises ValueError / UnicodeDecodeError on
+    malformed input or a non-UTF-8 base64 payload. ``validate=True`` makes
+    ``b64decode`` raise on non-alphabet garbage instead of silently dropping it.
+    """
+    if not isinstance(data_uri, str) or not data_uri.startswith("data:"):
+        raise ValueError("not a data-URI")
+    header, sep, payload = data_uri.partition(",")
+    if not sep:
+        raise ValueError("data-URI has no comma separator")
+    if ";base64" in header:
+        cleaned = re.sub(r"\s+", "", payload)  # datauri tolerates wrapped base64
+        return base64.b64decode(cleaned, validate=True).decode("utf-8")
+    return unquote(payload)
 
 
 REQUIRED_FILES = ["metadata.json", "docker-compose.yml", "smoke_test.spec.ts"]
@@ -199,6 +251,11 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # Accumulators for the bidirectional SMTP metadata-to-compose match (Rule 5.3).
     # Keyed by service name; values are sets of env keys.
     metadata_smtp_keys: dict = {}
+    # baked-config-files: every env-destination key across the greffon (for the
+    # `{{ config.X }}` bidirectional check), and the decoded text of each
+    # render-flagged file (checked after all env keys are known).
+    all_env_keys: set = set()
+    render_flagged_files: list = []
 
     # Configurations
     configs = meta.get("configurations")
@@ -230,6 +287,30 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 if isinstance(default_value, dict) and req_field not in default_value:
                     errors.append(
                         f"{prefix} schema.required '{req_field}' has no entry in default_value"
+                    )
+
+            # --- baked-config-files: x-greffon-visibility (enum + placement) ---
+            # The flag MUST live inside `schema` (ingestion copies only
+            # schema/default_value/destinations; a config-root key is dropped).
+            if "x-greffon-visibility" in cfg:
+                errors.append(
+                    f"{prefix} 'x-greffon-visibility' must live inside 'schema', "
+                    "not at the config root (it would be dropped on ingestion)"
+                )
+            visibility = schema.get("x-greffon-visibility") if isinstance(schema, dict) else None
+            if visibility is not None and visibility not in VALID_VISIBILITIES:
+                errors.append(
+                    f"{prefix} schema.x-greffon-visibility '{visibility}' invalid "
+                    f"(must be one of {sorted(VALID_VISIBILITIES)})"
+                )
+            if visibility == "hidden":
+                # The operator can't supply a hidden config's value, so it must
+                # ship a complete, non-empty catalog default (the per-field
+                # required-key presence is already enforced above).
+                if not (isinstance(default_value, dict) and default_value):
+                    errors.append(
+                        f"{prefix} hidden config (x-greffon-visibility: hidden) must have a "
+                        "non-empty default_value; the operator cannot supply one"
                     )
 
             # --- Email-format sanity (regression: admin@greffon.local rejected by Pydantic) ---
@@ -276,6 +357,21 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 missing = required_keys - set(dest.keys())
                 if missing:
                     errors.append(f"{dprefix} missing keys: {sorted(missing)}")
+
+                # --- baked-config-files: x-greffon-render (bool, file/json only) ---
+                if "x-greffon-render" in dest:
+                    render_flag = dest.get("x-greffon-render")
+                    if not isinstance(render_flag, bool):
+                        errors.append(f"{dprefix} 'x-greffon-render' must be a boolean")
+                    elif render_flag and dtype not in ("file", "json"):
+                        errors.append(
+                            f"{dprefix} 'x-greffon-render' is only valid on file/json "
+                            f"destinations, not '{dtype}'"
+                        )
+
+                # Collect env keys for the `{{ config.X }}` bidirectional check.
+                if dtype == "env" and dest.get("key"):
+                    all_env_keys.add(dest["key"])
 
                 # Cross-reference: env destinations must reference a valid service
                 if dtype == "env" and compose_services:
@@ -327,6 +423,35 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         "schema.required: ['file']; greffer will crash with KeyError on empty install"
                     )
                     break
+
+            # --- baked-config-files: render-flagged file content checks ---
+            # A render-flagged `file` default must (a) decode as UTF-8 (the
+            # greffer renders it as text), and (b) not reference an integration
+            # namespace (StrictUndefined would abort when the integration is
+            # unset). Collect the decoded text for the post-loop config.X check.
+            integ_ref_re = _integration_ref_re(KNOWN_INTEGRATION_NAMESPACES)
+            for dest in destinations:
+                if not isinstance(dest, dict) or dest.get("type") != "file":
+                    continue
+                if not dest.get("x-greffon-render"):
+                    continue
+                data_uri = default_value.get("file") if isinstance(default_value, dict) else None
+                if not data_uri:
+                    continue  # the file-default rule above already flagged this
+                try:
+                    text = decode_data_uri(data_uri)
+                except (ValueError, UnicodeDecodeError) as exc:
+                    errors.append(
+                        f"{prefix} render-flagged file default is not valid/UTF-8-decodable: {exc}"
+                    )
+                    continue
+                m = integ_ref_re.search(text)
+                if m:
+                    errors.append(
+                        f"{prefix} render-flagged file references an integration namespace "
+                        f"('{m.group(0)}'); unset integrations render to '{{}}' and abort the deploy"
+                    )
+                render_flagged_files.append((prefix, text))
 
             # Rule: configs whose title or any env-key looks like a secret must be required
             # OR have a non-empty default. Catches "user installs with empty password,
@@ -420,6 +545,21 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         "intentional (e.g. any-of auth), or set format='greffon-secret' "
                         "if the platform should generate the value."
                     )
+
+    # --- baked-config-files: render-flagged `{{ config.X }}` must match an env key ---
+    # The file and the container read the same minted value by env key, so a
+    # `{{ config.X }}` with no matching env destination is almost always a typo
+    # that would silently bake an empty value. Dict built-ins (config.items, …)
+    # are excluded to avoid false positives.
+    for fprefix, text in render_flagged_files:
+        for name in set(_CONFIG_REF_RE.findall(text)):
+            if name in _CONFIG_DICT_BUILTINS:
+                continue
+            if name not in all_env_keys:
+                errors.append(
+                    f"{fprefix} render-flagged file references '{{{{ config.{name} }}}}' "
+                    f"but no env destination declares key '{name}'"
+                )
 
     # --- Rule 5.3 / 5.4: bidirectional SMTP metadata-to-compose match ---
     # Walk the compose services, compute the set of env keys whose value is a

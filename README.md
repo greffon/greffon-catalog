@@ -89,9 +89,11 @@ Nginx-internal template vars like `{{ports[i].port_host}}` are reserved for the 
 | Type   | Fields                          | Description                              |
 |--------|---------------------------------|------------------------------------------|
 | `env`  | `container`, `key`              | Inject as environment variable           |
-| `json` | `volume`, `name`                | Write JSON file into a named volume      |
-| `file` | `volume`, `name`                | Write uploaded file into a named volume  |
+| `json` | `volume`, `name`, *(opt)* `x-greffon-render` | Write JSON file into a named volume      |
+| `file` | `volume`, `name`, *(opt)* `x-greffon-render` | Write uploaded/baked file into a named volume |
 | `smtp` | `container`, `key`              | Mark an env key as SMTP-integration-managed (value comes from the operator's SMTP integration, not user input) |
+
+The optional **`x-greffon-render: true`** on a `file`/`json` destination Jinja-renders the file contents at deploy time. See [Baked config files](#baked-config-files-visibility--render-time-templating).
 
 ### Custom Schema Formats
 
@@ -166,6 +168,55 @@ Notes:
 - The compose `environment:` must be mapping form (`KEY: value`) on every service that has an `smtp` destination; list form (`["KEY=value", ...]`) is rejected by the validator because the bidirectional Jinja check can't inspect list entries cleanly.
 - Value shaping (booleans, tri-state strings, composed URLs) lives in the compose Jinja, not in a named transform — see the Plausible / Nextcloud / GlitchTip entries for worked examples.
 
+#### Baked config files: visibility & render-time templating
+
+Two optional flags let a greffon ship a config file that is **baked** (the operator never sees or edits it) and **per-instance** (its contents are templated at deploy time). Use them for internal plumbing like a reverse-proxy config or an identity-realm import.
+
+**`x-greffon-visibility`** — declared **inside a configuration's `schema`** (a config-root key is silently dropped on ingestion, and the validator rejects it there):
+
+| Value | Effect |
+|-------|--------|
+| `visible` (default) | Rendered normally in the install form. |
+| `advanced` | Rendered, but tucked inside a collapsed "Advanced settings" section. Still editable. Use for power-user knobs. |
+| `hidden` | Never rendered. The manager forces the value to the catalog `default_value` server-side (non-tamperable), so a `hidden` config **must** ship a complete `default_value`. |
+
+**`x-greffon-render: true`** — on a `file`/`json` destination, Jinja-renders the file contents on the greffer before it is written into the volume. The render context is the same as the compose: `instance_id`, `instance_url`, `instance_host`, `instance_port`, plus a **`config`** namespace exposing every `env`-destination value by its key. So a baked file can scope itself to the instance and embed a per-install secret that matches the container's env var:
+
+```jsonc
+// metadata.json — a hidden, render-flagged Keycloak realm + the minted secret it embeds
+{
+  "title": "OIDC client secret",
+  "schema": { "properties": { "value": {
+    "type": "string", "writeOnly": true, "minLength": 32, "format": "greffon-secret" } } },
+  "default_value": { "value": "" },
+  "destinations": [{ "type": "env", "container": "backend", "key": "OIDC_RP_CLIENT_SECRET" }]
+},
+{
+  "title": "Identity realm import",
+  "schema": { "x-greffon-visibility": "hidden",
+              "properties": { "file": { "type": "string", "format": "data-url" } } },
+  "default_value": { "file": "data:application/json;base64,<base64 of the realm template>" },
+  "destinations": [{ "type": "file", "volume": "kc_import", "name": "realm.json", "x-greffon-render": true }]
+}
+```
+
+The realm template (before base64-encoding) references the shared context:
+
+```jsonc
+"redirectUris": ["{{ instance_url }}/*"],
+"webOrigins": ["{{ instance_url }}"],
+"secret": "{{ config.OIDC_RP_CLIENT_SECRET }}"
+```
+
+Rules and gotchas (all validator-enforced):
+
+- **Strict rendering.** A render-flagged file is rendered with Jinja `StrictUndefined`: a missing/typo'd variable (e.g. `{{ config.OIDC_CLIENT_SECRET }}` missing the `_RP`) **fails the deploy loudly** rather than baking an empty secret. Prefer the attribute form `{{ config.X }}` — `{{ config.get('X') }}` bypasses the strict check.
+- **`{{ config.X }}` must match an `env` destination.** The file and the container read the same value by key; a reference with no matching `env` key is a validator error.
+- **No integration namespaces in a render-flagged file.** `{{ smtp.* }}` (and other integration namespaces) are rejected: an unset integration renders to `{}` and would hard-abort the deploy.
+- **UTF-8 only.** A render-flagged file's `default_value.file` must decode as valid UTF-8 (it is rendered as text). Non-text/binary files must not set `x-greffon-render`.
+- **Brace safety.** Avoid Jinja-colliding braces in the file body; in particular, Keycloak's own `${...}` placeholders must not sit adjacent to `{`/`}`.
+- **Rollout.** Render-flagged greffons require a render-capable greffer. Upgrade workers before publishing a render-flagged catalog entry (ship order: greffer → manager/front → catalog).
+
 ## CI Quality Gate
 
 Every PR to this repo runs `.github/scripts/validate_catalog.py`, which enforces:
@@ -176,6 +227,7 @@ Every PR to this repo runs `.github/scripts/validate_catalog.py`, which enforces
 - No hard-coded secrets in default values (opt out with `x-greffon-allow-empty-secret: true` when a field is legitimately empty by default and the user must fill it)
 - No reserved-TLD email defaults (e.g. `.local`, `.test`) that break downstream validators
 - No dangling volume references — every volume used in a destination must be declared in the compose `volumes:` block
+- Baked-config-files flags: valid `x-greffon-visibility` (inside `schema`, not at config root; `hidden` requires a complete default), `x-greffon-render` only on `file`/`json` and boolean, and for a render-flagged file: UTF-8-decodable default, no integration-namespace references, and every `{{ config.X }}` matched by an `env` destination key
 
 Plus the Playwright `smoke_test.spec.ts` runs against a real dev environment and must deploy the greffon from defaults and assert the primary user task.
 
