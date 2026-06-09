@@ -72,7 +72,8 @@
             "minLength": 50,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
@@ -100,7 +101,8 @@
             "minLength": 24,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
@@ -138,7 +140,8 @@
             "minLength": 32,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
@@ -171,7 +174,8 @@
             "minLength": 32,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
@@ -204,7 +208,8 @@
             "minLength": 16,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
@@ -232,7 +237,8 @@
             "minLength": 20,
             "format": "greffon-secret-alnum"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
@@ -275,7 +281,8 @@
             "minLength": 32,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
@@ -319,7 +326,8 @@
             "minLength": 32,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
