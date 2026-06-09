@@ -1,6 +1,6 @@
 {
   "name": "WireGuard",
-  "logo": "https://www.wireguard.com/img/logo.svg",
+  "logo": "https://avatars.githubusercontent.com/u/105704026",
   "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. One-time setup: after your first login, open Admin Panel > Interface and set Port to 51820 so the tunnel matches the published port. VPN access itself is secured by WireGuard keys.",
   "categories": ["networking"],
   "images": [],
