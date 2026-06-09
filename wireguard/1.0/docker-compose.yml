@@ -75,9 +75,9 @@ services:
       INIT_USERNAME: "admin"
       INIT_PASSWORD: ""
       # Public endpoint written into client configs — from the greffer L4
-      # endpoint vars (#52). The wg device itself listens on the container's
-      # 51820 (the port the compose publishes); INIT_HOST/INIT_PORT only set
-      # what peers dial.
+      # endpoint vars (#52). NOTE: v15 also applies INIT_PORT to the wg
+      # device listen port (see note 2 above); the one-time UI step moves
+      # the listener back to the published 51820.
       INIT_HOST: "{{ instance_l4_host }}"
       INIT_PORT: "{{ instance_l4_port }}"
     ports:
