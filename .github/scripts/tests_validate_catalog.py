@@ -829,11 +829,82 @@ class RenderFlagTest(unittest.TestCase):
         self.assertFalse(_feature_errors(errs), errs)
 
 
+    def test_uppercase_base64_flag_rejected(self):
+        # Greffer's datauri rejects `;BASE64` (lowercase only); the validator
+        # (same lib) must too — a false-accept would fail only at deploy.
+        uri = "data:text/plain;BASE64," + base64.b64encode(b"hello").decode("ascii")
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}, {"file": uri}
+        )
+        self.assertTrue(any("not valid/UTF-8-decodable" in e for e in errs), errs)
+
+    def test_percent_encoded_default_passes(self):
+        from urllib.parse import quote
+        uri = "data:text/plain," + quote("url = {{ instance_url }}")
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}, {"file": uri}
+        )
+        self.assertFalse(_feature_errors(errs), errs)
+
+    def test_config_get_bypass_rejected(self):
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("secret = {{ config.get('X') }}")},
+        )
+        self.assertTrue(any("bypasses" in e for e in errs), errs)
+
+    def test_default_filter_bypass_rejected(self):
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("secret = {{ config.X | default('') }}")},
+        )
+        self.assertTrue(any("bypasses" in e for e in errs), errs)
+
+    def test_multiple_config_refs_in_one_block_all_checked(self):
+        # Two refs in a SINGLE {{ }} block; the second is a typo with no env key.
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[
+                {
+                    "title": "User",
+                    "schema": {"properties": {"value": {"type": "string"}}},
+                    "default_value": {"value": "u"},
+                    "destinations": [{"type": "env", "container": "app", "key": "USER"}],
+                },
+                {
+                    "title": "Realm",
+                    "schema": {"properties": {"file": {"type": "string", "format": "data-url"}}},
+                    "default_value": {"file": _data_uri("{{ config.USER ~ ':' ~ config.PASS }}")},
+                    "destinations": [{"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}],
+                },
+            ]))
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertTrue(any("config.PASS" in e for e in errs), errs)   # 2nd ref caught
+        self.assertFalse(any("config.USER" in e for e in errs), errs)  # 1st ref matches an env key
+
+    def test_render_json_smtp_reference_rejected(self):
+        errs = self._run(
+            {"type": "json", "volume": "data", "name": "f.json", "x-greffon-render": True},
+            {"host": "{{ smtp.host }}"},
+            schema={"properties": {}},
+        )
+        self.assertTrue(any("integration namespace" in e for e in errs), errs)
+
+    def test_render_json_config_ref_without_env_key_rejected(self):
+        errs = self._run(
+            {"type": "json", "volume": "data", "name": "f.json", "x-greffon-render": True},
+            {"secret": "{{ config.MISSING }}"},
+            schema={"properties": {}},
+        )
+        self.assertTrue(any("config.MISSING" in e for e in errs), errs)
+
+
 class IntegrationNamespaceParityTest(unittest.TestCase):
-    """Tripwire: the validator's integration-namespace list must match the
-    greffer's KNOWN_INTEGRATION_TYPES (separate repo). Pinning the value forces a
-    deliberate, reviewed update when the greffer adds a type — otherwise the
-    render-flagged-file integration-reference check would silently fail open."""
+    """Tripwire: pin the validator's integration-namespace list. It is a copy of
+    the greffer's KNOWN_INTEGRATION_TYPES (separate repo — this test can't import
+    it). Pinning forces a deliberate, reviewed edit; when the greffer adds an
+    integration type, this assertion (and the linked comment in validate_catalog)
+    must be updated in the same change so the integration-reference check doesn't
+    silently fail open for the new namespace."""
 
     def test_known_namespaces_pinned(self):
         self.assertEqual(KNOWN_INTEGRATION_NAMESPACES, ("smtp",))

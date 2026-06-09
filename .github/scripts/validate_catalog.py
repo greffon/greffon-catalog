@@ -11,14 +11,14 @@ Usage:
 """
 
 import argparse
-import base64
 import json
 import os
 import re
 import sys
-from urllib.parse import unquote
 
 import yaml
+from datauri import DataURI
+from datauri.exceptions import InvalidDataURI
 
 # Names that strongly imply a secret value the user must supply.
 SECRET_NAME_RE = re.compile(r"(?i)password|secret(?!_id)|token|api[_-]?key|priv(?:ate)?[_-]?key")
@@ -76,14 +76,27 @@ VALID_VISIBILITIES = {"visible", "advanced", "hidden"}
 # integration type is added to the greffer, add it here too.
 KNOWN_INTEGRATION_NAMESPACES = ("smtp",)
 
-# dict built-ins a naive ``config\.(\w+)`` regex would falsely flag.
+# dict built-ins a `config.<name>` scan would falsely flag.
 _CONFIG_DICT_BUILTINS = {
     "items", "keys", "values", "get", "update", "pop", "copy", "clear", "setdefault",
 }
-# `{{ config.NAME }}` reference inside a Jinja expression block (attribute form).
-_CONFIG_REF_RE = re.compile(
-    r"\{\{(?:(?!\}\}).)*?\bconfig\.([A-Za-z_][A-Za-z0-9_]*)(?:(?!\}\}).)*?\}\}"
-)
+# A `{{ ... }}` expression block, and a `config.<name>` attribute inside one.
+_JINJA_BLOCK_RE = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
+_CONFIG_NAME_RE = re.compile(r"\bconfig\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _config_refs(text):
+    """All `config.<name>` attribute names referenced inside `{{ }}` blocks.
+
+    Scans EVERY ref in EVERY block (a single block may hold several, e.g.
+    ``{{ config.USER ~ ':' ~ config.PASS }}``), excluding dict built-ins.
+    """
+    names = set()
+    for block in _JINJA_BLOCK_RE.findall(text):
+        for name in _CONFIG_NAME_RE.findall(block):
+            if name not in _CONFIG_DICT_BUILTINS:
+                names.add(name)
+    return names
 
 
 def _integration_ref_re(namespaces):
@@ -94,23 +107,29 @@ def _integration_ref_re(namespaces):
     )
 
 
-def decode_data_uri(data_uri):
-    """Decode a data-URI the way the greffer's python-datauri does, so a
-    render-flagged file that passes validation decodes identically at deploy.
+# Jinja idioms that bypass StrictUndefined (would silently render a missing
+# value as empty/fallback instead of failing the deploy): ``config.get('X')``
+# or ``<ns>.get(...)``, and the ``| default`` filter.
+def _bypass_re(namespaces):
+    alt = "|".join(re.escape(n) for n in ("config",) + tuple(namespaces))
+    return re.compile(r"\b(?:" + alt + r")\.get\s*\(|\|\s*default\b")
 
-    Returns the decoded text (str). Raises ValueError / UnicodeDecodeError on
-    malformed input or a non-UTF-8 base64 payload. ``validate=True`` makes
-    ``b64decode`` raise on non-alphabet garbage instead of silently dropping it.
+
+def decode_data_uri(data_uri):
+    """Decode a data-URI with the SAME library the greffer uses
+    (``python-datauri``), so a render-flagged file that passes validation
+    decodes byte-identically at deploy (no false-accept of inputs the greffer
+    rejects). ``DataURI.data`` is ``bytes`` for base64 URIs, ``str`` for
+    percent-encoded ones. Raises ValueError / UnicodeDecodeError on malformed
+    or non-UTF-8 input.
     """
-    if not isinstance(data_uri, str) or not data_uri.startswith("data:"):
+    if not isinstance(data_uri, str):
         raise ValueError("not a data-URI")
-    header, sep, payload = data_uri.partition(",")
-    if not sep:
-        raise ValueError("data-URI has no comma separator")
-    if ";base64" in header:
-        cleaned = re.sub(r"\s+", "", payload)  # datauri tolerates wrapped base64
-        return base64.b64decode(cleaned, validate=True).decode("utf-8")
-    return unquote(payload)
+    try:
+        data = DataURI(data_uri).data
+    except (InvalidDataURI, ValueError, TypeError) as exc:
+        raise ValueError(f"invalid data-URI: {exc}") from exc
+    return data.decode("utf-8") if isinstance(data, bytes) else data
 
 
 REQUIRED_FILES = ["metadata.json", "docker-compose.yml", "smoke_test.spec.ts"]
@@ -424,32 +443,47 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     )
                     break
 
-            # --- baked-config-files: render-flagged file content checks ---
-            # A render-flagged `file` default must (a) decode as UTF-8 (the
-            # greffer renders it as text), and (b) not reference an integration
-            # namespace (StrictUndefined would abort when the integration is
-            # unset). Collect the decoded text for the post-loop config.X check.
+            # --- baked-config-files: render-flagged content checks (file + json) ---
+            # A render-flagged destination's baked content must (a) for `file`,
+            # decode as UTF-8 (the greffer renders it as text); (b) not reference
+            # an integration namespace (StrictUndefined aborts when it's unset);
+            # (c) not use a StrictUndefined-bypass idiom (config.get / | default)
+            # that would silently bake an empty value. Collect the text for the
+            # post-loop config.X bidirectional check.
             integ_ref_re = _integration_ref_re(KNOWN_INTEGRATION_NAMESPACES)
+            bypass_re = _bypass_re(KNOWN_INTEGRATION_NAMESPACES)
             for dest in destinations:
-                if not isinstance(dest, dict) or dest.get("type") != "file":
+                if not isinstance(dest, dict) or not dest.get("x-greffon-render"):
                     continue
-                if not dest.get("x-greffon-render"):
-                    continue
-                data_uri = default_value.get("file") if isinstance(default_value, dict) else None
-                if not data_uri:
-                    continue  # the file-default rule above already flagged this
-                try:
-                    text = decode_data_uri(data_uri)
-                except (ValueError, UnicodeDecodeError) as exc:
-                    errors.append(
-                        f"{prefix} render-flagged file default is not valid/UTF-8-decodable: {exc}"
-                    )
+                dtype = dest.get("type")
+                if dtype == "file":
+                    data_uri = default_value.get("file") if isinstance(default_value, dict) else None
+                    if not data_uri:
+                        continue  # the file-default rule above already flagged this
+                    try:
+                        text = decode_data_uri(data_uri)
+                    except (ValueError, UnicodeDecodeError) as exc:
+                        errors.append(
+                            f"{prefix} render-flagged file default is not valid/UTF-8-decodable: {exc}"
+                        )
+                        continue
+                elif dtype == "json":
+                    # The greffer renders json.dumps(value); scan that text.
+                    text = json.dumps(default_value)
+                else:
                     continue
                 m = integ_ref_re.search(text)
                 if m:
                     errors.append(
-                        f"{prefix} render-flagged file references an integration namespace "
+                        f"{prefix} render-flagged {dtype} references an integration namespace "
                         f"('{m.group(0)}'); unset integrations render to '{{}}' and abort the deploy"
+                    )
+                b = bypass_re.search(text)
+                if b:
+                    errors.append(
+                        f"{prefix} render-flagged {dtype} uses '{b.group(0).strip()}', which "
+                        "bypasses the greffer's StrictUndefined guard (a missing value would render "
+                        "empty instead of failing); use the plain '{{ config.X }}' attribute form"
                     )
                 render_flagged_files.append((prefix, text))
 
@@ -552,12 +586,10 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # that would silently bake an empty value. Dict built-ins (config.items, …)
     # are excluded to avoid false positives.
     for fprefix, text in render_flagged_files:
-        for name in set(_CONFIG_REF_RE.findall(text)):
-            if name in _CONFIG_DICT_BUILTINS:
-                continue
+        for name in _config_refs(text):
             if name not in all_env_keys:
                 errors.append(
-                    f"{fprefix} render-flagged file references '{{{{ config.{name} }}}}' "
+                    f"{fprefix} render-flagged content references '{{{{ config.{name} }}}}' "
                     f"but no env destination declares key '{name}'"
                 )
 

@@ -19,7 +19,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pyyaml jinja2
+        # python-datauri: decode render-flagged file defaults with the SAME
+        # parser the greffer uses, so validation can't false-accept a data-URI
+        # that the greffer would reject at deploy.
+        run: pip install pyyaml jinja2 python-datauri
 
       - name: Run linter regression tests
         # Proves every check in validate_catalog.py would have caught a real bug

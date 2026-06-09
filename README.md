@@ -210,7 +210,8 @@ The realm template (before base64-encoding) references the shared context:
 
 Rules and gotchas (all validator-enforced):
 
-- **Strict rendering.** A render-flagged file is rendered with Jinja `StrictUndefined`: a missing/typo'd variable (e.g. `{{ config.OIDC_CLIENT_SECRET }}` missing the `_RP`) **fails the deploy loudly** rather than baking an empty secret. Prefer the attribute form `{{ config.X }}` — `{{ config.get('X') }}` bypasses the strict check.
+- **Strict rendering.** A render-flagged file is rendered with Jinja `StrictUndefined`: a missing/typo'd variable (e.g. `{{ config.OIDC_CLIENT_SECRET }}` missing the `_RP`) **fails the deploy loudly** rather than baking an empty secret. Use the plain attribute form `{{ config.X }}` — the validator rejects `{{ config.get('X') }}` and `| default` in a render-flagged file because they silently bypass the strict check.
+- **JSON safety.** Rendering is plain string substitution (no auto-escaping). A value that lands in a JSON string position and may contain `"`/`\` must be wrapped with `| tojson` (e.g. `"secret": {{ config.X | tojson }}`) so the output stays valid JSON.
 - **`{{ config.X }}` must match an `env` destination.** The file and the container read the same value by key; a reference with no matching `env` key is a validator error.
 - **No integration namespaces in a render-flagged file.** `{{ smtp.* }}` (and other integration namespaces) are rejected: an unset integration renders to `{}` and would hard-abort the deploy.
 - **UTF-8 only.** A render-flagged file's `default_value.file` must decode as valid UTF-8 (it is rendered as text). Non-text/binary files must not set `x-greffon-render`.
