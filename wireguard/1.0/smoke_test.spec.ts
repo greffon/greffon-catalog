@@ -1,24 +1,28 @@
 import { test, expect } from '@playwright/test';
 
 // The smoke target is wg-easy's WEB UI (Tier A, nginx-fronted). The WireGuard
-// tunnel itself is the Tier-C UDP port and isn't browser-testable; the web UI
-// rendering is a sufficient liveness check that the stack came up.
+// tunnel itself is the Tier-C UDP port and isn't browser-testable; a rendered
+// web UI is a sufficient liveness check that the stack came up.
 const URL = process.env.WIREGUARD_URL!;
 
 test.describe('WireGuard (wg-easy)', () => {
-  test('serves the wg-easy web UI login', async ({ page }) => {
+  test('serves the wg-easy web UI', async ({ page }) => {
     test.skip(!URL, 'WIREGUARD_URL not set');
 
     const base = URL.replace(/\/$/, '');
-    await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    // `/` meta-refreshes to /login (admin created at first boot from INIT_*) or
+    // to /setup (the first-boot wizard, shown when INIT_* is absent — e.g. the
+    // CI harness deploys with no L4 port, so INIT_HOST/INIT_PORT render empty
+    // and no admin account is created). networkidle lets the redirect settle on
+    // whichever surface this deploy lands on.
+    await page.goto(base, { waitUntil: 'networkidle', timeout: 60_000 });
 
-    // wg-easy v15 gates the UI behind the admin login created at first boot
-    // via INIT_USERNAME/INIT_PASSWORD (deploy-verified: anonymous API calls
-    // 401). Accept either the login surface (a password input / "Sign In")
-    // or, if a build renders the app shell first, a visible body — enough to
-    // prove the web UI is serving.
-    const passwordField = page.locator('input[type="password"]').first();
-    const signIn = page.getByText(/sign in|log ?in|password/i).first();
-    await expect(passwordField.or(signIn)).toBeVisible({ timeout: 30_000 });
+    // Assert a SINGLE locator. A `.or()` of password-input + "Sign In" resolves
+    // to two elements on the login screen and trips Playwright strict mode, and
+    // the password field isn't present on the setup wizard at all. The Nuxt app
+    // root and the page title are present on BOTH surfaces and prove the SPA
+    // mounted — i.e. the stack served the app, not a 502/error page.
+    await expect(page.locator('#__nuxt')).toBeVisible({ timeout: 30_000 });
+    await expect(page).toHaveTitle(/wireguard/i);
   });
 });

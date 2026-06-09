@@ -36,6 +36,20 @@ version: "3"
 #      denied"). Verified posture: cap_drop ALL + NET_ADMIN + NET_RAW +
 #      /dev/net/tun. Kernel >= 5.6 in-tree WireGuard confirmed working
 #      (no SYS_MODULE).
+#
+# SECURITY — UNMET ISOLATION REQUIREMENT (do not treat as production-hardened):
+#   A WireGuard greffon is a decrypt-and-forward L3 engine — a connected peer is
+#   inside the overlay, and wg-easy MASQUERADEs peer traffic out the container's
+#   interface. The epic (docs/features/l4-network-exposure/epic.md, the
+#   "WireGuard peer pivots into greffer docker network / adjacent tenants" risk
+#   row) makes network-namespace isolation + egress firewalling a v1 requirement
+#   with a dedicated isolation AC: a peer must not be able to reach the greffer
+#   host, its docker networks, or other tenants — only the public internet.
+#   That policy CANNOT be expressed in this compose (a VPN needs egress, so
+#   `internal: true` is wrong, and the greffer auto-injects a plain bridge with
+#   no egress rules). It is greffer-side/host work and is NOT yet implemented.
+#   Until it lands, run this only on a single-tenant greffer whose host network
+#   you are willing to expose to connected peers. Tracked as a follow-up.
 # ============================================================================
 #
 # Mixed-tier entry:

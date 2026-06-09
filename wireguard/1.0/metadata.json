@@ -29,7 +29,7 @@
           "value": {
             "type": "string",
             "title": "Admin password",
-            "description": "Password for the wg-easy web UI (username: admin). Applied on first start only; change it later from the UI itself.",
+            "description": "Password for the wg-easy web UI (username: admin). At least 12 characters — wg-easy rejects a shorter one at login, which would lock you out. Applied on first start only; change it later from the UI itself.",
             "writeOnly": true,
             "minLength": 12
           }
