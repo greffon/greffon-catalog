@@ -99,6 +99,16 @@ def _config_refs(text):
     return names
 
 
+def _search_in_blocks(rx, text):
+    """First regex match found inside any `{{ }}` expression block (so literal
+    file prose/comments outside Jinja can't trigger a false positive)."""
+    for block in _JINJA_BLOCK_RE.findall(text):
+        m = rx.search(block)
+        if m:
+            return m
+    return None
+
+
 def _integration_ref_re(namespaces):
     """Regex matching `{{ <ns>.<field> }}` for any known integration namespace."""
     alt = "|".join(re.escape(n) for n in namespaces)
@@ -478,7 +488,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"{prefix} render-flagged {dtype} references an integration namespace "
                         f"('{m.group(0)}'); unset integrations render to '{{}}' and abort the deploy"
                     )
-                b = bypass_re.search(text)
+                b = _search_in_blocks(bypass_re, text)
                 if b:
                     errors.append(
                         f"{prefix} render-flagged {dtype} uses '{b.group(0).strip()}', which "

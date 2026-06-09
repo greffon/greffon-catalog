@@ -860,6 +860,16 @@ class RenderFlagTest(unittest.TestCase):
         )
         self.assertTrue(any("bypasses" in e for e in errs), errs)
 
+    def test_bypass_idiom_in_plain_prose_not_flagged(self):
+        # A literal "| default" / "config.get(" in file prose (outside any
+        # {{ }} block) must NOT be flagged — only Jinja-expression idioms are.
+        body = "# tuning: leave logging | default off; do not call config.get() here\nlevel = info\n"
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri(body)},
+        )
+        self.assertFalse(any("bypasses" in e for e in errs), errs)
+
     def test_multiple_config_refs_in_one_block_all_checked(self):
         # Two refs in a SINGLE {{ }} block; the second is a typo with no env key.
         with tempfile.TemporaryDirectory() as tmp:
