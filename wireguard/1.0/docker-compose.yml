@@ -34,19 +34,23 @@ version: "3"
 #      /dev/net/tun. Kernel >= 5.6 in-tree WireGuard confirmed working
 #      (no SYS_MODULE).
 #
-# SECURITY — UNMET ISOLATION REQUIREMENT (do not treat as production-hardened):
-#   A WireGuard greffon is a decrypt-and-forward L3 engine — a connected peer is
-#   inside the overlay, and wg-easy MASQUERADEs peer traffic out the container's
-#   interface. The epic (docs/features/l4-network-exposure/epic.md, the
-#   "WireGuard peer pivots into greffer docker network / adjacent tenants" risk
-#   row) makes network-namespace isolation + egress firewalling a v1 requirement
-#   with a dedicated isolation AC: a peer must not be able to reach the greffer
-#   host, its docker networks, or other tenants — only the public internet.
-#   That policy CANNOT be expressed in this compose (a VPN needs egress, so
-#   `internal: true` is wrong, and the greffer auto-injects a plain bridge with
-#   no egress rules). It is greffer-side/host work and is NOT yet implemented.
-#   Until it lands, run this only on a single-tenant greffer whose host network
-#   you are willing to expose to connected peers. Tracked as a follow-up.
+# SECURITY LIMITATION — WHAT YOU CANNOT DO WITH THIS GREFFON (accepted, by
+# design decision 2026-06-10; peer egress isolation is deferred, see
+# docs/features/l4-network-exposure/followup-egress-isolation.md):
+#   A WireGuard greffon is a decrypt-and-forward L3 engine. wg-easy MASQUERADEs a
+#   connected peer's traffic into the greffer's network, and the greffer host
+#   routes between networks, so a peer can reach NOT JUST the public internet but
+#   ALSO your OTHER greffons' container ports and the greffer host itself,
+#   bypassing the platform login gate that fronts your Tier-A apps. There is no
+#   per-peer egress firewall yet.
+#   => A WireGuard peer is effectively an insider on your greffer's private
+#      network, not a limited / internet-only user. CANNOT: hand a peer config to
+#      someone you would not trust with network access to all your greffons and
+#      the greffer host (a contractor, a guest, an untrusted device). Only grant
+#      peers you trust at that level.
+#   Greffers are one-per-customer, so there is no CROSS-customer exposure; the
+#   limitation is within your own greffer. It is lifted when egress isolation
+#   ships (deferred until a shared-greffer or internet-only-peer need arises).
 # ============================================================================
 #
 # Mixed-tier entry:

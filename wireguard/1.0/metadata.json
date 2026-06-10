@@ -1,7 +1,7 @@
 {
   "name": "WireGuard",
   "logo": "https://avatars.githubusercontent.com/u/105704026",
-  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. VPN access itself is secured by WireGuard keys.",
+  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. NOTE: a connected VPN peer can reach your other greffons and the greffer host on the private network, not just the internet, so only grant peer access to people you trust at that level (this isolation limit is documented and tracked for a future release).",
   "categories": ["networking"],
   "images": [],
   "min_greffer_version": "0.3.0",
