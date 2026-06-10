@@ -181,6 +181,50 @@ def validate_greffon_dir(catalog_root, rel_dir):
         if val is not None and not isinstance(val, list):
             errors.append(f"{rel_dir}: metadata.json '{field}' must be a list")
 
+    # L4 per-port declarations (optional `ports` list). Mirrors the manager's
+    # import_catalog._validate_meta so an entry the CI validator passes is one
+    # the importer accepts (the importer is still authoritative server-side).
+    ports_meta = meta.get("ports")
+    if ports_meta is not None and not isinstance(ports_meta, list):
+        errors.append(f"{rel_dir}: metadata.json 'ports' must be a list")
+        ports_meta = []
+    for p in ports_meta or []:
+        if not isinstance(p, dict) or not isinstance(p.get("name"), str) or not p["name"].strip():
+            errors.append(
+                f"{rel_dir}: each 'ports' entry must be an object with a non-empty 'name'")
+            continue
+        pname = p["name"]
+        if p.get("exposure_tier") not in (None, "http", "l4"):
+            errors.append(
+                f"{rel_dir}: ports[{pname!r}].exposure_tier must be 'http' or 'l4'")
+        if p.get("protocol") not in (None, "tcp", "udp"):
+            errors.append(
+                f"{rel_dir}: ports[{pname!r}].protocol must be 'tcp' or 'udp'")
+        for bool_key in ("udp_reviewed", "same_port"):
+            if p.get(bool_key) is not None and not isinstance(p.get(bool_key), bool):
+                errors.append(
+                    f"{rel_dir}: ports[{pname!r}].{bool_key} must be a boolean")
+        # same_port rewrites the published container port; only meaningful for
+        # a raw (Tier-C) port the greffer host-publishes.
+        if p.get("same_port") and p.get("exposure_tier") != "l4":
+            errors.append(
+                f"{rel_dir}: ports[{pname!r}].same_port requires exposure_tier 'l4'")
+    # Pairing: same_port needs a greffer that implements it (>= 0.3.0), enforced
+    # at start by the min_greffer_version compat gate — so the floor must be
+    # declared and high enough (zero-padded dotted-numeric compare, matching
+    # the manager's comparator).
+    if any(isinstance(p, dict) and p.get("same_port") for p in ports_meta or []):
+        mgv = meta.get("min_greffer_version")
+        try:
+            parts = tuple(int(x) for x in str(mgv).split(".")) if mgv else None
+            mgv_tuple = (parts + (0,) * (3 - len(parts)))[:3] if parts else None
+        except (ValueError, AttributeError):
+            mgv_tuple = None
+        if mgv_tuple is None or mgv_tuple < (0, 3, 0):
+            errors.append(
+                f"{rel_dir}: a 'same_port' port requires 'min_greffer_version' "
+                f">= 0.3.0 (the greffer release that implements same_port)")
+
     # Cross-check: top-level volumes must be referenced by at least one service mount.
     if isinstance(compose, dict) and compose_volumes:
         used_volumes = set()

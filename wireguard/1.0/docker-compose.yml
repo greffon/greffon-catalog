@@ -19,18 +19,15 @@ version: "3"
 #        the env is ignored). Auth + config-friendly password.
 #   2. Advertised vs listen UDP port: v15 dropped v14's WG_CONFIG_PORT split,
 #      so INIT_PORT sets BOTH the client-config endpoint AND the wg device
-#      listen port (deploy-verified: wg0 listens on INIT_PORT). We set
-#      INIT_PORT to the greffer-allocated public port so client configs are
-#      right, which leaves the device listening on that port in-container
-#      while the compose publishes 51820. ONE-TIME STEP after first login:
-#      Admin Panel -> Interface -> set Port to 51820. Verified end-to-end:
-#      after the step, wg0 listens on 51820 (the published container port)
-#      and generated peer configs dial {{ instance_l4_host }}:
-#      {{ instance_l4_port }}. The clean fix is a greffer-side "container
-#      port follows allocated host port" publish flag (proposed follow-up),
-#      which would remove the manual step. Datapath verified with a live
-#      WireGuard client: Noise handshake + bidirectional traffic (ping over
-#      the tunnel) through the published UDP port.
+#      listen port (deploy-verified: wg0 listens on INIT_PORT). RESOLVED by
+#      `same_port: true` on the wg-easy_51820 ports[] entry (greffer >= 0.3.0,
+#      enforced via min_greffer_version): the greffer publishes the allocated
+#      host port on BOTH sides (host P -> container P) and keeps it sticky
+#      across restarts, so INIT_PORT (= {{ instance_l4_port }} = P) is at once
+#      the advertised endpoint, the in-container listen port, and the published
+#      container port. No manual step, and the endpoint survives restarts.
+#      Datapath previously verified with a live WireGuard client: Noise
+#      handshake + bidirectional traffic through the published UDP port.
 #   3. Caps: NET_ADMIN alone is NOT enough — wg-quick's iptables step needs
 #      NET_RAW too ("can't initialize iptables table `nat': Permission
 #      denied"). Verified posture: cap_drop ALL + NET_ADMIN + NET_RAW +
@@ -89,14 +86,19 @@ services:
       INIT_USERNAME: "admin"
       INIT_PASSWORD: ""
       # Public endpoint written into client configs — from the greffer L4
-      # endpoint vars (#52). NOTE: v15 also applies INIT_PORT to the wg
-      # device listen port (see note 2 above); the one-time UI step moves
-      # the listener back to the published 51820.
+      # endpoint vars (#52). v15 also applies INIT_PORT to the wg device
+      # listen port, which is exactly right under same_port: the greffer
+      # publishes host P -> container P with P = {{ instance_l4_port }},
+      # so advertise == listen == published, sticky across restarts
+      # (see note 2 above).
       INIT_HOST: "{{ instance_l4_host }}"
       INIT_PORT: "{{ instance_l4_port }}"
     ports:
       - "51821:51821"        # web UI (Tier A)
-      - "51820:51820/udp"    # WireGuard tunnel (Tier C / L4)
+      # WireGuard tunnel (Tier C / L4). The declared 51820 anchors the port
+      # NAME (wg-easy_51820) at import; with same_port the greffer rewrites
+      # the published mapping to host P -> container P at render time.
+      - "51820:51820/udp"
     volumes:
       - wg_easy_config:/etc/wireguard
 

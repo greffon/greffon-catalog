@@ -1,16 +1,17 @@
 {
   "name": "WireGuard",
   "logo": "https://avatars.githubusercontent.com/u/105704026",
-  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. One-time setup: after your first login, open Admin Panel > Interface and set Port to 51820 so the tunnel matches the published port. VPN access itself is secured by WireGuard keys.",
+  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. VPN access itself is secured by WireGuard keys.",
   "categories": ["networking"],
   "images": [],
-  "min_greffer_version": "0.2.0",
+  "min_greffer_version": "0.3.0",
   "ports": [
     {
       "name": "wg-easy_51820",
       "exposure_tier": "l4",
       "protocol": "udp",
       "udp_reviewed": true,
+      "same_port": true,
       "review_note": "WireGuard sends no response before a valid Noise handshake, so it cannot be used for UDP reflection/amplification. Non-amplifiable. Reviewed 2026-06."
     },
     {
