@@ -12,7 +12,7 @@ version: "3"
 #        PASSWORD (crash loop) and only takes a bcrypt PASSWORD_HASH, which
 #        the platform's config model can't generate. Running it password-less
 #        is NOT acceptable: the per-instance greffer nginx is TLS-only (no
-#        auth gate (the platform auth_request gate lives at the manager edge)
+#        auth gate; the platform auth_request gate lives at the manager edge
 #        proxy), so in proxy mode the UI port is directly reachable.
 #      - v15: INIT_USERNAME/INIT_PASSWORD create the admin account from a
 #        plaintext value at FIRST BOOT only (then persisted in the app DB and
