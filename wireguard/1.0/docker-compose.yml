@@ -12,7 +12,7 @@ version: "3"
 #        PASSWORD (crash loop) and only takes a bcrypt PASSWORD_HASH, which
 #        the platform's config model can't generate. Running it password-less
 #        is NOT acceptable: the per-instance greffer nginx is TLS-only (no
-#        auth gate — the platform auth_request gate lives at the manager edge
+#        auth gate (the platform auth_request gate lives at the manager edge)
 #        proxy), so in proxy mode the UI port is directly reachable.
 #      - v15: INIT_USERNAME/INIT_PASSWORD create the admin account from a
 #        plaintext value at FIRST BOOT only (then persisted in the app DB and
@@ -28,13 +28,13 @@ version: "3"
 #      container port. No manual step, and the endpoint survives restarts.
 #      Datapath previously verified with a live WireGuard client: Noise
 #      handshake + bidirectional traffic through the published UDP port.
-#   3. Caps: NET_ADMIN alone is NOT enough — wg-quick's iptables step needs
+#   3. Caps: NET_ADMIN alone is NOT enough: wg-quick's iptables step needs
 #      NET_RAW too ("can't initialize iptables table `nat': Permission
 #      denied"). Verified posture: cap_drop ALL + NET_ADMIN + NET_RAW +
 #      /dev/net/tun. Kernel >= 5.6 in-tree WireGuard confirmed working
 #      (no SYS_MODULE).
 #
-# SECURITY LIMITATION — WHAT YOU CANNOT DO WITH THIS GREFFON (accepted, by
+# SECURITY LIMITATION: WHAT YOU CANNOT DO WITH THIS GREFFON (accepted, by
 # design decision 2026-06-10; peer egress isolation is deferred, see
 # docs/features/l4-network-exposure/followup-egress-isolation.md):
 #   A WireGuard greffon is a decrypt-and-forward L3 engine. wg-easy MASQUERADEs a
@@ -89,7 +89,7 @@ services:
       INIT_ENABLED: "true"
       INIT_USERNAME: "admin"
       INIT_PASSWORD: ""
-      # Public endpoint written into client configs — from the greffer L4
+      # Public endpoint written into client configs, from the greffer L4
       # endpoint vars (#52). v15 also applies INIT_PORT to the wg device
       # listen port, which is exactly right under same_port: the greffer
       # publishes host P -> container P with P = {{ instance_l4_port }},
