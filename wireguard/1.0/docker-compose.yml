@@ -34,23 +34,22 @@ version: "3"
 #      /dev/net/tun. Kernel >= 5.6 in-tree WireGuard confirmed working
 #      (no SYS_MODULE).
 #
-# SECURITY LIMITATION: WHAT YOU CANNOT DO WITH THIS GREFFON (accepted, by
-# design decision 2026-06-10; peer egress isolation is deferred, see
+# SECURITY NOTE: STANDARD FULL-TUNNEL VPN TRUST MODEL (measured 2026-06-10, see
 # docs/features/l4-network-exposure/followup-egress-isolation.md):
-#   A WireGuard greffon is a decrypt-and-forward L3 engine. wg-easy MASQUERADEs a
-#   connected peer's traffic into the greffer's network, and the greffer host
-#   routes between networks, so a peer can reach NOT JUST the public internet but
-#   ALSO your OTHER greffons' container ports and the greffer host itself,
-#   bypassing the platform login gate that fronts your Tier-A apps. There is no
-#   per-peer egress firewall yet.
-#   => A WireGuard peer is effectively an insider on your greffer's private
-#      network, not a limited / internet-only user. CANNOT: hand a peer config to
-#      someone you would not trust with network access to all your greffons and
-#      the greffer host (a contractor, a guest, an untrusted device). Only grant
-#      peers you trust at that level.
-#   Greffers are one-per-customer, so there is no CROSS-customer exposure; the
-#   limitation is within your own greffer. It is lifted when egress isolation
-#   ships (deferred until a shared-greffer or internet-only-peer need arises).
+#   What is ALREADY isolated (docker's default per-bridge isolation, verified):
+#   a connected peer CANNOT reach your other greffons' containers, the platform's
+#   published ports, or the greffer control plane. Your Tier-A apps stay behind
+#   their login gate.
+#   What a peer CAN reach, by design of a full-tunnel VPN: the public internet,
+#   AND services running directly on the greffer HOST plus the host's own LAN
+#   (the greffer NATs peer traffic out, like any self-hosted WireGuard server).
+#   This is normal VPN behavior, not a Greffon isolation hole. You control it
+#   per peer via wg-easy AllowedIPs: leave it 0.0.0.0/0 to also reach your home
+#   network (a common reason to run a personal VPN), or restrict it to specific
+#   subnets to give a peer internet-only access.
+#   => Practical guidance: do not bind sensitive services directly on the greffer
+#      host to 0.0.0.0 if you hand out broad-AllowedIPs peer configs, and scope a
+#      guest/contractor peer's AllowedIPs to what they need.
 # ============================================================================
 #
 # Mixed-tier entry:
