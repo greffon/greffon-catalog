@@ -4,7 +4,7 @@
   "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. Your other greffons stay isolated from VPN peers, but like any full-tunnel VPN a peer can also reach the host running this VPN and its local network; scope a peer's AllowedIPs (in the UI) to limit that.",
   "categories": ["networking"],
   "images": [],
-  "min_greffer_version": "0.3.0",
+  "min_greffer_version": "0.3.3",
   "ports": [
     {
       "name": "wg-easy_51820",
@@ -30,7 +30,7 @@
           "value": {
             "type": "string",
             "title": "Admin password",
-            "description": "Password for the wg-easy web UI (username: admin). At least 12 characters — wg-easy rejects a shorter one at login, which would lock you out. Applied on first start only; change it later from the UI itself.",
+            "description": "Password for the wg-easy web UI (username: admin). At least 12 characters: wg-easy rejects a shorter one at login, which would lock you out. Applied on first start only; change it later from the UI itself.",
             "writeOnly": true,
             "minLength": 12
           }

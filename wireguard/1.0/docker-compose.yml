@@ -2,8 +2,9 @@ version: "3"
 
 # ============================================================================
 # L4 (Tier-C) reference greffon for the l4-network-exposure epic.
-# Deploy-verified 2026-06 on a proxy-mode greffer. Resolution of the three
-# draft open items:
+# Deploy-verified 2026-06 on a proxy-mode greffer AND 2026-06-11 on a
+# tunnel-mode greffer (live WireGuard Noise handshake through the rathole
+# relay, tunnel-mode same_port). Resolution of the three draft open items:
 #   1. Web-UI auth across wg-easy majors (why :15 is the only viable pin):
 #      - v13: accepts plaintext PASSWORD but has no advertise/listen port
 #        split (WG_PORT is both), so client configs can never point at the
@@ -20,13 +21,19 @@ version: "3"
 #   2. Advertised vs listen UDP port: v15 dropped v14's WG_CONFIG_PORT split,
 #      so INIT_PORT sets BOTH the client-config endpoint AND the wg device
 #      listen port (deploy-verified: wg0 listens on INIT_PORT). RESOLVED by
-#      `same_port: true` on the wg-easy_51820 ports[] entry (greffer >= 0.3.0,
-#      enforced via min_greffer_version): the greffer publishes the allocated
-#      host port on BOTH sides (host P -> container P) and keeps it sticky
-#      across restarts, so INIT_PORT (= {{ instance_l4_port }} = P) is at once
-#      the advertised endpoint, the in-container listen port, and the published
+#      `same_port: true` on the wg-easy_51820 ports[] entry (greffer >= 0.3.3,
+#      enforced via min_greffer_version): the greffer publishes the L4 service
+#      container-side = the advertised port {{ instance_l4_port }} in BOTH
+#      modes. Proxy: host P -> container P (P = the allocated, sticky host
+#      port). Tunnel: loopback port_host -> container tunnel_port (the
+#      manager-allocated relay port, handed off as {{ instance_l4_port }}).
+#      Either way INIT_PORT (= {{ instance_l4_port }}) is at once the
+#      advertised endpoint, the in-container listen port, and the published
 #      container port. No manual step, and the endpoint survives restarts.
-#      Datapath previously verified with a live WireGuard client: Noise
+#      The 0.3.3 floor is load-bearing for tunnel mode: a 0.3.0-0.3.2 greffer
+#      would publish container-side = port_host (proxy semantics) while the
+#      app listens on the relay port, a silent datapath mismatch.
+#      Datapath verified with a live WireGuard client in both modes: Noise
 #      handshake + bidirectional traffic through the published UDP port.
 #   3. Caps: NET_ADMIN alone is NOT enough: wg-quick's iptables step needs
 #      NET_RAW too ("can't initialize iptables table `nat': Permission
@@ -91,8 +98,9 @@ services:
       # Public endpoint written into client configs, from the greffer L4
       # endpoint vars (#52). v15 also applies INIT_PORT to the wg device
       # listen port, which is exactly right under same_port: the greffer
-      # publishes host P -> container P with P = {{ instance_l4_port }},
-      # so advertise == listen == published, sticky across restarts
+      # publishes the container side = {{ instance_l4_port }} in both modes
+      # (proxy: the allocated sticky host port; tunnel: the relay's
+      # tunnel_port), so advertise == listen == published either way
       # (see note 2 above).
       INIT_HOST: "{{ instance_l4_host }}"
       INIT_PORT: "{{ instance_l4_port }}"
