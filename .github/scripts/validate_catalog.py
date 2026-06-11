@@ -209,10 +209,14 @@ def validate_greffon_dir(catalog_root, rel_dir):
         if p.get("same_port") and p.get("exposure_tier") != "l4":
             errors.append(
                 f"{rel_dir}: ports[{pname!r}].same_port requires exposure_tier 'l4'")
-    # Pairing: same_port needs a greffer that implements it (>= 0.3.0), enforced
-    # at start by the min_greffer_version compat gate — so the floor must be
-    # declared and high enough (zero-padded dotted-numeric compare, matching
-    # the manager's comparator).
+    # Pairing: same_port needs a greffer that implements it on EVERY mode the
+    # entry can be deployed to, enforced at start by the min_greffer_version
+    # compat gate. Proxy-mode same_port shipped in greffer 0.3.0; tunnel-mode
+    # in 0.3.3 (container-side = instance_l4_port; a 0.3.0-0.3.2 greffer
+    # publishes the proxy-semantics container port while the app listens on
+    # the relay port, a silent datapath mismatch). The catalog cannot know
+    # which mode an entry lands on, so the floor is the max of the two: 0.3.3
+    # (zero-padded dotted-numeric compare, matching the manager's comparator).
     if any(isinstance(p, dict) and p.get("same_port") for p in ports_meta or []):
         mgv = meta.get("min_greffer_version")
         try:
@@ -220,10 +224,11 @@ def validate_greffon_dir(catalog_root, rel_dir):
             mgv_tuple = (parts + (0,) * (3 - len(parts)))[:3] if parts else None
         except (ValueError, AttributeError):
             mgv_tuple = None
-        if mgv_tuple is None or mgv_tuple < (0, 3, 0):
+        if mgv_tuple is None or mgv_tuple < (0, 3, 3):
             errors.append(
                 f"{rel_dir}: a 'same_port' port requires 'min_greffer_version' "
-                f">= 0.3.0 (the greffer release that implements same_port)")
+                f">= 0.3.3 (proxy-mode same_port shipped in greffer 0.3.0, "
+                f"tunnel-mode in 0.3.3; the floor must cover both deploy modes)")
 
     # Cross-check: top-level volumes must be referenced by at least one service mount.
     if isinstance(compose, dict) and compose_volumes:
