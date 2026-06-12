@@ -58,13 +58,13 @@ services:
 
   livekit:
     # WebRTC SFU. Config (API keys, single-port UDP mux, external-IP
-    # advertisement, redis, webhook) is rendered per-instance into
-    # /etc/livekit.yaml — see metadata.json `LiveKit config` (x-greffon-render).
+    # advertisement, webhook) is rendered per-instance into /etc/livekit.yaml —
+    # see metadata.json `LiveKit config` (x-greffon-render). Single LiveKit node,
+    # so no redis (in-process single-node routing); see that config's comment for
+    # the rationale and the same-LAN `node_ip` deploy note.
     image: livekit/livekit-server:v1.8
     restart: on-failure
     command: ["--config", "/etc/livekit.yaml"]
-    depends_on:
-      - redis
     volumes:
       - livekit_conf:/etc
     # 7880 (signaling/HTTP) and 7881 (TCP fallback) are internal-only, reached
