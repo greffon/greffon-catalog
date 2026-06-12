@@ -14,10 +14,11 @@ version: "3"
 #
 # WebRTC media: LiveKit needs a public UDP port the browser dials directly. The
 # greffer publishes the livekit UDP port as a Tier-C / L4 port with `same_port`
-# (see metadata.json `ports`), so the published host port == the container port
-# == what LiveKit advertises in its ICE candidates ({{ instance_l4_port }}).
-# LiveKit runs in single-port UDP mux mode (one media port, no range) and
-# advertises its external IP, so a single L4 UDP port is enough.
+# (see metadata.json `ports`) and hands back the public endpoint as
+# {{ instance_l4_host }}:{{ instance_l4_port }}, binding the container to that
+# same port. LiveKit's config advertises exactly that (node_ip + udp_port), so
+# advertise == listen == public in both proxy and tunnel mode. Single-port UDP
+# mux (one media port, no range), so one L4 UDP port is enough.
 #
 # Heavy: ~10 services + WebRTC. First boot pulls several GB; Keycloak takes
 # ~30-60s to import the realm. Demo login: demo / demo.
@@ -57,11 +58,12 @@ services:
       exit 0;"
 
   livekit:
-    # WebRTC SFU. Config (API keys, single-port UDP mux, external-IP
-    # advertisement, webhook) is rendered per-instance into /etc/livekit.yaml —
-    # see metadata.json `LiveKit config` (x-greffon-render). Single LiveKit node,
-    # so no redis (in-process single-node routing); see that config's comment for
-    # the rationale and the same-LAN `node_ip` deploy note.
+    # WebRTC SFU. Config (API keys, single-port UDP mux, the advertised endpoint
+    # from instance_l4_host/_port, webhook) is rendered per-instance into
+    # /etc/livekit.yaml — see metadata.json `LiveKit config` (x-greffon-render).
+    # Single LiveKit node, so no redis (in-process single-node routing); see that
+    # config's comment for the rationale and the literal-IP requirement on
+    # GREFFER_PUBLIC_HOST / RATHOLE_PUBLIC_HOST.
     image: livekit/livekit-server:v1.8
     restart: on-failure
     command: ["--config", "/etc/livekit.yaml"]
