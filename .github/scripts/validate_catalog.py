@@ -206,6 +206,32 @@ def find_all_greffon_dirs(catalog_root):
     return dirs
 
 
+def _compose_exposed_ports(compose):
+    """Map of ``{service}_{container_port}`` -> transport (``'tcp'``/``'udp'``)
+    that the importer/greffer derive from a compose. Mirrors
+    import_catalog._parse_ports: short-form ``ports:`` string entries only
+    (``"published:container"`` with an optional bind-IP prefix and ``/proto``
+    suffix); long-form target/published mappings and bare single ports yield no
+    entry (no catalog entry uses them, and neither does the importer)."""
+    ports = {}
+    if not isinstance(compose, dict):
+        return ports
+    services = compose.get("services")
+    if not isinstance(services, dict):
+        return ports  # shape error already recorded by the compose validation
+    for svc_name, svc_def in services.items():
+        if not isinstance(svc_def, dict):
+            continue
+        for entry in svc_def.get("ports") or []:
+            if not isinstance(entry, str):
+                continue
+            spec, _, proto = entry.strip().partition("/")
+            parts = spec.split(":")
+            if len(parts) >= 2 and parts[-1].isdigit():
+                ports[f"{svc_name}_{parts[-1]}"] = "udp" if proto.strip().lower() == "udp" else "tcp"
+    return ports
+
+
 def validate_greffon_dir(catalog_root, rel_dir):
     """Validate a single greffon directory. Returns list of error strings."""
     errors = []
@@ -291,10 +317,109 @@ def validate_greffon_dir(catalog_root, rel_dir):
         if val is not None and not isinstance(val, list):
             errors.append(f"{rel_dir}: metadata.json '{field}' must be a list")
 
+    # L4 per-port declarations (optional `ports` list). Mirrors the structural
+    # checks in the manager's import_catalog._validate_meta (the importer is
+    # still authoritative server-side) so a malformed entry fails at CI, not
+    # only at import. One deliberate divergence: the same_port version floor
+    # below is stricter here than in the importer (see that block).
+    ports_meta = meta.get("ports")
+    if ports_meta is not None and not isinstance(ports_meta, list):
+        errors.append(f"{rel_dir}: metadata.json 'ports' must be a list")
+        ports_meta = []
+    exposed_ports = _compose_exposed_ports(compose) if isinstance(compose, dict) else {}
+    for p in ports_meta or []:
+        if not isinstance(p, dict) or not isinstance(p.get("name"), str) or not p["name"].strip():
+            errors.append(
+                f"{rel_dir}: each 'ports' entry must be an object with a non-empty 'name'")
+            continue
+        pname = p["name"]
+        if p.get("exposure_tier") not in (None, "http", "l4"):
+            errors.append(
+                f"{rel_dir}: ports[{pname!r}].exposure_tier must be 'http' or 'l4'")
+        if p.get("protocol") not in (None, "tcp", "udp"):
+            errors.append(
+                f"{rel_dir}: ports[{pname!r}].protocol must be 'tcp' or 'udp'")
+        for bool_key in ("udp_reviewed", "same_port"):
+            if p.get(bool_key) is not None and not isinstance(p.get(bool_key), bool):
+                errors.append(
+                    f"{rel_dir}: ports[{pname!r}].{bool_key} must be a boolean")
+        # same_port rewrites the published container port; only meaningful for
+        # a raw (Tier-C) port the greffer host-publishes.
+        if p.get("same_port") and p.get("exposure_tier") != "l4":
+            errors.append(
+                f"{rel_dir}: ports[{pname!r}].same_port requires exposure_tier 'l4'")
+        # A raw UDP (Tier-C) port is default-denied by the manager
+        # (assert_udp_allowed) unless its catalog entry has been reviewed as
+        # non-amplifiable. Such a port with udp_reviewed != true validates here
+        # but then fails to start, so require the review flag at CI (record the
+        # rationale in a `review_note`).
+        if p.get("exposure_tier") == "l4" and p.get("protocol") == "udp" \
+                and p.get("udp_reviewed") is not True:
+            errors.append(
+                f"{rel_dir}: ports[{pname!r}] is a raw UDP (l4) port and requires "
+                f"'udp_reviewed': true (the manager default-denies unreviewed UDP "
+                f"as a reflection/amplification guard)")
+        # The published transport follows metadata `protocol`: the greffer clears
+        # the compose ports and republishes L4 ports from it, dropping the compose
+        # `/proto` suffix. A metadata/compose protocol mismatch therefore ships
+        # the wrong transport (e.g. the compose marks `/udp` but metadata defaults
+        # to tcp, so a UDP app gets a TCP port and, conversely, an unreviewed UDP
+        # intent slips the udp_reviewed gate). It is almost always an authoring
+        # slip, so reject it and keep the two in sync.
+        compose_proto = exposed_ports.get(pname)
+        if compose_proto is not None and p.get("protocol") in (None, "tcp", "udp"):
+            meta_proto = p.get("protocol") or "tcp"
+            if meta_proto != compose_proto:
+                errors.append(
+                    f"{rel_dir}: ports[{pname!r}].protocol ({meta_proto!r}) does not "
+                    f"match the compose port's transport ({compose_proto!r}); the "
+                    f"published transport follows metadata, so align them")
+    # Pairing: same_port needs a greffer that implements it on EVERY mode the
+    # entry can be deployed to, enforced at start by the min_greffer_version
+    # compat gate. Proxy-mode same_port shipped in greffer 0.3.0; tunnel-mode
+    # in 0.3.3 (container-side = instance_l4_port; a 0.3.0-0.3.2 greffer
+    # publishes the proxy-semantics container port while the app listens on
+    # the relay port, a silent datapath mismatch). The catalog cannot know
+    # which mode an entry lands on, so the floor is the max of the two: 0.3.3
+    # (zero-padded dotted-numeric compare, matching the manager's comparator).
+    # NOTE: the importer's own same_port floor is only 0.3.0 (it does not yet
+    # enforce the mode-agnostic 0.3.3), so this CI gate is intentionally the
+    # stricter of the two; the importer floor should be raised to match in a
+    # separate manager change.
+    if any(isinstance(p, dict) and p.get("same_port") for p in ports_meta or []):
+        mgv = meta.get("min_greffer_version")
+        try:
+            parts = tuple(int(x) for x in str(mgv).split(".")) if mgv else None
+            mgv_tuple = (parts + (0,) * (3 - len(parts)))[:3] if parts else None
+        except (ValueError, AttributeError):
+            mgv_tuple = None
+        if mgv_tuple is None or mgv_tuple < (0, 3, 3):
+            errors.append(
+                f"{rel_dir}: a 'same_port' port requires 'min_greffer_version' "
+                f">= 0.3.3 (proxy-mode same_port shipped in greffer 0.3.0, "
+                f"tunnel-mode in 0.3.3; the floor must cover both deploy modes)")
+
+    # Cross-check ports[] names against the compose-exposed ports. The importer
+    # hard-errors when a `same_port` entry names a port the compose does not
+    # expose (the rewrite would target nothing and the L4 datapath silently
+    # drops); mirror that here so a name typo fails at CI, not only at server
+    # import. A non-same_port name mismatch only degrades to Tier-A in the
+    # importer (a warning, not a failure), so it is not gated here.
+    if isinstance(compose, dict) and ports_meta:
+        for p in ports_meta:
+            if not (isinstance(p, dict) and p.get("same_port")):
+                continue
+            pname = p.get("name")
+            if isinstance(pname, str) and pname.strip() and pname not in exposed_ports:
+                errors.append(
+                    f"{rel_dir}: ports[{pname!r}] sets same_port but names a port "
+                    f"the compose does not expose (exposed: {sorted(exposed_ports)}); "
+                    f"the greffer rewrite would target nothing")
+
     # Cross-check: top-level volumes must be referenced by at least one service mount.
-    if isinstance(compose, dict) and compose_volumes:
+    if isinstance(compose, dict) and compose_volumes and isinstance(compose.get("services"), dict):
         used_volumes = set()
-        for svc_def in (compose.get("services") or {}).values():
+        for svc_def in compose["services"].values():
             if not isinstance(svc_def, dict):
                 continue
             for vol_entry in svc_def.get("volumes") or []:
@@ -673,8 +798,9 @@ def validate_greffon_dir(catalog_root, rel_dir):
         compose_keys = compose_smtp_env_keys.get(svc, set())
 
         compose_env = {}
-        if isinstance(compose, dict):
-            svc_def = (compose.get("services") or {}).get(svc)
+        _services = compose.get("services") if isinstance(compose, dict) else None
+        if isinstance(_services, dict):
+            svc_def = _services.get(svc)
             if isinstance(svc_def, dict) and isinstance(svc_def.get("environment"), dict):
                 compose_env = svc_def["environment"]
 

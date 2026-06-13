@@ -694,6 +694,189 @@ class JinjaSurvivesYamlDumpRoundTrip(unittest.TestCase):
             )
 
 
+class L4PortsMetadataTest(unittest.TestCase):
+    """The `ports[]` L4 declarations added for the l4-network-exposure epic:
+    exposure_tier / protocol / boolean shapes, the same_port->l4 pairing, the
+    same_port min_greffer_version floor, and the compose-name cross-check that
+    mirrors the importer's hard-fail on a same_port port the compose doesn't
+    expose."""
+
+    # Exposes app_51820/udp and app_51821/tcp (so the cross-check has real
+    # names to match against).
+    COMPOSE = textwrap.dedent("""\
+        services:
+          app:
+            image: nginx
+            ports:
+              - "51821:51821"
+              - "51820:51820/udp"
+            volumes:
+              - data:/data
+        volumes:
+          data:
+        """)
+
+    def _errs(self, *, ports, min_greffer_version=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            extra = {"ports": ports}
+            if min_greffer_version is not None:
+                extra["min_greffer_version"] = min_greffer_version
+            rel = _write_greffon(
+                tmp, metadata=_base_metadata(**extra), compose_yaml=self.COMPOSE)
+            return validate_greffon_dir(tmp, rel)
+
+    def test_valid_l4_ports_block_passes(self):
+        errs = self._errs(
+            ports=[
+                {"name": "app_51820", "exposure_tier": "l4", "protocol": "udp",
+                 "udp_reviewed": True, "same_port": True},
+                {"name": "app_51821", "exposure_tier": "http", "protocol": "tcp"},
+            ],
+            min_greffer_version="0.3.3")
+        self.assertFalse(
+            any("ports[" in e or "min_greffer_version" in e for e in errs),
+            f"valid L4 ports block should pass, got {errs}")
+
+    def test_ports_not_a_list_rejected(self):
+        errs = self._errs(ports={"name": "app_80"})
+        self.assertTrue(
+            any("'ports' must be a list" in e for e in errs),
+            f"expected 'ports must be a list' error, got {errs}")
+
+    def test_bad_exposure_tier_rejected(self):
+        errs = self._errs(ports=[{"name": "app_51821", "exposure_tier": "internal"}])
+        self.assertTrue(
+            any("exposure_tier must be 'http' or 'l4'" in e for e in errs),
+            f"expected exposure_tier error, got {errs}")
+
+    def test_bad_protocol_rejected(self):
+        errs = self._errs(ports=[{"name": "app_51821", "protocol": "sctp"}])
+        self.assertTrue(
+            any("protocol must be 'tcp' or 'udp'" in e for e in errs),
+            f"expected protocol error, got {errs}")
+
+    def test_non_bool_udp_reviewed_rejected(self):
+        errs = self._errs(ports=[{"name": "app_51821", "udp_reviewed": "yes"}])
+        self.assertTrue(
+            any("udp_reviewed must be a boolean" in e for e in errs),
+            f"expected udp_reviewed bool error, got {errs}")
+
+    def test_same_port_on_http_tier_rejected(self):
+        errs = self._errs(
+            ports=[{"name": "app_51821", "exposure_tier": "http", "same_port": True}],
+            min_greffer_version="0.3.3")
+        self.assertTrue(
+            any("same_port requires exposure_tier 'l4'" in e for e in errs),
+            f"expected same_port->l4 error, got {errs}")
+
+    def test_same_port_floor_below_0_3_3_rejected(self):
+        errs = self._errs(
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "protocol": "udp",
+                    "udp_reviewed": True, "same_port": True}],
+            min_greffer_version="0.3.2")
+        self.assertTrue(
+            any("requires 'min_greffer_version'" in e for e in errs),
+            f"expected min_greffer_version floor error, got {errs}")
+
+    def test_same_port_floor_at_0_3_3_passes(self):
+        errs = self._errs(
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "protocol": "udp",
+                    "udp_reviewed": True, "same_port": True}],
+            min_greffer_version="0.3.3")
+        self.assertFalse(
+            any("min_greffer_version" in e for e in errs),
+            f"0.3.3 floor should pass, got {errs}")
+
+    def test_same_port_name_not_exposed_rejected(self):
+        # app_99999 is not in the compose -> the greffer rewrite would target
+        # nothing (the importer hard-fails this; so must CI).
+        errs = self._errs(
+            ports=[{"name": "app_99999", "exposure_tier": "l4", "same_port": True}],
+            min_greffer_version="0.3.3")
+        self.assertTrue(
+            any("the compose does not expose" in e for e in errs),
+            f"expected same_port name cross-check error, got {errs}")
+
+    def test_same_port_name_exposed_passes(self):
+        errs = self._errs(
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "protocol": "udp",
+                    "udp_reviewed": True, "same_port": True}],
+            min_greffer_version="0.3.3")
+        self.assertFalse(
+            any("the compose does not expose" in e for e in errs),
+            f"exposed same_port name should pass cross-check, got {errs}")
+
+    def test_udp_l4_without_reviewed_rejected(self):
+        # l4 + udp without udp_reviewed:true validates here but the manager
+        # default-denies it at start, so CI must reject it.
+        errs = self._errs(
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "protocol": "udp"}])
+        self.assertTrue(
+            any("requires 'udp_reviewed': true" in e for e in errs),
+            f"expected udp_reviewed-required error, got {errs}")
+
+    def test_udp_l4_reviewed_false_rejected(self):
+        errs = self._errs(ports=[{
+            "name": "app_51820", "exposure_tier": "l4",
+            "protocol": "udp", "udp_reviewed": False}])
+        self.assertTrue(
+            any("requires 'udp_reviewed': true" in e for e in errs),
+            f"udp_reviewed:false should be rejected, got {errs}")
+
+    def test_udp_l4_reviewed_true_passes(self):
+        errs = self._errs(ports=[{
+            "name": "app_51820", "exposure_tier": "l4",
+            "protocol": "udp", "udp_reviewed": True}])
+        self.assertFalse(
+            any("udp_reviewed" in e for e in errs),
+            f"reviewed udp l4 port should pass, got {errs}")
+
+    def test_protocol_mismatch_with_compose_rejected(self):
+        # compose app_51820 is published /udp; declaring it tcp would ship the
+        # wrong transport (the greffer republishes L4 ports from metadata).
+        errs = self._errs(ports=[{
+            "name": "app_51820", "exposure_tier": "l4", "protocol": "tcp"}])
+        self.assertTrue(
+            any("does not match the compose port" in e for e in errs),
+            f"expected protocol mismatch error, got {errs}")
+
+    def test_protocol_omitted_defaults_tcp_mismatch_rejected(self):
+        # No protocol -> defaults tcp, but compose app_51820 is /udp: a UDP app
+        # would silently get a TCP port. This is the case Codex flagged.
+        errs = self._errs(ports=[{"name": "app_51820", "exposure_tier": "l4"}])
+        self.assertTrue(
+            any("does not match the compose port" in e for e in errs),
+            f"omitted protocol on a /udp compose port should be rejected, got {errs}")
+
+    def test_protocol_match_with_compose_passes(self):
+        errs = self._errs(ports=[{
+            "name": "app_51820", "exposure_tier": "l4",
+            "protocol": "udp", "udp_reviewed": True}])
+        self.assertFalse(
+            any("does not match the compose port" in e for e in errs),
+            f"matching protocol should pass, got {errs}")
+
+
+class ComposeShapeRobustnessTest(unittest.TestCase):
+    """The validator must report a malformed compose as a lint error, not crash
+    on it (Codex P3: a non-mapping `services` made `_compose_exposed_ports` and
+    the volume cross-check raise AttributeError and abort the whole run)."""
+
+    def test_non_mapping_services_does_not_crash(self):
+        compose = textwrap.dedent("""\
+            services:
+              - app
+            volumes:
+              data:
+            """)
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(), compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)  # must not raise
+        self.assertTrue(
+            any("services" in e for e in errs),
+            f"expected a 'services' shape error, got {errs}")
+
+
 def _data_uri(text):
     return "data:text/plain;base64," + base64.b64encode(text.encode("utf-8")).decode("ascii")
 

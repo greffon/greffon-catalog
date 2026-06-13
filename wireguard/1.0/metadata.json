@@ -1,0 +1,45 @@
+{
+  "name": "WireGuard",
+  "logo": "https://avatars.githubusercontent.com/u/105704026",
+  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. Your other greffons stay isolated from VPN peers, but like any full-tunnel VPN a peer can also reach the host running this VPN and its local network. wg-easy's AllowedIPs only sets the peer's own client-side routing (it is not enforced by the server), so only give a peer config to someone you trust with access to that network.",
+  "categories": ["networking"],
+  "images": [],
+  "min_greffer_version": "0.3.3",
+  "ports": [
+    {
+      "name": "wg-easy_51820",
+      "exposure_tier": "l4",
+      "protocol": "udp",
+      "udp_reviewed": true,
+      "same_port": true,
+      "review_note": "WireGuard sends no response before a valid Noise handshake, so it cannot be used for UDP reflection/amplification. Non-amplifiable. Reviewed 2026-06."
+    },
+    {
+      "name": "wg-easy_51821",
+      "exposure_tier": "http",
+      "protocol": "tcp"
+    }
+  ],
+  "configurations": [
+    {
+      "title": "Admin password",
+      "schema": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Admin password",
+            "description": "Password for the wg-easy web UI (username: admin). At least 12 characters: wg-easy rejects a shorter one at login, which would lock you out. Applied on first start only; change it later from the UI itself.",
+            "writeOnly": true,
+            "minLength": 12
+          }
+        }
+      },
+      "default_value": { "value": "" },
+      "destinations": [
+        { "type": "env", "container": "wg-easy", "key": "INIT_PASSWORD" }
+      ]
+    }
+  ]
+}
