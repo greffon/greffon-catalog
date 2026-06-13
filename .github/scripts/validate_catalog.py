@@ -96,6 +96,29 @@ def find_all_greffon_dirs(catalog_root):
     return dirs
 
 
+def _compose_exposed_port_names(compose):
+    """Port names the importer/greffer derive from a compose, as
+    ``{service}_{container_port}``. Mirrors import_catalog._parse_ports:
+    short-form ``ports:`` string entries only (``"published:container"`` with an
+    optional bind-IP prefix and ``/proto`` suffix); long-form target/published
+    mappings and bare single ports yield no name (no catalog entry uses them,
+    and neither does the importer)."""
+    names = set()
+    if not isinstance(compose, dict):
+        return names
+    for svc_name, svc_def in (compose.get("services") or {}).items():
+        if not isinstance(svc_def, dict):
+            continue
+        for entry in svc_def.get("ports") or []:
+            if not isinstance(entry, str):
+                continue
+            spec = entry.split("/", 1)[0].strip()
+            parts = spec.split(":")
+            if len(parts) >= 2 and parts[-1].isdigit():
+                names.add(f"{svc_name}_{parts[-1]}")
+    return names
+
+
 def validate_greffon_dir(catalog_root, rel_dir):
     """Validate a single greffon directory. Returns list of error strings."""
     errors = []
@@ -181,9 +204,11 @@ def validate_greffon_dir(catalog_root, rel_dir):
         if val is not None and not isinstance(val, list):
             errors.append(f"{rel_dir}: metadata.json '{field}' must be a list")
 
-    # L4 per-port declarations (optional `ports` list). Mirrors the manager's
-    # import_catalog._validate_meta so an entry the CI validator passes is one
-    # the importer accepts (the importer is still authoritative server-side).
+    # L4 per-port declarations (optional `ports` list). Mirrors the structural
+    # checks in the manager's import_catalog._validate_meta (the importer is
+    # still authoritative server-side) so a malformed entry fails at CI, not
+    # only at import. One deliberate divergence: the same_port version floor
+    # below is stricter here than in the importer (see that block).
     ports_meta = meta.get("ports")
     if ports_meta is not None and not isinstance(ports_meta, list):
         errors.append(f"{rel_dir}: metadata.json 'ports' must be a list")
@@ -217,6 +242,10 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # the relay port, a silent datapath mismatch). The catalog cannot know
     # which mode an entry lands on, so the floor is the max of the two: 0.3.3
     # (zero-padded dotted-numeric compare, matching the manager's comparator).
+    # NOTE: the importer's own same_port floor is only 0.3.0 (it does not yet
+    # enforce the mode-agnostic 0.3.3), so this CI gate is intentionally the
+    # stricter of the two; the importer floor should be raised to match in a
+    # separate manager change.
     if any(isinstance(p, dict) and p.get("same_port") for p in ports_meta or []):
         mgv = meta.get("min_greffer_version")
         try:
@@ -229,6 +258,24 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 f"{rel_dir}: a 'same_port' port requires 'min_greffer_version' "
                 f">= 0.3.3 (proxy-mode same_port shipped in greffer 0.3.0, "
                 f"tunnel-mode in 0.3.3; the floor must cover both deploy modes)")
+
+    # Cross-check ports[] names against the compose-exposed ports. The importer
+    # hard-errors when a `same_port` entry names a port the compose does not
+    # expose (the rewrite would target nothing and the L4 datapath silently
+    # drops); mirror that here so a name typo fails at CI, not only at server
+    # import. A non-same_port name mismatch only degrades to Tier-A in the
+    # importer (a warning, not a failure), so it is not gated here.
+    if isinstance(compose, dict) and ports_meta:
+        exposed = _compose_exposed_port_names(compose)
+        for p in ports_meta:
+            if not (isinstance(p, dict) and p.get("same_port")):
+                continue
+            pname = p.get("name")
+            if isinstance(pname, str) and pname.strip() and pname not in exposed:
+                errors.append(
+                    f"{rel_dir}: ports[{pname!r}] sets same_port but names a port "
+                    f"the compose does not expose (exposed: {sorted(exposed)}); "
+                    f"the greffer rewrite would target nothing")
 
     # Cross-check: top-level volumes must be referenced by at least one service mount.
     if isinstance(compose, dict) and compose_volumes:

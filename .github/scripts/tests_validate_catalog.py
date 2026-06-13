@@ -689,5 +689,115 @@ class JinjaSurvivesYamlDumpRoundTrip(unittest.TestCase):
             )
 
 
+class L4PortsMetadataTest(unittest.TestCase):
+    """The `ports[]` L4 declarations added for the l4-network-exposure epic:
+    exposure_tier / protocol / boolean shapes, the same_port->l4 pairing, the
+    same_port min_greffer_version floor, and the compose-name cross-check that
+    mirrors the importer's hard-fail on a same_port port the compose doesn't
+    expose."""
+
+    # Exposes app_51820/udp and app_51821/tcp (so the cross-check has real
+    # names to match against).
+    COMPOSE = textwrap.dedent("""\
+        services:
+          app:
+            image: nginx
+            ports:
+              - "51821:51821"
+              - "51820:51820/udp"
+            volumes:
+              - data:/data
+        volumes:
+          data:
+        """)
+
+    def _errs(self, *, ports, min_greffer_version=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            extra = {"ports": ports}
+            if min_greffer_version is not None:
+                extra["min_greffer_version"] = min_greffer_version
+            rel = _write_greffon(
+                tmp, metadata=_base_metadata(**extra), compose_yaml=self.COMPOSE)
+            return validate_greffon_dir(tmp, rel)
+
+    def test_valid_l4_ports_block_passes(self):
+        errs = self._errs(
+            ports=[
+                {"name": "app_51820", "exposure_tier": "l4", "protocol": "udp",
+                 "udp_reviewed": True, "same_port": True},
+                {"name": "app_51821", "exposure_tier": "http", "protocol": "tcp"},
+            ],
+            min_greffer_version="0.3.3")
+        self.assertFalse(
+            any("ports[" in e or "min_greffer_version" in e for e in errs),
+            f"valid L4 ports block should pass, got {errs}")
+
+    def test_ports_not_a_list_rejected(self):
+        errs = self._errs(ports={"name": "app_80"})
+        self.assertTrue(
+            any("'ports' must be a list" in e for e in errs),
+            f"expected 'ports must be a list' error, got {errs}")
+
+    def test_bad_exposure_tier_rejected(self):
+        errs = self._errs(ports=[{"name": "app_51821", "exposure_tier": "internal"}])
+        self.assertTrue(
+            any("exposure_tier must be 'http' or 'l4'" in e for e in errs),
+            f"expected exposure_tier error, got {errs}")
+
+    def test_bad_protocol_rejected(self):
+        errs = self._errs(ports=[{"name": "app_51821", "protocol": "sctp"}])
+        self.assertTrue(
+            any("protocol must be 'tcp' or 'udp'" in e for e in errs),
+            f"expected protocol error, got {errs}")
+
+    def test_non_bool_udp_reviewed_rejected(self):
+        errs = self._errs(ports=[{"name": "app_51821", "udp_reviewed": "yes"}])
+        self.assertTrue(
+            any("udp_reviewed must be a boolean" in e for e in errs),
+            f"expected udp_reviewed bool error, got {errs}")
+
+    def test_same_port_on_http_tier_rejected(self):
+        errs = self._errs(
+            ports=[{"name": "app_51821", "exposure_tier": "http", "same_port": True}],
+            min_greffer_version="0.3.3")
+        self.assertTrue(
+            any("same_port requires exposure_tier 'l4'" in e for e in errs),
+            f"expected same_port->l4 error, got {errs}")
+
+    def test_same_port_floor_below_0_3_3_rejected(self):
+        errs = self._errs(
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "same_port": True}],
+            min_greffer_version="0.3.2")
+        self.assertTrue(
+            any("requires 'min_greffer_version'" in e for e in errs),
+            f"expected min_greffer_version floor error, got {errs}")
+
+    def test_same_port_floor_at_0_3_3_passes(self):
+        errs = self._errs(
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "same_port": True}],
+            min_greffer_version="0.3.3")
+        self.assertFalse(
+            any("min_greffer_version" in e for e in errs),
+            f"0.3.3 floor should pass, got {errs}")
+
+    def test_same_port_name_not_exposed_rejected(self):
+        # app_99999 is not in the compose -> the greffer rewrite would target
+        # nothing (the importer hard-fails this; so must CI).
+        errs = self._errs(
+            ports=[{"name": "app_99999", "exposure_tier": "l4", "same_port": True}],
+            min_greffer_version="0.3.3")
+        self.assertTrue(
+            any("the compose does not expose" in e for e in errs),
+            f"expected same_port name cross-check error, got {errs}")
+
+    def test_same_port_name_exposed_passes(self):
+        errs = self._errs(
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "same_port": True}],
+            min_greffer_version="0.3.3")
+        self.assertFalse(
+            any("the compose does not expose" in e for e in errs),
+            f"exposed same_port name should pass cross-check, got {errs}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
