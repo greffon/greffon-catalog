@@ -771,7 +771,8 @@ class L4PortsMetadataTest(unittest.TestCase):
 
     def test_same_port_floor_below_0_3_3_rejected(self):
         errs = self._errs(
-            ports=[{"name": "app_51820", "exposure_tier": "l4", "same_port": True}],
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "protocol": "udp",
+                    "udp_reviewed": True, "same_port": True}],
             min_greffer_version="0.3.2")
         self.assertTrue(
             any("requires 'min_greffer_version'" in e for e in errs),
@@ -779,7 +780,8 @@ class L4PortsMetadataTest(unittest.TestCase):
 
     def test_same_port_floor_at_0_3_3_passes(self):
         errs = self._errs(
-            ports=[{"name": "app_51820", "exposure_tier": "l4", "same_port": True}],
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "protocol": "udp",
+                    "udp_reviewed": True, "same_port": True}],
             min_greffer_version="0.3.3")
         self.assertFalse(
             any("min_greffer_version" in e for e in errs),
@@ -797,7 +799,8 @@ class L4PortsMetadataTest(unittest.TestCase):
 
     def test_same_port_name_exposed_passes(self):
         errs = self._errs(
-            ports=[{"name": "app_51820", "exposure_tier": "l4", "same_port": True}],
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "protocol": "udp",
+                    "udp_reviewed": True, "same_port": True}],
             min_greffer_version="0.3.3")
         self.assertFalse(
             any("the compose does not expose" in e for e in errs),
@@ -827,6 +830,31 @@ class L4PortsMetadataTest(unittest.TestCase):
         self.assertFalse(
             any("udp_reviewed" in e for e in errs),
             f"reviewed udp l4 port should pass, got {errs}")
+
+    def test_protocol_mismatch_with_compose_rejected(self):
+        # compose app_51820 is published /udp; declaring it tcp would ship the
+        # wrong transport (the greffer republishes L4 ports from metadata).
+        errs = self._errs(ports=[{
+            "name": "app_51820", "exposure_tier": "l4", "protocol": "tcp"}])
+        self.assertTrue(
+            any("does not match the compose port" in e for e in errs),
+            f"expected protocol mismatch error, got {errs}")
+
+    def test_protocol_omitted_defaults_tcp_mismatch_rejected(self):
+        # No protocol -> defaults tcp, but compose app_51820 is /udp: a UDP app
+        # would silently get a TCP port. This is the case Codex flagged.
+        errs = self._errs(ports=[{"name": "app_51820", "exposure_tier": "l4"}])
+        self.assertTrue(
+            any("does not match the compose port" in e for e in errs),
+            f"omitted protocol on a /udp compose port should be rejected, got {errs}")
+
+    def test_protocol_match_with_compose_passes(self):
+        errs = self._errs(ports=[{
+            "name": "app_51820", "exposure_tier": "l4",
+            "protocol": "udp", "udp_reviewed": True}])
+        self.assertFalse(
+            any("does not match the compose port" in e for e in errs),
+            f"matching protocol should pass, got {errs}")
 
 
 def _data_uri(text):
