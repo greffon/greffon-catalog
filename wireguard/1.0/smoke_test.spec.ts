@@ -10,11 +10,17 @@ test.describe('WireGuard (wg-easy)', () => {
     test.skip(!URL, 'WIREGUARD_URL not set');
 
     const base = URL.replace(/\/$/, '');
-    // `/` meta-refreshes to /login (admin created at first boot from INIT_*) or
-    // to /setup (the first-boot wizard, shown when INIT_* is absent — e.g. the
-    // CI harness deploys with no L4 port, so INIT_HOST/INIT_PORT render empty
-    // and no admin account is created). networkidle lets the redirect settle on
-    // whichever surface this deploy lands on.
+    // `/` meta-refreshes to /login (the admin was created at first boot from
+    // INIT_*) or to /setup (the first-boot wizard). The CI harness DOES set an
+    // INIT_PASSWORD (ci_greffer_smoke.build_configurations generates one), so a
+    // missing password is not why CI lands on /setup. Rather, the greffer-only
+    // CI allocates no L4 port, so INIT_HOST/INIT_PORT render empty and wg-easy's
+    // unattended first-boot init does not complete, leaving the /setup wizard.
+    // A real deploy (with an L4 endpoint) lands on /login. networkidle lets the
+    // redirect settle on whichever surface applies; the assertions below hold on
+    // both. NOTE: because CI cannot complete init, this smoke is a liveness
+    // check only and does not verify the admin login. Exercising login would
+    // require the harness to provision an L4 endpoint (tracked follow-up).
     await page.goto(base, { waitUntil: 'networkidle', timeout: 60_000 });
 
     // Assert a SINGLE locator. A `.or()` of password-input + "Sign In" resolves
