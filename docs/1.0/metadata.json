@@ -1,6 +1,6 @@
 {
   "name": "Docs",
-  "logo": "https://raw.githubusercontent.com/suitenumerique/docs/v5.2.1/src/frontend/apps/impress/public/assets/logo-suite-numerique.png",
+  "logo": "https://raw.githubusercontent.com/suitenumerique/docs/v5.2.1/src/frontend/apps/impress/public/assets/icon-docs.svg",
   "description": "Collaborative document editor by La Suite numerique (DINUM). Self-contained demo: log in with demo / demo. Heavy app (about 10 services with a bundled identity provider), so the first boot pulls several GB and takes a few minutes before the login screen works. Change the demo credentials before exposing it publicly.",
   "categories": [
     "productivity",
