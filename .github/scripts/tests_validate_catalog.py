@@ -857,6 +857,26 @@ class L4PortsMetadataTest(unittest.TestCase):
             f"matching protocol should pass, got {errs}")
 
 
+class ComposeShapeRobustnessTest(unittest.TestCase):
+    """The validator must report a malformed compose as a lint error, not crash
+    on it (Codex P3: a non-mapping `services` made `_compose_exposed_ports` and
+    the volume cross-check raise AttributeError and abort the whole run)."""
+
+    def test_non_mapping_services_does_not_crash(self):
+        compose = textwrap.dedent("""\
+            services:
+              - app
+            volumes:
+              data:
+            """)
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(), compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)  # must not raise
+        self.assertTrue(
+            any("services" in e for e in errs),
+            f"expected a 'services' shape error, got {errs}")
+
+
 def _data_uri(text):
     return "data:text/plain;base64," + base64.b64encode(text.encode("utf-8")).decode("ascii")
 

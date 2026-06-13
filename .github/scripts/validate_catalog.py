@@ -216,7 +216,10 @@ def _compose_exposed_ports(compose):
     ports = {}
     if not isinstance(compose, dict):
         return ports
-    for svc_name, svc_def in (compose.get("services") or {}).items():
+    services = compose.get("services")
+    if not isinstance(services, dict):
+        return ports  # shape error already recorded by the compose validation
+    for svc_name, svc_def in services.items():
         if not isinstance(svc_def, dict):
             continue
         for entry in svc_def.get("ports") or []:
@@ -414,9 +417,9 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     f"the greffer rewrite would target nothing")
 
     # Cross-check: top-level volumes must be referenced by at least one service mount.
-    if isinstance(compose, dict) and compose_volumes:
+    if isinstance(compose, dict) and compose_volumes and isinstance(compose.get("services"), dict):
         used_volumes = set()
-        for svc_def in (compose.get("services") or {}).values():
+        for svc_def in compose["services"].values():
             if not isinstance(svc_def, dict):
                 continue
             for vol_entry in svc_def.get("volumes") or []:
@@ -795,8 +798,9 @@ def validate_greffon_dir(catalog_root, rel_dir):
         compose_keys = compose_smtp_env_keys.get(svc, set())
 
         compose_env = {}
-        if isinstance(compose, dict):
-            svc_def = (compose.get("services") or {}).get(svc)
+        _services = compose.get("services") if isinstance(compose, dict) else None
+        if isinstance(_services, dict):
+            svc_def = _services.get(svc)
             if isinstance(svc_def, dict) and isinstance(svc_def.get("environment"), dict):
                 compose_env = svc_def["environment"]
 
