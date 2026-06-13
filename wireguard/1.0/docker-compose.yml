@@ -50,13 +50,19 @@ version: "3"
 #   What a peer CAN reach, by design of a full-tunnel VPN: the public internet,
 #   AND services running directly on the greffer HOST plus the host's own LAN
 #   (the greffer NATs peer traffic out, like any self-hosted WireGuard server).
-#   This is normal VPN behavior, not a Greffon isolation hole. You control it
-#   per peer via wg-easy AllowedIPs: leave it 0.0.0.0/0 to also reach your home
-#   network (a common reason to run a personal VPN), or restrict it to specific
-#   subnets to give a peer internet-only access.
-#   => Practical guidance: do not bind sensitive services directly on the greffer
-#      host to 0.0.0.0 if you hand out broad-AllowedIPs peer configs, and scope a
-#      guest/contractor peer's AllowedIPs to what they need.
+#   This is normal VPN behavior, not a Greffon isolation hole. IMPORTANT:
+#   wg-easy's per-peer AllowedIPs only sets the routing in that peer's GENERATED
+#   CLIENT config (full-tunnel 0.0.0.0/0 by default, or split-tunnel). It is NOT
+#   enforced by the server, so a peer can edit their own config to route any
+#   destination through the tunnel and still reach the greffer host and its LAN.
+#   There is no per-peer server-side destination firewall yet (the egress-
+#   isolation follow-up referenced above).
+#   => Practical guidance: treat every peer you add as having the same host + LAN
+#      reach the greffer itself has, and only hand out peer configs to parties you
+#      trust at that level. Do not bind sensitive services directly on the greffer
+#      host to 0.0.0.0. Scoping AllowedIPs is a convenience for your own
+#      cooperative devices (split vs full tunnel), not a containment boundary for
+#      an untrusted guest/contractor peer.
 # ============================================================================
 #
 # Mixed-tier entry:

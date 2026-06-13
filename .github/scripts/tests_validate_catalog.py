@@ -803,6 +803,31 @@ class L4PortsMetadataTest(unittest.TestCase):
             any("the compose does not expose" in e for e in errs),
             f"exposed same_port name should pass cross-check, got {errs}")
 
+    def test_udp_l4_without_reviewed_rejected(self):
+        # l4 + udp without udp_reviewed:true validates here but the manager
+        # default-denies it at start, so CI must reject it.
+        errs = self._errs(
+            ports=[{"name": "app_51820", "exposure_tier": "l4", "protocol": "udp"}])
+        self.assertTrue(
+            any("requires 'udp_reviewed': true" in e for e in errs),
+            f"expected udp_reviewed-required error, got {errs}")
+
+    def test_udp_l4_reviewed_false_rejected(self):
+        errs = self._errs(ports=[{
+            "name": "app_51820", "exposure_tier": "l4",
+            "protocol": "udp", "udp_reviewed": False}])
+        self.assertTrue(
+            any("requires 'udp_reviewed': true" in e for e in errs),
+            f"udp_reviewed:false should be rejected, got {errs}")
+
+    def test_udp_l4_reviewed_true_passes(self):
+        errs = self._errs(ports=[{
+            "name": "app_51820", "exposure_tier": "l4",
+            "protocol": "udp", "udp_reviewed": True}])
+        self.assertFalse(
+            any("udp_reviewed" in e for e in errs),
+            f"reviewed udp l4 port should pass, got {errs}")
+
 
 def _data_uri(text):
     return "data:text/plain;base64," + base64.b64encode(text.encode("utf-8")).decode("ascii")

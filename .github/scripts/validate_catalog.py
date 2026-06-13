@@ -344,6 +344,17 @@ def validate_greffon_dir(catalog_root, rel_dir):
         if p.get("same_port") and p.get("exposure_tier") != "l4":
             errors.append(
                 f"{rel_dir}: ports[{pname!r}].same_port requires exposure_tier 'l4'")
+        # A raw UDP (Tier-C) port is default-denied by the manager
+        # (assert_udp_allowed) unless its catalog entry has been reviewed as
+        # non-amplifiable. Such a port with udp_reviewed != true validates here
+        # but then fails to start, so require the review flag at CI (record the
+        # rationale in a `review_note`).
+        if p.get("exposure_tier") == "l4" and p.get("protocol") == "udp" \
+                and p.get("udp_reviewed") is not True:
+            errors.append(
+                f"{rel_dir}: ports[{pname!r}] is a raw UDP (l4) port and requires "
+                f"'udp_reviewed': true (the manager default-denies unreviewed UDP "
+                f"as a reflection/amplification guard)")
     # Pairing: same_port needs a greffer that implements it on EVERY mode the
     # entry can be deployed to, enforced at start by the min_greffer_version
     # compat gate. Proxy-mode same_port shipped in greffer 0.3.0; tunnel-mode

@@ -1,7 +1,7 @@
 {
   "name": "WireGuard",
   "logo": "https://avatars.githubusercontent.com/u/105704026",
-  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. Your other greffons stay isolated from VPN peers, but like any full-tunnel VPN a peer can also reach the host running this VPN and its local network; scope a peer's AllowedIPs (in the UI) to limit that.",
+  "description": "Fast, modern WireGuard VPN with a web UI for managing peers (wg-easy). Sign in with username 'admin' and the password you configure here. Your other greffons stay isolated from VPN peers, but like any full-tunnel VPN a peer can also reach the host running this VPN and its local network. wg-easy's AllowedIPs only sets the peer's own client-side routing (it is not enforced by the server), so only give a peer config to someone you trust with access to that network.",
   "categories": ["networking"],
   "images": [],
   "min_greffer_version": "0.3.3",
