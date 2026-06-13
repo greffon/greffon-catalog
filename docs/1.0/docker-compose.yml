@@ -135,6 +135,11 @@ services:
       # OIDC_RP_CLIENT_SECRET injected (must match the baked realm client secret)
       OIDC_RP_SIGN_ALGO: RS256
       OIDC_RP_SCOPES: "openid email"
+      # Pre-fill the username on the bundled Keycloak login form (OIDC
+      # login_hint), so the demo user only has to type the password. JSON dict,
+      # parsed by django-configurations DictValue; a single `{` is inert to the
+      # greffer's Jinja pass (only `{{` opens an expression).
+      OIDC_AUTH_REQUEST_EXTRA_PARAMS: '{"login_hint": "demo"}'
       LOGIN_REDIRECT_URL: "{{ instance_url }}"
       LOGIN_REDIRECT_URL_FAILURE: "{{ instance_url }}"
       LOGOUT_REDIRECT_URL: "{{ instance_url }}"

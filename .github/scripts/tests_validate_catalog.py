@@ -10,6 +10,7 @@ The tests build minimal valid greffon directories in a tmpdir, mutate one
 property to reintroduce the bug, and check the linter raises the expected
 error string.
 """
+import base64
 import json
 import os
 import sys
@@ -18,7 +19,11 @@ import textwrap
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from validate_catalog import _value_references_smtp, validate_greffon_dir
+from validate_catalog import (
+    KNOWN_INTEGRATION_NAMESPACES,
+    _value_references_smtp,
+    validate_greffon_dir,
+)
 
 
 def _write_greffon(tmpdir, *, metadata, compose_yaml=None):
@@ -797,6 +802,282 @@ class L4PortsMetadataTest(unittest.TestCase):
         self.assertFalse(
             any("the compose does not expose" in e for e in errs),
             f"exposed same_port name should pass cross-check, got {errs}")
+
+
+def _data_uri(text):
+    return "data:text/plain;base64," + base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def _feature_errors(errs):
+    """baked-config-files errors only (filter out the minimal fixture's
+    unrelated missing-smoke-test noise)."""
+    needles = ("x-greffon-visibility", "x-greffon-render", "render-flagged", "hidden config",
+               "integration namespace", "config.")
+    return [e for e in errs if any(n in e for n in needles)]
+
+
+class VisibilityFlagTest(unittest.TestCase):
+    """baked-config-files: x-greffon-visibility enum, placement, hidden-default."""
+
+    def _run(self, schema, default_value, destinations=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[{
+                "title": "C",
+                "schema": schema,
+                "default_value": default_value,
+                "destinations": destinations or [{"type": "env", "container": "app", "key": "K"}],
+            }]))
+            return validate_greffon_dir(tmp, rel)
+
+    def test_valid_advanced_passes(self):
+        errs = self._run(
+            {"properties": {"value": {"type": "string"}}, "x-greffon-visibility": "advanced"},
+            {"value": "x"},
+        )
+        self.assertFalse(any("x-greffon-visibility" in e for e in errs), errs)
+
+    def test_invalid_value_rejected(self):
+        errs = self._run({"properties": {}, "x-greffon-visibility": "bogus"}, {})
+        self.assertTrue(any("x-greffon-visibility 'bogus' invalid" in e for e in errs), errs)
+
+    def test_flag_at_config_root_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[{
+                "title": "C",
+                "x-greffon-visibility": "hidden",  # wrong place — ingestion drops it
+                "schema": {"properties": {"value": {"type": "string"}}},
+                "default_value": {"value": "x"},
+                "destinations": [{"type": "env", "container": "app", "key": "K"}],
+            }]))
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertTrue(any("must live inside 'schema'" in e for e in errs), errs)
+
+    def test_hidden_without_default_rejected(self):
+        errs = self._run(
+            {"properties": {"value": {"type": "string"}}, "x-greffon-visibility": "hidden"}, {}
+        )
+        self.assertTrue(any("hidden config" in e and "default_value" in e for e in errs), errs)
+
+
+class RenderFlagTest(unittest.TestCase):
+    """baked-config-files: x-greffon-render type-gating + render-flagged content."""
+
+    def _run(self, dest, default_value, schema=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[{
+                "title": "C",
+                "schema": schema or {"properties": {"file": {"type": "string", "format": "data-url"}}},
+                "default_value": default_value,
+                "destinations": [dest],
+            }]))
+            return validate_greffon_dir(tmp, rel)
+
+    def test_render_on_env_rejected(self):
+        errs = self._run(
+            {"type": "env", "container": "app", "key": "K", "x-greffon-render": True},
+            {"value": "x"},
+            schema={"properties": {"value": {"type": "string"}}},
+        )
+        self.assertTrue(any("only valid on file/json" in e for e in errs), errs)
+
+    def test_render_non_bool_rejected(self):
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": "yes"},
+            {"file": _data_uri("hello")},
+        )
+        self.assertTrue(any("must be a boolean" in e for e in errs), errs)
+
+    def test_render_file_valid_passes(self):
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("url = {{ instance_url }}")},
+        )
+        # No baked-config-files error (an unrelated missing-smoke-test error from
+        # the minimal fixture is fine).
+        self.assertFalse(_feature_errors(errs), errs)
+
+    def test_render_file_non_utf8_rejected(self):
+        uri = "data:application/octet-stream;base64," + base64.b64encode(b"\xff\xfe").decode("ascii")
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}, {"file": uri}
+        )
+        self.assertTrue(any("not valid/UTF-8" in e for e in errs), errs)
+
+    def test_render_file_smtp_reference_rejected(self):
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("host = {{ smtp.host }}")},
+        )
+        self.assertTrue(any("render-flagged" in e and "smtp" in e for e in errs), errs)
+
+    def test_render_file_config_ref_without_env_key_rejected(self):
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("secret = {{ config.MISSING_KEY }}")},
+        )
+        self.assertTrue(any("config.MISSING_KEY" in e for e in errs), errs)
+
+    def test_render_file_config_ref_with_matching_env_key_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[
+                {
+                    "title": "Secret",
+                    "schema": {"properties": {"value": {
+                        "type": "string", "writeOnly": True, "minLength": 8, "format": "greffon-secret",
+                    }}},
+                    "default_value": {"value": ""},
+                    "destinations": [{"type": "env", "container": "app", "key": "OIDC_SECRET"}],
+                },
+                {
+                    "title": "Realm",
+                    "schema": {"properties": {"file": {"type": "string", "format": "data-url"}}},
+                    "default_value": {"file": _data_uri("secret = {{ config.OIDC_SECRET }}")},
+                    "destinations": [{"type": "file", "volume": "data", "name": "realm", "x-greffon-render": True}],
+                },
+            ]))
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertFalse(_feature_errors(errs), errs)
+
+
+    def test_uppercase_base64_flag_rejected(self):
+        # Greffer's datauri rejects `;BASE64` (lowercase only); the validator
+        # (same lib) must too — a false-accept would fail only at deploy.
+        uri = "data:text/plain;BASE64," + base64.b64encode(b"hello").decode("ascii")
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}, {"file": uri}
+        )
+        self.assertTrue(any("not valid/UTF-8-decodable" in e for e in errs), errs)
+
+    def test_percent_encoded_default_passes(self):
+        from urllib.parse import quote
+        uri = "data:text/plain," + quote("url = {{ instance_url }}")
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}, {"file": uri}
+        )
+        self.assertFalse(_feature_errors(errs), errs)
+
+    def test_config_get_bypass_rejected(self):
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("secret = {{ config.get('X') }}")},
+        )
+        self.assertTrue(any("render-flagged" in e and "unsafe" in e for e in errs), errs)
+
+    def test_bypass_in_statement_block_rejected(self):
+        # A {% %} statement is not allowed in a baked file (bypass-prone).
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("{% set s = config.get('X') %}secret={{ s }}")},
+        )
+        self.assertTrue(any("statement block" in e for e in errs), errs)
+
+    def test_default_filter_bypass_rejected(self):
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("secret = {{ config.X | default('') }}")},
+        )
+        self.assertTrue(any("render-flagged" in e and "default" in e for e in errs), errs)
+
+    def test_d_alias_filter_bypass_rejected(self):
+        # The `| d` alias for `default` must be caught too (blocklist missed it).
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("secret = {{ config.X | d('') }}")},
+        )
+        self.assertTrue(any("render-flagged" in e and "'|d'" in e for e in errs), errs)
+
+    def test_attr_filter_and_paren_get_rejected(self):
+        # config|attr('get')(...) and (config).get(...) bypass StrictUndefined
+        # silently — the allowlist rejects them (any call/subscript).
+        for body in ("{{ config|attr('get')('X') }}", "{{ (config).get('X') }}",
+                     "{{ config['X'] }}", "{{ config.X or 'fallback' }}"):
+            errs = self._run(
+                {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+                {"file": _data_uri(body)},
+            )
+            self.assertTrue(any("render-flagged" in e and "unsafe" in e for e in errs),
+                            f"{body!r} should be rejected, got {errs}")
+
+    def test_config_dict_method_rejected(self):
+        # {{ config.get }} (a dict method, uncalled) renders garbage, not a value.
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri("x = {{ config.get }}")},
+        )
+        self.assertTrue(any("dict method" in e for e in errs), errs)
+
+    def test_tojson_filter_and_concat_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[
+                {"title": "S", "schema": {"properties": {"value": {"type": "string"}}},
+                 "default_value": {"value": "x"},
+                 "destinations": [{"type": "env", "container": "app", "key": "S"}]},
+                {"title": "Realm",
+                 "schema": {"properties": {"file": {"type": "string", "format": "data-url"}}},
+                 "default_value": {"file": _data_uri('{"u": "{{ instance_url }}/cb", "s": {{ config.S | tojson }}}')},
+                 "destinations": [{"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}]},
+            ]))
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertFalse(_feature_errors(errs), errs)
+
+    def test_bypass_idiom_in_plain_prose_not_flagged(self):
+        # A literal "| default" / "config.get(" in file prose (outside any
+        # {{ }} block) must NOT be flagged — only Jinja-expression idioms are.
+        body = "# tuning: leave logging | default off; do not call config.get() here\nlevel = info\n"
+        errs = self._run(
+            {"type": "file", "volume": "data", "name": "f", "x-greffon-render": True},
+            {"file": _data_uri(body)},
+        )
+        self.assertFalse(any("render-flagged" in e and "unsafe" in e for e in errs), errs)
+
+    def test_multiple_config_refs_in_one_block_all_checked(self):
+        # Two refs in a SINGLE {{ }} block; the second is a typo with no env key.
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(configurations=[
+                {
+                    "title": "User",
+                    "schema": {"properties": {"value": {"type": "string"}}},
+                    "default_value": {"value": "u"},
+                    "destinations": [{"type": "env", "container": "app", "key": "USER"}],
+                },
+                {
+                    "title": "Realm",
+                    "schema": {"properties": {"file": {"type": "string", "format": "data-url"}}},
+                    "default_value": {"file": _data_uri("{{ config.USER ~ ':' ~ config.PASS }}")},
+                    "destinations": [{"type": "file", "volume": "data", "name": "f", "x-greffon-render": True}],
+                },
+            ]))
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertTrue(any("config.PASS" in e for e in errs), errs)   # 2nd ref caught
+        self.assertFalse(any("config.USER" in e for e in errs), errs)  # 1st ref matches an env key
+
+    def test_render_json_smtp_reference_rejected(self):
+        errs = self._run(
+            {"type": "json", "volume": "data", "name": "f.json", "x-greffon-render": True},
+            {"host": "{{ smtp.host }}"},
+            schema={"properties": {}},
+        )
+        self.assertTrue(any("render-flagged" in e and "smtp" in e for e in errs), errs)
+
+    def test_render_json_config_ref_without_env_key_rejected(self):
+        errs = self._run(
+            {"type": "json", "volume": "data", "name": "f.json", "x-greffon-render": True},
+            {"secret": "{{ config.MISSING }}"},
+            schema={"properties": {}},
+        )
+        self.assertTrue(any("config.MISSING" in e for e in errs), errs)
+
+
+class IntegrationNamespaceParityTest(unittest.TestCase):
+    """Tripwire: pin the validator's integration-namespace list. It is a copy of
+    the greffer's KNOWN_INTEGRATION_TYPES (separate repo — this test can't import
+    it). Pinning forces a deliberate, reviewed edit; when the greffer adds an
+    integration type, this assertion (and the linked comment in validate_catalog)
+    must be updated in the same change so the integration-reference check doesn't
+    silently fail open for the new namespace."""
+
+    def test_known_namespaces_pinned(self):
+        self.assertEqual(KNOWN_INTEGRATION_NAMESPACES, ("smtp",))
 
 
 if __name__ == "__main__":
