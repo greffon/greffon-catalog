@@ -232,6 +232,87 @@ def _compose_exposed_ports(compose):
     return ports
 
 
+# A one-shot service (DB migration, object-store bucket creation, first-run
+# superuser seed) runs to completion and then sits in `exited` forever. The
+# greffer's status monitor must EXCLUDE such a container, otherwise a healthy
+# multi-service instance reads as "mixed" and the greffer reports the `unknow`
+# sentinel, which the manager rejects (HTTP 400). The instance is then stuck
+# showing a stale status. The catalog declares the exclusion with this label;
+# the greffer's compose.get_status skips any container that carries it.
+ONE_SHOT_STATUS_LABEL = "com.greffon.status"
+ONE_SHOT_STATUS_VALUE = "ignore"
+
+
+def _service_labels(svc_def):
+    """Normalise a compose `labels:` block (dict OR `key=value` list) to a
+    plain `{key: value}` dict so the presence check works for both forms."""
+    labels = svc_def.get("labels")
+    if isinstance(labels, dict):
+        return {str(k): str(v) for k, v in labels.items()}
+    out = {}
+    if isinstance(labels, list):
+        for item in labels:
+            if isinstance(item, str) and "=" in item:
+                k, _, v = item.partition("=")
+                out[k.strip()] = v.strip()
+    return out
+
+
+def _command_text(svc_def):
+    """`command` + `entrypoint` flattened to one searchable string (each may be
+    a string or a list)."""
+    parts = []
+    for key in ("command", "entrypoint"):
+        val = svc_def.get(key)
+        if isinstance(val, str):
+            parts.append(val)
+        elif isinstance(val, list):
+            parts.append(" ".join(str(x) for x in val))
+    return " ".join(parts)
+
+
+# Restart policies that mean "keep this running": a service declaring one is by
+# definition long-running, never a one-shot, so it's never asked for the label.
+_ALWAYS_UP_RESTART = {"always", "unless-stopped"}
+
+# A literal `exit 0` as the FINAL command of the line (optionally followed by a
+# closing quote/paren/semicolon/whitespace). This is what a one-shot does when
+# its job is done (`... && mc mb && exit 0;`). It deliberately does NOT match an
+# `exit 0` buried mid-command, such as a clean-shutdown SIGTERM trap on a
+# long-running server (`trap 'exit 0' TERM; app & wait`), which ends with the
+# server command, not with `exit 0`.
+_TERMINAL_EXIT0_RE = re.compile(r"""exit\s+0\b[\s;"')]*$""")
+
+
+def _looks_one_shot(svc_name, svc_def):
+    """Heuristic for a service that runs to completion rather than staying up.
+
+    High-precision signals only, so the label is never forced onto a genuine
+    long-running service:
+      - name contains `migrate` (the migration-helper convention, and the
+        greffer's own legacy status-skip fallback), or
+      - it uses the `minio/mc` client image (the canonical bucket-init helper), or
+      - its command/entrypoint ENDS WITH a literal `exit 0` (a one-shot signals
+        completion that way; a server never does).
+
+    A service kept alive by `restart: always`/`unless-stopped`, or that
+    publishes a port, is long-running by definition and is never classified as
+    a one-shot regardless of the above (guards against a clean-shutdown
+    `exit 0` trap forcing the label onto a real app container).
+    """
+    restart = svc_def.get("restart")
+    if isinstance(restart, str) and restart.strip() in _ALWAYS_UP_RESTART:
+        return False
+    if svc_def.get("ports"):
+        return False
+    if "migrate" in svc_name:
+        return True
+    image = svc_def.get("image")
+    if isinstance(image, str) and image.split(":")[0] == "minio/mc":
+        return True
+    return bool(_TERMINAL_EXIT0_RE.search(_command_text(svc_def)))
+
+
 def validate_greffon_dir(catalog_root, rel_dir):
     """Validate a single greffon directory. Returns list of error strings."""
     errors = []
@@ -270,12 +351,26 @@ def validate_greffon_dir(catalog_root, rel_dir):
             else:
                 compose_services = set(services.keys())
 
-                # Check no service uses container_name
+                # Per-service checks
                 for svc_name, svc_def in services.items():
-                    if isinstance(svc_def, dict) and "container_name" in svc_def:
+                    if not isinstance(svc_def, dict):
+                        continue
+                    # No service may pin container_name
+                    if "container_name" in svc_def:
                         errors.append(
                             f"{rel_dir}: service '{svc_name}' must not use 'container_name' "
                             "(greffer assigns names dynamically)"
+                        )
+                    # A one-shot helper must declare itself ignorable for status,
+                    # else its normal `exited` state poisons the instance status.
+                    if _looks_one_shot(svc_name, svc_def) and (
+                        _service_labels(svc_def).get(ONE_SHOT_STATUS_LABEL) != ONE_SHOT_STATUS_VALUE
+                    ):
+                        errors.append(
+                            f"{rel_dir}: one-shot service '{svc_name}' must carry label "
+                            f"'{ONE_SHOT_STATUS_LABEL}: {ONE_SHOT_STATUS_VALUE}' so it is excluded "
+                            "from instance status (a completed one-shot otherwise counts as a "
+                            "stopped container and forces the instance to 'unknow')"
                         )
 
         # Collect top-level volumes

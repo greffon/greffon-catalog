@@ -3,6 +3,11 @@ services:
   glitchtip_migrate:
     image: glitchtip/glitchtip:latest
     command: ./manage.py migrate --noinput
+    labels:
+      # One-shot: runs migrations then exits. Excluded from instance status so
+      # its terminal `exited` state isn't read as a stopped container (which
+      # would force the instance to the `unknow` status the manager rejects).
+      com.greffon.status: "ignore"
     depends_on:
       - glitchtip_db
     environment:
@@ -14,6 +19,9 @@ services:
   glitchtip_seed:
     image: glitchtip/glitchtip:latest
     restart: "no"
+    labels:
+      # One-shot: seeds the admin user then exits. Excluded from instance status.
+      com.greffon.status: "ignore"
     depends_on:
       - glitchtip_db
       - glitchtip_migrate

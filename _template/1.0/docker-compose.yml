@@ -16,6 +16,12 @@ version: "3"
 #     inline Jinja string ops: {{ instance_url.split('://')[1] }}.
 #   - For SMTP-managed env vars, use mapping form (KEY: value) and reference
 #     the {{ smtp.* }} context — see ../README.md § "SMTP destinations".
+#   - One-shot helpers (DB migration, bucket creation, first-run seed) run to
+#     completion and then sit in `exited` forever. Label each one
+#     `com.greffon.status: "ignore"` so the greffer excludes it from instance
+#     status. Otherwise its `exited` state reads as a stopped container and the
+#     instance gets stuck reporting the `unknow` status the manager rejects.
+#     The validator enforces this on any service that looks one-shot.
 
 services:
   app:
@@ -29,6 +35,14 @@ services:
       APP_PUBLIC_URL: "{{ instance_url }}"
     volumes:
       - app_data:/var/lib/app    # TODO: real data path for this app
+
+  # Example one-shot helper. Uncomment and adapt if your app needs a migration,
+  # bucket-creation or seed step. The label is REQUIRED (see rules above).
+  # migrate:
+  #   image: your/app:tag
+  #   command: ./manage.py migrate --noinput
+  #   labels:
+  #     com.greffon.status: "ignore"
 
 volumes:
   app_data:                      # TODO: rename + add more if needed
