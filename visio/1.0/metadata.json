@@ -1,6 +1,6 @@
 {
   "name": "Visio",
-  "min_greffer_version": "0.3.0",
+  "min_greffer_version": "0.3.3",
   "logo": "https://raw.githubusercontent.com/suitenumerique/meet/v1.19.0/src/frontend/public/android-chrome-512x512.png",
   "description": "Video conferencing by La Suite numerique (DINUM), built on LiveKit. Self-contained demo: log in with demo / demo (or create an account). Heavy app (~10 services + a WebRTC media server); first boot pulls several GB and takes a few minutes. Media uses a UDP port published directly on the host. Change the demo credentials before exposing it.",
   "categories": [
@@ -13,7 +13,8 @@
       "name": "livekit_7882",
       "exposure_tier": "l4",
       "protocol": "udp",
-      "same_port": true
+      "same_port": true,
+      "udp_reviewed": true
     }
   ],
   "configurations": [
