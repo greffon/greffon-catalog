@@ -49,6 +49,13 @@ services:
   createbuckets:
     image: minio/mc
     restart: on-failure
+    labels:
+      # One-shot: creates the media bucket then exits. Excluded from instance
+      # status so its terminal `exited` state isn't read as a stopped container
+      # (which would force the instance to the `unknow` status the manager
+      # rejects). `restart: on-failure` means this can't be inferred from the
+      # restart policy, so the label is the explicit declaration.
+      com.greffon.status: "ignore"
     depends_on:
       - minio
     entrypoint: >
