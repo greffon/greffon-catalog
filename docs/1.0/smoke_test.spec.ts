@@ -11,7 +11,7 @@ const URL = process.env.DOCS_URL!;
  * field, a password field, and a submit control — rather than just a non-empty
  * body (which a crash page or the greffer's TLS proxy would also satisfy).
  *
- * Demo credentials provisioned by the bundled realm: demo / demo.
+ * Auth is via the bundled realm; self-registration is open (no demo user).
  */
 test.describe('Docs', () => {
   test('hands off to the bundled OIDC sign-in screen', async ({ page, request }) => {

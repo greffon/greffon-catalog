@@ -1,7 +1,7 @@
 {
   "name": "Docs",
   "logo": "https://raw.githubusercontent.com/suitenumerique/docs/v5.2.1/src/frontend/apps/impress/public/assets/icon-docs.svg",
-  "description": "Collaborative document editor by La Suite numerique (DINUM). Self-contained demo: log in with demo / demo. Heavy app (about 10 services with a bundled identity provider), so the first boot pulls several GB and takes a few minutes before the login screen works. Change the demo credentials before exposing it publicly.",
+  "description": "Collaborative document editor by La Suite numerique (DINUM). Create an account to start; self-registration is open by default (disable it in the Keycloak admin to restrict access). Heavy app (about 10 services with a bundled identity provider), so the first boot pulls several GB and takes a few minutes before the login screen works.",
   "categories": [
     "productivity",
     "collaboration"
@@ -46,7 +46,7 @@
         "x-greffon-visibility": "hidden"
       },
       "default_value": {
-        "file": "data:application/json;base64,ewogICJyZWFsbSI6ICJkb2NzIiwKICAiZW5hYmxlZCI6IHRydWUsCiAgImRpc3BsYXlOYW1lIjogIkRvY3MiLAogICJkaXNwbGF5TmFtZUh0bWwiOiAiPGRpdj5Eb2NzPC9kaXY+PGRpdiBzdHlsZT1cImZvbnQtc2l6ZToxM3B4O2ZvbnQtd2VpZ2h0Om5vcm1hbDtvcGFjaXR5Oi43O21hcmdpbi10b3A6NHB4XCI+RGVtbyBsb2dpbiAmbWRhc2g7IHVzZXJuYW1lIDxiPmRlbW88L2I+LCBwYXNzd29yZCA8Yj5kZW1vPC9iPjwvZGl2PiIsCiAgInNzbFJlcXVpcmVkIjogIm5vbmUiLAogICJyZWdpc3RyYXRpb25BbGxvd2VkIjogdHJ1ZSwKICAibG9naW5XaXRoRW1haWxBbGxvd2VkIjogdHJ1ZSwKICAiY2xpZW50cyI6IFsKICAgIHsKICAgICAgImNsaWVudElkIjogImRvY3MiLAogICAgICAiZW5hYmxlZCI6IHRydWUsCiAgICAgICJwcm90b2NvbCI6ICJvcGVuaWQtY29ubmVjdCIsCiAgICAgICJwdWJsaWNDbGllbnQiOiBmYWxzZSwKICAgICAgInNlY3JldCI6ICJ7eyBjb25maWcuT0lEQ19SUF9DTElFTlRfU0VDUkVUIH19IiwKICAgICAgInN0YW5kYXJkRmxvd0VuYWJsZWQiOiB0cnVlLAogICAgICAiZGlyZWN0QWNjZXNzR3JhbnRzRW5hYmxlZCI6IGZhbHNlLAogICAgICAiZnVsbFNjb3BlQWxsb3dlZCI6IHRydWUsCiAgICAgICJyZWRpcmVjdFVyaXMiOiBbCiAgICAgICAgInt7IGluc3RhbmNlX3VybCB9fS8qIgogICAgICBdLAogICAgICAid2ViT3JpZ2lucyI6IFsKICAgICAgICAie3sgaW5zdGFuY2VfdXJsIH19IgogICAgICBdCiAgICB9CiAgXSwKICAidXNlcnMiOiBbCiAgICB7CiAgICAgICJ1c2VybmFtZSI6ICJkZW1vIiwKICAgICAgImVuYWJsZWQiOiB0cnVlLAogICAgICAiZW1haWxWZXJpZmllZCI6IHRydWUsCiAgICAgICJlbWFpbCI6ICJkZW1vQGdyZWZmb24uaW8iLAogICAgICAiZmlyc3ROYW1lIjogIkRlbW8iLAogICAgICAibGFzdE5hbWUiOiAiVXNlciIsCiAgICAgICJjcmVkZW50aWFscyI6IFsKICAgICAgICB7CiAgICAgICAgICAidHlwZSI6ICJwYXNzd29yZCIsCiAgICAgICAgICAidmFsdWUiOiAiZGVtbyIsCiAgICAgICAgICAidGVtcG9yYXJ5IjogZmFsc2UKICAgICAgICB9CiAgICAgIF0sCiAgICAgICJyZWFsbVJvbGVzIjogWwogICAgICAgICJkZWZhdWx0LXJvbGVzLWRvY3MiCiAgICAgIF0KICAgIH0KICBdLAogICJyZW1lbWJlck1lIjogdHJ1ZSwKICAidmVyaWZ5RW1haWwiOiBmYWxzZQp9"
+        "file": "data:application/json;base64,ewogICJyZWFsbSI6ICJkb2NzIiwKICAiZW5hYmxlZCI6IHRydWUsCiAgImRpc3BsYXlOYW1lIjogIkRvY3MiLAogICJkaXNwbGF5TmFtZUh0bWwiOiAiPGRpdj5Eb2NzPC9kaXY+PGRpdiBzdHlsZT1cImZvbnQtc2l6ZToxM3B4O2ZvbnQtd2VpZ2h0Om5vcm1hbDtvcGFjaXR5Oi43O21hcmdpbi10b3A6NHB4XCI+Q3JlYXRlIGFuIGFjY291bnQgdG8gZ2V0IHN0YXJ0ZWQ8L2Rpdj4iLAogICJzc2xSZXF1aXJlZCI6ICJub25lIiwKICAicmVnaXN0cmF0aW9uQWxsb3dlZCI6IHRydWUsCiAgImxvZ2luV2l0aEVtYWlsQWxsb3dlZCI6IHRydWUsCiAgImNsaWVudHMiOiBbCiAgICB7CiAgICAgICJjbGllbnRJZCI6ICJkb2NzIiwKICAgICAgImVuYWJsZWQiOiB0cnVlLAogICAgICAicHJvdG9jb2wiOiAib3BlbmlkLWNvbm5lY3QiLAogICAgICAicHVibGljQ2xpZW50IjogZmFsc2UsCiAgICAgICJzZWNyZXQiOiAie3sgY29uZmlnLk9JRENfUlBfQ0xJRU5UX1NFQ1JFVCB9fSIsCiAgICAgICJzdGFuZGFyZEZsb3dFbmFibGVkIjogdHJ1ZSwKICAgICAgImRpcmVjdEFjY2Vzc0dyYW50c0VuYWJsZWQiOiBmYWxzZSwKICAgICAgImZ1bGxTY29wZUFsbG93ZWQiOiB0cnVlLAogICAgICAicmVkaXJlY3RVcmlzIjogWwogICAgICAgICJ7eyBpbnN0YW5jZV91cmwgfX0vKiIKICAgICAgXSwKICAgICAgIndlYk9yaWdpbnMiOiBbCiAgICAgICAgInt7IGluc3RhbmNlX3VybCB9fSIKICAgICAgXQogICAgfQogIF0sCiAgInVzZXJzIjogW10sCiAgInJlbWVtYmVyTWUiOiB0cnVlLAogICJ2ZXJpZnlFbWFpbCI6IGZhbHNlCn0="
       },
       "destinations": [
         {
@@ -377,6 +377,11 @@
           "type": "smtp",
           "container": "backend",
           "key": "DJANGO_EMAIL_USE_TLS"
+        },
+        {
+          "type": "smtp",
+          "container": "backend",
+          "key": "DJANGO_EMAIL_USE_SSL"
         }
       ]
     }
