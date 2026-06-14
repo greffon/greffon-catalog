@@ -3,32 +3,48 @@ services:
   glitchtip_migrate:
     image: glitchtip/glitchtip:latest
     command: ./manage.py migrate --noinput
+    labels:
+      # One-shot: runs migrations then exits. Excluded from instance status so
+      # its terminal `exited` state isn't read as a stopped container (which
+      # would force the instance to the `unknow` status the manager rejects).
+      com.greffon.status: "ignore"
     depends_on:
-      - glitchtip_db
+      glitchtip_db:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
 
-  # One-shot: create the first superuser so the greffon is usable
-  # immediately after install. Retries because compose v3 depends_on
-  # only waits for container start, not for postgres to accept conns.
+  # One-shot: create the first superuser so the greffon is usable immediately
+  # after install. Waits (via depends_on conditions) for postgres to be healthy
+  # and for the migrate job to finish creating the schema, so createsuperuser
+  # never races ahead of the tables. `|| true` keeps a re-up idempotent once the
+  # admin user already exists.
   glitchtip_seed:
     image: glitchtip/glitchtip:latest
     restart: "no"
+    labels:
+      # One-shot: seeds the admin user then exits. Excluded from instance status.
+      com.greffon.status: "ignore"
     depends_on:
-      - glitchtip_db
-      - glitchtip_migrate
+      glitchtip_db:
+        condition: service_healthy
+      glitchtip_migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
-    command: >
-      sh -c "for i in 1 2 3 4 5 6; do ./manage.py createsuperuser --noinput && break || sleep 5; done; exit 0"
+    command: sh -c "./manage.py createsuperuser --noinput || true; exit 0"
 
   glitchtip:
     image: glitchtip/glitchtip:latest
     ports:
       - "8000:8000"
     depends_on:
-      - glitchtip_migrate
-      - redis
+      glitchtip_db:
+        condition: service_healthy
+      glitchtip_migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
     environment:
       DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
       REDIS_URL: redis://redis:6379/0
@@ -42,8 +58,12 @@ services:
     image: glitchtip/glitchtip:latest
     command: ./bin/run-celery-with-beat.sh
     depends_on:
-      - glitchtip_migrate
-      - redis
+      glitchtip_db:
+        condition: service_healthy
+      glitchtip_migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
     environment:
       DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
       REDIS_URL: redis://redis:6379/0
@@ -59,6 +79,12 @@ services:
       POSTGRES_DB: glitchtip
     volumes:
       - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d glitchtip"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
   redis:
     image: redis:latest

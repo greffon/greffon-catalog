@@ -1153,5 +1153,137 @@ class IntegrationNamespaceParityTest(unittest.TestCase):
         self.assertEqual(KNOWN_INTEGRATION_NAMESPACES, ("smtp",))
 
 
+class OneShotStatusLabelTest(unittest.TestCase):
+    """glitchtip's `glitchtip_seed` and docs/visio's `createbuckets` are one-shot
+    helpers that exit after their job. They are not named `migrate`, so the
+    greffer counted them as stopped containers and reported the `unknow` status
+    the manager rejects (HTTP 400). They must carry `com.greffon.status: ignore`
+    so the greffer excludes them from instance status."""
+
+    _ONESHOT_COMPOSE = textwrap.dedent("""\
+        services:
+          app:
+            image: nginx
+          createbuckets:
+            image: minio/mc
+            entrypoint: sh -c "/usr/bin/mc mb x && exit 0;"
+        """)
+
+    def test_unlabeled_one_shot_caught(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(), compose_yaml=self._ONESHOT_COMPOSE)
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertTrue(
+                any("one-shot service 'createbuckets'" in e for e in errs),
+                f"expected one-shot label error, got {errs}",
+            )
+
+    def test_labeled_one_shot_passes(self):
+        compose = textwrap.dedent("""\
+            services:
+              app:
+                image: nginx
+              createbuckets:
+                image: minio/mc
+                labels:
+                  com.greffon.status: "ignore"
+                entrypoint: sh -c "/usr/bin/mc mb x && exit 0;"
+            """)
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(), compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertFalse(
+                any("one-shot service" in e for e in errs),
+                f"labeled one-shot should pass, got {errs}",
+            )
+
+    def test_labeled_one_shot_list_form_passes(self):
+        """`labels` may be a `key=value` list, not only a mapping."""
+        compose = textwrap.dedent("""\
+            services:
+              app:
+                image: nginx
+              app_migrate:
+                image: nginx
+                command: ./manage.py migrate
+                labels:
+                  - "com.greffon.status=ignore"
+            """)
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(), compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertFalse(
+                any("one-shot service" in e for e in errs),
+                f"list-form label should pass, got {errs}",
+            )
+
+    def test_migrate_named_service_caught(self):
+        compose = textwrap.dedent("""\
+            services:
+              app:
+                image: nginx
+              app_migrate:
+                image: nginx
+                command: ./manage.py migrate
+            """)
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(), compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertTrue(
+                any("one-shot service 'app_migrate'" in e for e in errs),
+                f"expected migrate-named one-shot error, got {errs}",
+            )
+
+    def test_plain_long_running_service_not_flagged(self):
+        """A normal server (no exit-0, not minio/mc, not migrate-named) must not
+        be forced to carry the label. Guards against false positives."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata())  # default app: nginx
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertFalse(
+                any("one-shot service" in e for e in errs),
+                f"plain service should not be flagged, got {errs}",
+            )
+
+    def test_sigterm_trap_exit0_not_flagged(self):
+        """A long-running server whose command has a clean-shutdown SIGTERM trap
+        (`trap 'exit 0' TERM; app & wait`) ends with the server command, not with
+        `exit 0`, so it must NOT be classified as a one-shot. Forcing the label
+        here would make the greffer skip a real app container in status checks.
+        (Codex review on PR #58.)"""
+        compose = textwrap.dedent("""\
+            services:
+              app:
+                image: myapp
+                command: sh -c "trap 'exit 0' TERM; myapp & wait"
+            """)
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(), compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertFalse(
+                any("one-shot service" in e for e in errs),
+                f"SIGTERM-trap server should not be flagged, got {errs}",
+            )
+
+    def test_restart_always_never_one_shot(self):
+        """`restart: always` means stay-up by definition, so even a terminal
+        `exit 0` (unusual but possible) must not classify the service as a
+        one-shot."""
+        compose = textwrap.dedent("""\
+            services:
+              app:
+                image: myapp
+                restart: always
+                command: sh -c "myapp || exit 0"
+            """)
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(), compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertFalse(
+                any("one-shot service" in e for e in errs),
+                f"restart:always service should not be flagged, got {errs}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
