@@ -48,11 +48,19 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
       REDIS_URL: redis://redis:6379/0
-      # SMTP — values rendered from the operator's SMTP integration at deploy
-      # time. Django's EMAIL_URL (dj-email-url format) encodes host, port,
-      # username, password, AND TLS mode in one string. Greffer removes this
-      # key entirely when no SMTP integration is selected.
-      EMAIL_URL: 'smtp{{ "s" if smtp.tls_mode == "tls" else "" }}://{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@{{ smtp.host }}:{{ smtp.port }}{% if smtp.tls_mode == "starttls" %}?tls=True{% endif %}'
+      # SMTP. Values rendered from the operator's SMTP integration at deploy
+      # time. EMAIL_URL encodes host, port, username, password, AND TLS mode in
+      # one string. Greffer removes this key entirely when no SMTP integration
+      # is selected.
+      #
+      # GlitchTip parses EMAIL_URL via django-environ (env.email_url), which
+      # derives TLS ONLY from the URL scheme suffix. Query params (?tls / ?ssl)
+      # are ignored for TLS (they land in OPTIONS), so TLS mode MUST be encoded
+      # in the scheme:
+      #   starttls (587) -> smtp+tls:// (EMAIL_USE_TLS)
+      #   tls      (465) -> smtp+ssl:// (EMAIL_USE_SSL, implicit TLS)
+      #   none           -> smtp://     (plaintext)
+      EMAIL_URL: 'smtp{% if smtp.tls_mode == "starttls" %}+tls{% elif smtp.tls_mode == "tls" %}+ssl{% endif %}://{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@{{ smtp.host }}:{{ smtp.port }}'
 
   glitchtip_worker:
     image: glitchtip/glitchtip:latest
@@ -67,10 +75,10 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@glitchtip_db:5432/glitchtip
       REDIS_URL: redis://redis:6379/0
-      # Same SMTP config as the web service — worker sends mail too.
-      # Kept as literal duplicate (YAML anchors are not portable across all
-      # docker-compose versions we target).
-      EMAIL_URL: 'smtp{{ "s" if smtp.tls_mode == "tls" else "" }}://{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@{{ smtp.host }}:{{ smtp.port }}{% if smtp.tls_mode == "starttls" %}?tls=True{% endif %}'
+      # Same SMTP config as the web service (worker sends mail too). Kept as a
+      # literal duplicate (YAML anchors are not portable across all
+      # docker-compose versions we target); keep the TLS scheme in sync.
+      EMAIL_URL: 'smtp{% if smtp.tls_mode == "starttls" %}+tls{% elif smtp.tls_mode == "tls" %}+ssl{% endif %}://{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@{{ smtp.host }}:{{ smtp.port }}'
 
   glitchtip_db:
     image: postgres:14-alpine
