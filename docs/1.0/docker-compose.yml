@@ -164,7 +164,11 @@ services:
       DJANGO_EMAIL_HOST_USER: "{{ smtp.username }}"
       DJANGO_EMAIL_HOST_PASSWORD: "{{ smtp.password }}"
       DJANGO_EMAIL_FROM: "{{ smtp.from_address }}"
-      DJANGO_EMAIL_USE_TLS: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+      # Django: EMAIL_USE_TLS == STARTTLS (587), EMAIL_USE_SSL == implicit TLS
+      # (465). They are mutually exclusive, so map each tls_mode to the right
+      # one (mirrors the paperless-ngx entry); "none" leaves both false.
+      DJANGO_EMAIL_USE_TLS: '{{ "true" if smtp.tls_mode == "starttls" else "false" }}'
+      DJANGO_EMAIL_USE_SSL: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
 
   celery:
     image: lasuite/impress-backend:v5.2.1
