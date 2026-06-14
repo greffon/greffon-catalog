@@ -112,9 +112,11 @@ def build_configurations(metadata: dict) -> list:
         # to an empty data-URI so a default-less file config writes an empty
         # file rather than crashing DataURI() on "".
         if "file" in types:
-            file_default = (cfg.get("default_value", {}) or {}).get(
-                "file", "data:text/plain;base64,"
-            )
+            # `or` (not .get's default) so an explicit empty-string default,
+            # default_value {"file": ""} which the validator allows for a
+            # required file with no baked content, also falls back. Otherwise
+            # "" is sent through and the greffer crashes parsing DataURI("").
+            file_default = (cfg.get("default_value", {}) or {}).get("file") or "data:text/plain;base64,"
             configs.append({"value": {"file": file_default}, "destinations": dests})
             continue
         schema_val = (cfg.get("schema", {}) or {}).get("properties", {}).get("value", {}) or {}
