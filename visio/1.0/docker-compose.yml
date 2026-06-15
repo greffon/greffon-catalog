@@ -24,6 +24,29 @@ version: "3"
 # ~30-60s to import the realm. Demo login: demo / demo.
 
 services:
+  gateway:
+    # Single public TLS entry point (the greffer fronts this port). Routes the
+    # one public origin to every internal service, including the LiveKit
+    # signaling WebSocket at /livekit.
+    #
+    # Declared FIRST on purpose. The greffer enumerates published ports in
+    # service-definition order, and the greffer-only CI smoke harness (which
+    # allocates no L4 port and probes the first enumerated port) must land on
+    # this HTTP gateway, not livekit's L4 media port. Same contract the wireguard
+    # reference greffon relies on by listing its web-UI port ahead of the L4 one.
+    image: nginx:1.25
+    restart: on-failure
+    depends_on:
+      - backend
+      - frontend
+      - keycloak
+      - minio
+      - livekit
+    volumes:
+      - gateway_conf:/etc/nginx/conf.d
+    ports:
+      - "8083:8083"
+
   postgresql:
     image: postgres:16
     restart: on-failure
@@ -76,9 +99,12 @@ services:
     command: ["--config", "/etc/livekit.yaml"]
     volumes:
       - livekit_conf:/etc
-    # 7880 (signaling/HTTP) and 7881 (TCP fallback) are internal-only, reached
-    # through the gateway. 7882/udp is the media port — declared in metadata
-    # `ports` as an L4 same_port UDP port and published directly on the host.
+    # 7880 (signaling/HTTP) is internal-only, reached through the gateway.
+    # 7882/udp is the media port: declared in metadata `ports` as an L4
+    # same_port UDP port and published directly on the host. No ICE/TCP fallback
+    # is advertised: the rendered livekit.yaml omits rtc.tcp_port, so LiveKit
+    # offers only the single UDP media candidate (which is the one we publish);
+    # an unpublished TCP candidate would just be an unreachable ICE dead end.
     ports:
       - "7882:7882/udp"
 
@@ -147,7 +173,11 @@ services:
       DJANGO_EMAIL_HOST_USER: "{{ smtp.username }}"
       DJANGO_EMAIL_HOST_PASSWORD: "{{ smtp.password }}"
       DJANGO_EMAIL_FROM: "{{ smtp.from_address }}"
-      DJANGO_EMAIL_USE_TLS: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+      # Django: EMAIL_USE_TLS == STARTTLS (587), EMAIL_USE_SSL == implicit TLS
+      # (465). They are mutually exclusive, so map each tls_mode to the right
+      # flag (matches the Docs/Paperless entries).
+      DJANGO_EMAIL_USE_TLS: '{{ "true" if smtp.tls_mode == "starttls" else "false" }}'
+      DJANGO_EMAIL_USE_SSL: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
 
   celery:
     image: lasuite/meet-backend:v1.19.0
@@ -197,23 +227,6 @@ services:
     volumes:
       - keycloak_import:/opt/keycloak/data/import
     # No `ports:` — internal-only.
-
-  gateway:
-    # Single public TLS entry point (the greffer fronts this port). Routes the
-    # one public origin to every internal service, including the LiveKit
-    # signaling WebSocket at /livekit.
-    image: nginx:1.25
-    restart: on-failure
-    depends_on:
-      - backend
-      - frontend
-      - keycloak
-      - minio
-      - livekit
-    volumes:
-      - gateway_conf:/etc/nginx/conf.d
-    ports:
-      - "8083:8083"
 
 volumes:
   postgres_data:
