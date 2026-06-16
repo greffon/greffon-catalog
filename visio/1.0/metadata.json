@@ -1,0 +1,394 @@
+{
+  "name": "Visio",
+  "min_greffer_version": "0.3.3",
+  "logo": "https://raw.githubusercontent.com/suitenumerique/meet/v1.19.0/src/frontend/public/android-chrome-512x512.png",
+  "description": "Video conferencing by La Suite numerique (DINUM), built on LiveKit. Self-contained demo: log in with demo / demo (or create an account). Heavy app (~10 services + a WebRTC media server); first boot pulls several GB and takes a few minutes. Media uses a UDP port published directly on the host. Change the demo credentials before exposing it.",
+  "categories": [
+    "productivity",
+    "collaboration"
+  ],
+  "images": [],
+  "ports": [
+    {
+      "name": "gateway_8083",
+      "exposure_tier": "http",
+      "protocol": "tcp"
+    },
+    {
+      "name": "livekit_7882",
+      "exposure_tier": "l4",
+      "protocol": "udp",
+      "same_port": true,
+      "udp_reviewed": true
+    }
+  ],
+  "configurations": [
+    {
+      "title": "Gateway routing config",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "data-url",
+            "title": "nginx gateway default.conf"
+          }
+        },
+        "x-greffon-visibility": "hidden"
+      },
+      "default_value": {
+        "file": "data:text/plain;base64,Cm1hcCAkaHR0cF91cGdyYWRlICRjb25uZWN0aW9uX3VwZ3JhZGUgeyBkZWZhdWx0IHVwZ3JhZGU7ICcnIGNsb3NlOyB9CgpzZXJ2ZXIgewogICAgbGlzdGVuIDgwODM7CiAgICBzZXJ2ZXJfbmFtZSBfOwogICAgY2hhcnNldCB1dGYtODsKICAgIGNsaWVudF9tYXhfYm9keV9zaXplIDEwME07CgogICAgIyBFbWJlZGRlZCBLZXljbG9hayAoT0lEQyksIHBhdGgtbW91bnRlZCB1bmRlciAvaWRlbnRpdHkuCiAgICBsb2NhdGlvbiAvaWRlbnRpdHkvIHsKICAgICAgICBwcm94eV9wYXNzIGh0dHA6Ly9rZXljbG9hazo4MDgwOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgSG9zdCAkaG9zdDsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIFgtUmVhbC1JUCAkcmVtb3RlX2FkZHI7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Gb3IgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Qcm90byBodHRwczsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLUhvc3QgJGhvc3Q7CiAgICAgICAgcHJveHlfYnVmZmVyX3NpemUgMTI4azsKICAgICAgICBwcm94eV9idWZmZXJzIDQgMjU2azsKICAgICAgICBwcm94eV9idXN5X2J1ZmZlcnNfc2l6ZSAyNTZrOwogICAgfQoKICAgICMgQmFja2VuZCAoRGphbmdvL0RSRikKICAgIGxvY2F0aW9uIC9hcGkvIHsKICAgICAgICBwcm94eV9wYXNzIGh0dHA6Ly9iYWNrZW5kOjgwMDA7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0ICRob3N0OwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtRm9yICRwcm94eV9hZGRfeF9mb3J3YXJkZWRfZm9yOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICB9CiAgICBsb2NhdGlvbiAvYWRtaW4vIHsKICAgICAgICBwcm94eV9wYXNzIGh0dHA6Ly9iYWNrZW5kOjgwMDA7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0ICRob3N0OwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICB9CgogICAgIyBEamFuZ28gYWRtaW4vRFJGIHN0YXRpYyBhc3NldHMgKHNlcnZlZCBieSB0aGUgYmFja2VuZCBXU0dJIGFwcCkuCiAgICBsb2NhdGlvbiAvc3RhdGljLyB7CiAgICAgICAgcHJveHlfcGFzcyBodHRwOi8vYmFja2VuZDo4MDAwOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgSG9zdCAkaG9zdDsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLVByb3RvIGh0dHBzOwogICAgfQoKICAgICMgTGl2ZUtpdCBzaWduYWxpbmcgKFdlYlNvY2tldCkuIFRyYWlsaW5nIHNsYXNoIHN0cmlwcyB0aGUgL2xpdmVraXQgcHJlZml4IHNvCiAgICAjIHRoZSBjbGllbnQncyAvbGl2ZWtpdC9ydGMgcmVhY2hlcyBsaXZla2l0Ojc4ODAvcnRjLgogICAgbG9jYXRpb24gL2xpdmVraXQvIHsKICAgICAgICBwcm94eV9wYXNzIGh0dHA6Ly9saXZla2l0Ojc4ODAvOwogICAgICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBVcGdyYWRlICRodHRwX3VwZ3JhZGU7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBDb25uZWN0aW9uICRjb25uZWN0aW9uX3VwZ3JhZGU7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0ICRob3N0OwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtRm9yICRwcm94eV9hZGRfeF9mb3J3YXJkZWRfZm9yOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICAgICAgcHJveHlfcmVhZF90aW1lb3V0IDg2NDAwOwogICAgfQoKICAgICMgUmVjb3JkaW5ncyAobWVkaWEpOiBiYWNrZW5kIGF1dGhvcml6ZXMsIG5naW54IHN0cmVhbXMgZnJvbSBNaW5pby4KICAgIGxvY2F0aW9uIC9tZWRpYS8gewogICAgICAgIGF1dGhfcmVxdWVzdCAvbWVkaWEtYXV0aDsKICAgICAgICBhdXRoX3JlcXVlc3Rfc2V0ICRhdXRoSGVhZGVyICR1cHN0cmVhbV9odHRwX2F1dGhvcml6YXRpb247CiAgICAgICAgYXV0aF9yZXF1ZXN0X3NldCAkYXV0aERhdGUgJHVwc3RyZWFtX2h0dHBfeF9hbXpfZGF0ZTsKICAgICAgICBhdXRoX3JlcXVlc3Rfc2V0ICRhdXRoQ29udGVudFNoYTI1NiAkdXBzdHJlYW1faHR0cF94X2Ftel9jb250ZW50X3NoYTI1NjsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIEF1dGhvcml6YXRpb24gJGF1dGhIZWFkZXI7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUFtei1EYXRlICRhdXRoRGF0ZTsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIFgtQW16LUNvbnRlbnQtU0hBMjU2ICRhdXRoQ29udGVudFNoYTI1NjsKICAgICAgICBwcm94eV9wYXNzIGh0dHA6Ly9taW5pbzo5MDAwL21lZXQtbWVkaWEtc3RvcmFnZS87CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0IG1pbmlvOjkwMDA7CiAgICAgICAgYWRkX2hlYWRlciBDb250ZW50LVNlY3VyaXR5LVBvbGljeSAiZGVmYXVsdC1zcmMgJ25vbmUnIiBhbHdheXM7CiAgICB9CiAgICBsb2NhdGlvbiA9IC9tZWRpYS1hdXRoIHsKICAgICAgICBpbnRlcm5hbDsKICAgICAgICBwcm94eV9wYXNzIGh0dHA6Ly9iYWNrZW5kOjgwMDAvYXBpL3YxLjAvZmlsZXMvbWVkaWEtYXV0aC87CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0ICRob3N0OwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBYLU9yaWdpbmFsLVVSTCAkcmVxdWVzdF91cmk7CiAgICAgICAgcHJveHlfcGFzc19yZXF1ZXN0X2JvZHkgb2ZmOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgQ29udGVudC1MZW5ndGggIiI7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBYLU9yaWdpbmFsLU1ldGhvZCAkcmVxdWVzdF9tZXRob2Q7CiAgICB9CgogICAgIyBGcm9udGVuZCAoZXZlcnl0aGluZyBlbHNlKQogICAgbG9jYXRpb24gLyB7CiAgICAgICAgcHJveHlfcGFzcyBodHRwOi8vZnJvbnRlbmQ6ODA4MDsKICAgICAgICBwcm94eV9odHRwX3ZlcnNpb24gMS4xOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgVXBncmFkZSAkaHR0cF91cGdyYWRlOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgQ29ubmVjdGlvbiAkY29ubmVjdGlvbl91cGdyYWRlOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgSG9zdCAkaG9zdDsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIFgtUmVhbC1JUCAkcmVtb3RlX2FkZHI7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Gb3IgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Qcm90byBodHRwczsKICAgIH0KfQo="
+      },
+      "destinations": [
+        {
+          "type": "file",
+          "volume": "gateway_conf",
+          "name": "default.conf"
+        }
+      ]
+    },
+    {
+      "title": "Identity realm import",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "data-url",
+            "title": "Keycloak realm.json"
+          }
+        },
+        "x-greffon-visibility": "hidden"
+      },
+      "default_value": {
+        "file": "data:application/json;base64,ewogICJyZWFsbSI6ICJtZWV0IiwKICAiZW5hYmxlZCI6IHRydWUsCiAgInNzbFJlcXVpcmVkIjogIm5vbmUiLAogICJyZWdpc3RyYXRpb25BbGxvd2VkIjogdHJ1ZSwKICAicmVtZW1iZXJNZSI6IHRydWUsCiAgInZlcmlmeUVtYWlsIjogZmFsc2UsCiAgImxvZ2luV2l0aEVtYWlsQWxsb3dlZCI6IHRydWUsCiAgImRpc3BsYXlOYW1lIjogIlZpc2lvIiwKICAiZGlzcGxheU5hbWVIdG1sIjogIjxkaXY+VmlzaW88L2Rpdj48ZGl2IHN0eWxlPVwiZm9udC1zaXplOjEzcHg7Zm9udC13ZWlnaHQ6bm9ybWFsO21hcmdpbi10b3A6NHB4XCI+RGVtbyBsb2dpbiAmbWRhc2g7IHVzZXJuYW1lIDxiPmRlbW88L2I+LCBwYXNzd29yZCA8Yj5kZW1vPC9iPjwvZGl2PiIsCiAgImNsaWVudHMiOiBbCiAgICB7CiAgICAgICJjbGllbnRJZCI6ICJtZWV0IiwKICAgICAgImVuYWJsZWQiOiB0cnVlLAogICAgICAicHJvdG9jb2wiOiAib3BlbmlkLWNvbm5lY3QiLAogICAgICAicHVibGljQ2xpZW50IjogZmFsc2UsCiAgICAgICJzZWNyZXQiOiAie3sgY29uZmlnLk9JRENfUlBfQ0xJRU5UX1NFQ1JFVCB9fSIsCiAgICAgICJzdGFuZGFyZEZsb3dFbmFibGVkIjogdHJ1ZSwKICAgICAgImRpcmVjdEFjY2Vzc0dyYW50c0VuYWJsZWQiOiBmYWxzZSwKICAgICAgImZ1bGxTY29wZUFsbG93ZWQiOiB0cnVlLAogICAgICAicmVkaXJlY3RVcmlzIjogWwogICAgICAgICJ7eyBpbnN0YW5jZV91cmwgfX0vKiIKICAgICAgXSwKICAgICAgIndlYk9yaWdpbnMiOiBbCiAgICAgICAgInt7IGluc3RhbmNlX3VybCB9fSIKICAgICAgXQogICAgfQogIF0sCiAgInVzZXJzIjogWwogICAgewogICAgICAidXNlcm5hbWUiOiAiZGVtbyIsCiAgICAgICJlbmFibGVkIjogdHJ1ZSwKICAgICAgImVtYWlsVmVyaWZpZWQiOiB0cnVlLAogICAgICAiZW1haWwiOiAiZGVtb0BncmVmZm9uLmlvIiwKICAgICAgImZpcnN0TmFtZSI6ICJEZW1vIiwKICAgICAgImxhc3ROYW1lIjogIlVzZXIiLAogICAgICAiY3JlZGVudGlhbHMiOiBbCiAgICAgICAgewogICAgICAgICAgInR5cGUiOiAicGFzc3dvcmQiLAogICAgICAgICAgInZhbHVlIjogImRlbW8iLAogICAgICAgICAgInRlbXBvcmFyeSI6IGZhbHNlCiAgICAgICAgfQogICAgICBdLAogICAgICAicmVhbG1Sb2xlcyI6IFsKICAgICAgICAiZGVmYXVsdC1yb2xlcy1tZWV0IgogICAgICBdCiAgICB9CiAgXQp9"
+      },
+      "destinations": [
+        {
+          "type": "file",
+          "volume": "keycloak_import",
+          "name": "realm.json",
+          "x-greffon-render": true
+        }
+      ]
+    },
+    {
+      "title": "LiveKit config",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "data-url",
+            "title": "livekit.yaml"
+          }
+        },
+        "x-greffon-visibility": "hidden"
+      },
+      "default_value": {
+        "file": "data:text/plain;base64,cG9ydDogNzg4MApiaW5kX2FkZHJlc3NlczoKICAtICIwLjAuMC4wIgpydGM6CiAgdWRwX3BvcnQ6IHt7IGluc3RhbmNlX2w0X3BvcnQgfX0KICB1c2VfZXh0ZXJuYWxfaXA6IGZhbHNlCiAgbm9kZV9pcDoge3sgaW5zdGFuY2VfbDRfaG9zdCB9fQogIGVuYWJsZV9sb29wYmFja19jYW5kaWRhdGU6IGZhbHNlCmtleXM6CiAgbWVldDogInt7IGNvbmZpZy5MSVZFS0lUX0FQSV9TRUNSRVQgfX0iCndlYmhvb2s6CiAgYXBpX2tleTogbWVldAogIHVybHM6CiAgICAtIGh0dHA6Ly9iYWNrZW5kOjgwMDAvYXBpL3YxLjAvcm9vbXMvd2ViaG9va3MtbGl2ZWtpdC8KbG9nZ2luZzoKICBsZXZlbDogaW5mbwogIGpzb246IGZhbHNlCg=="
+      },
+      "destinations": [
+        {
+          "type": "file",
+          "volume": "livekit_conf",
+          "name": "livekit.yaml",
+          "x-greffon-render": true
+        }
+      ]
+    },
+    {
+      "title": "Django secret key",
+      "schema": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Django secret key",
+            "writeOnly": true,
+            "minLength": 50,
+            "format": "greffon-secret"
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": ""
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "backend",
+          "key": "DJANGO_SECRET_KEY"
+        }
+      ]
+    },
+    {
+      "title": "Database password",
+      "schema": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Database password",
+            "writeOnly": true,
+            "minLength": 24,
+            "format": "greffon-secret"
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": ""
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "backend",
+          "key": "DB_PASSWORD"
+        },
+        {
+          "type": "env",
+          "container": "celery",
+          "key": "DB_PASSWORD"
+        },
+        {
+          "type": "env",
+          "container": "postgresql",
+          "key": "POSTGRES_PASSWORD"
+        }
+      ]
+    },
+    {
+      "title": "Object storage access key",
+      "schema": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Object storage access key",
+            "writeOnly": true,
+            "minLength": 20,
+            "format": "greffon-secret-alnum"
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": ""
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "minio",
+          "key": "MINIO_ROOT_USER"
+        },
+        {
+          "type": "env",
+          "container": "createbuckets",
+          "key": "MINIO_ROOT_USER"
+        },
+        {
+          "type": "env",
+          "container": "backend",
+          "key": "AWS_S3_ACCESS_KEY_ID"
+        },
+        {
+          "type": "env",
+          "container": "celery",
+          "key": "AWS_S3_ACCESS_KEY_ID"
+        }
+      ]
+    },
+    {
+      "title": "Object storage secret key",
+      "schema": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Object storage secret key",
+            "writeOnly": true,
+            "minLength": 32,
+            "format": "greffon-secret"
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": ""
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "minio",
+          "key": "MINIO_ROOT_PASSWORD"
+        },
+        {
+          "type": "env",
+          "container": "createbuckets",
+          "key": "MINIO_ROOT_PASSWORD"
+        },
+        {
+          "type": "env",
+          "container": "backend",
+          "key": "AWS_S3_SECRET_ACCESS_KEY"
+        },
+        {
+          "type": "env",
+          "container": "celery",
+          "key": "AWS_S3_SECRET_ACCESS_KEY"
+        }
+      ]
+    },
+    {
+      "title": "LiveKit API secret",
+      "schema": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "LiveKit API secret",
+            "writeOnly": true,
+            "minLength": 32,
+            "format": "greffon-secret"
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": ""
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "backend",
+          "key": "LIVEKIT_API_SECRET"
+        },
+        {
+          "type": "env",
+          "container": "celery",
+          "key": "LIVEKIT_API_SECRET"
+        }
+      ]
+    },
+    {
+      "title": "Identity admin password",
+      "schema": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Identity admin password",
+            "writeOnly": true,
+            "minLength": 16,
+            "format": "greffon-secret"
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": ""
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "keycloak",
+          "key": "KC_BOOTSTRAP_ADMIN_PASSWORD"
+        }
+      ]
+    },
+    {
+      "title": "OIDC client secret",
+      "schema": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "OIDC client secret",
+            "writeOnly": true,
+            "minLength": 32,
+            "format": "greffon-secret"
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": ""
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "backend",
+          "key": "OIDC_RP_CLIENT_SECRET"
+        }
+      ]
+    },
+    {
+      "title": "SMTP",
+      "schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "default_value": {},
+      "destinations": [
+        {
+          "type": "smtp",
+          "container": "backend",
+          "key": "DJANGO_EMAIL_HOST"
+        },
+        {
+          "type": "smtp",
+          "container": "backend",
+          "key": "DJANGO_EMAIL_PORT"
+        },
+        {
+          "type": "smtp",
+          "container": "backend",
+          "key": "DJANGO_EMAIL_HOST_USER"
+        },
+        {
+          "type": "smtp",
+          "container": "backend",
+          "key": "DJANGO_EMAIL_HOST_PASSWORD"
+        },
+        {
+          "type": "smtp",
+          "container": "backend",
+          "key": "DJANGO_EMAIL_FROM"
+        },
+        {
+          "type": "smtp",
+          "container": "backend",
+          "key": "DJANGO_EMAIL_USE_TLS"
+        },
+        {
+          "type": "smtp",
+          "container": "backend",
+          "key": "DJANGO_EMAIL_USE_SSL"
+        }
+      ]
+    }
+  ]
+}

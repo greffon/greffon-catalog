@@ -110,7 +110,15 @@ def _config_refs(text):
 # bakes an empty/wrong value into a secret, and integration refs only fail at
 # deploy. An allowlist can't be spelled around, and subsumes the old integration
 # /bypass checks (a non-``config``/``instance_*`` name like ``smtp`` is rejected).
-_RENDER_ALLOWED_BARE = {"instance_id", "instance_url", "instance_host", "instance_port"}
+# instance_l4_* are the Tier-C/L4 endpoint vars the greffer hands a self-
+# configuring L4 app (e.g. a WebRTC media server advertising its host:port).
+# Same provenance as the bare instance_* vars (greffer render context), safe to
+# bake the same way.
+_RENDER_ALLOWED_BARE = {
+    "instance_id", "instance_url", "instance_host", "instance_port",
+    "instance_l4_host", "instance_l4_port", "instance_l4_endpoint",
+    "instance_l4_proto",
+}
 _RENDER_SAFE_FILTERS = {"tojson"}
 
 
@@ -149,7 +157,8 @@ def _render_block_problem(text):
         reason = _unsafe_render_expr(inner)
         if reason:
             return (f"unsafe expression — {reason}; baked files may only use "
-                    "{{ config.NAME }}, {{ instance_url/_id/_host/_port }}, string "
+                    "{{ config.NAME }}, {{ instance_url/_id/_host/_port }}, "
+                    "{{ instance_l4_host/_port/_endpoint/_proto }}, string "
                     "concatenation (~), and the | tojson filter")
     return None
 

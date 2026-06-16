@@ -1,0 +1,236 @@
+version: "3"
+
+# Visio — La Suite numérique (suitenumerique/meet, app codename "meet").
+# Video conferencing by DINUM, built on LiveKit (WebRTC SFU).
+#
+# SELF-CONTAINED DEMO TOPOLOGY (same single-origin + bundled-Keycloak pattern
+# as the Docs greffon, plus a LiveKit media server):
+#
+#   {{ instance_url }}/            -> frontend  (Next.js)
+#   {{ instance_url }}/api /admin  -> backend   (Django/DRF, gunicorn/WSGI)
+#   {{ instance_url }}/media/      -> minio      (recordings, via backend media-auth)
+#   {{ instance_url }}/identity/   -> keycloak   (embedded OIDC provider)
+#   {{ instance_url }}/livekit/    -> livekit:7880 (WebRTC signaling, WebSocket)
+#
+# WebRTC media: LiveKit needs a public UDP port the browser dials directly. The
+# greffer publishes the livekit UDP port as a Tier-C / L4 port with `same_port`
+# (see metadata.json `ports`) and hands back the public endpoint as
+# {{ instance_l4_host }}:{{ instance_l4_port }}, binding the container to that
+# same port. LiveKit's config advertises exactly that (node_ip + udp_port), so
+# advertise == listen == public in both proxy and tunnel mode. Single-port UDP
+# mux (one media port, no range), so one L4 UDP port is enough.
+#
+# Heavy: ~10 services + WebRTC. First boot pulls several GB; Keycloak takes
+# ~30-60s to import the realm. Demo login: demo / demo.
+
+services:
+  gateway:
+    # Single public TLS entry point (the greffer fronts this port). Routes the
+    # one public origin to every internal service, including the LiveKit
+    # signaling WebSocket at /livekit.
+    #
+    # Declared FIRST on purpose. The greffer enumerates published ports in
+    # service-definition order, and the greffer-only CI smoke harness (which
+    # allocates no L4 port and probes the first enumerated port) must land on
+    # this HTTP gateway, not livekit's L4 media port. Same contract the wireguard
+    # reference greffon relies on by listing its web-UI port ahead of the L4 one.
+    image: nginx:1.25
+    restart: on-failure
+    depends_on:
+      - backend
+      - frontend
+      - keycloak
+      - minio
+      - livekit
+    volumes:
+      - gateway_conf:/etc/nginx/conf.d
+    ports:
+      - "8083:8083"
+
+  postgresql:
+    image: postgres:16
+    restart: on-failure
+    environment:
+      POSTGRES_DB: meet
+      POSTGRES_USER: meet
+      # POSTGRES_PASSWORD injected (shared with backend DB_PASSWORD)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:5
+    restart: on-failure
+
+  minio:
+    image: minio/minio
+    restart: on-failure
+    # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD injected (generated per instance)
+    command: minio server --console-address ":9001" /data
+    volumes:
+      - minio_data:/data
+
+  createbuckets:
+    image: minio/mc
+    restart: on-failure
+    labels:
+      # One-shot: creates the media bucket then exits. Excluded from instance
+      # status so its terminal `exited` state isn't read as a stopped container
+      # (which would force the instance to the `unknow` status the manager
+      # rejects). `restart: on-failure` means this can't be inferred from the
+      # restart policy, so the label is the explicit declaration.
+      com.greffon.status: "ignore"
+    depends_on:
+      - minio
+    entrypoint: >
+      sh -c "
+      until /usr/bin/mc alias set meet http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done &&
+      /usr/bin/mc mb --ignore-existing meet/meet-media-storage &&
+      exit 0;"
+
+  livekit:
+    # WebRTC SFU. Config (API keys, single-port UDP mux, the advertised endpoint
+    # from instance_l4_host/_port, webhook) is rendered per-instance into
+    # /etc/livekit.yaml — see metadata.json `LiveKit config` (x-greffon-render).
+    # Single LiveKit node, so no redis (in-process single-node routing); see that
+    # config's comment for the rationale and the literal-IP requirement on
+    # GREFFER_PUBLIC_HOST / RATHOLE_PUBLIC_HOST.
+    image: livekit/livekit-server:v1.8
+    restart: on-failure
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - livekit_conf:/etc
+    # 7880 (signaling/HTTP) is internal-only, reached through the gateway.
+    # 7882/udp is the media port: declared in metadata `ports` as an L4
+    # same_port UDP port and published directly on the host. No ICE/TCP fallback
+    # is advertised: the rendered livekit.yaml omits rtc.tcp_port, so LiveKit
+    # offers only the single UDP media candidate (which is the one we publish);
+    # an unpublished TCP candidate would just be an unreachable ICE dead end.
+    ports:
+      - "7882:7882/udp"
+
+  backend:
+    image: lasuite/meet-backend:v1.19.0
+    restart: on-failure
+    command: >
+      sh -c "python manage.py migrate --no-input &&
+             exec gunicorn -c /usr/local/etc/gunicorn/meet.py meet.wsgi:application"
+    depends_on:
+      - postgresql
+      - redis
+      - minio
+      - keycloak
+      - livekit
+    environment:
+      DJANGO_SETTINGS_MODULE: meet.settings
+      DJANGO_CONFIGURATION: Production
+      PYTHONPATH: /app
+      DJANGO_ALLOWED_HOSTS: '{{ instance_url.split("://")[1] }},localhost,backend'
+      DJANGO_CSRF_TRUSTED_ORIGINS: "{{ instance_url }}"
+      # DJANGO_SECRET_KEY injected
+      MEET_BASE_URL: "{{ instance_url }}"
+      DB_HOST: postgresql
+      DB_NAME: meet
+      DB_USER: meet
+      DB_PORT: "5432"
+      # DB_PASSWORD injected (shared with postgresql)
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      # Object storage (recordings). Server-side talks to minio directly.
+      AWS_S3_ENDPOINT_URL: http://minio:9000
+      # AWS_S3_ACCESS_KEY_ID / AWS_S3_SECRET_ACCESS_KEY injected
+      AWS_STORAGE_BUCKET_NAME: meet-media-storage
+      MEDIA_BASE_URL: "{{ instance_url }}"
+      # LiveKit. API calls (create room, mint join token) are server-side, so
+      # they go to the internal address (no hairpin / cert-trust problem). The
+      # join token the backend hands the browser carries the PUBLIC ws URL,
+      # which the frontend uses to open the signaling WebSocket through the
+      # gateway /livekit path.
+      LIVEKIT_API_KEY: meet
+      # LIVEKIT_API_SECRET injected (shared with the livekit config)
+      LIVEKIT_API_URL: "wss://{{ instance_url.split('://')[1] }}/livekit"
+      LIVEKIT_VERIFY_SSL: "false"
+      ALLOW_UNREGISTERED_ROOMS: "true"
+      # OIDC — browser-facing endpoints public, back-channel internal (same
+      # split as Docs; see that entry for the rationale).
+      OIDC_OP_AUTHORIZATION_ENDPOINT: "{{ instance_url }}/identity/realms/meet/protocol/openid-connect/auth"
+      OIDC_OP_LOGOUT_ENDPOINT: "{{ instance_url }}/identity/realms/meet/protocol/openid-connect/logout"
+      OIDC_OP_JWKS_ENDPOINT: "http://keycloak:8080/identity/realms/meet/protocol/openid-connect/certs"
+      OIDC_OP_TOKEN_ENDPOINT: "http://keycloak:8080/identity/realms/meet/protocol/openid-connect/token"
+      OIDC_OP_USER_ENDPOINT: "http://keycloak:8080/identity/realms/meet/protocol/openid-connect/userinfo"
+      OIDC_RP_CLIENT_ID: meet
+      # OIDC_RP_CLIENT_SECRET injected (the render-templated realm embeds the
+      # same {{ config.OIDC_RP_CLIENT_SECRET }})
+      OIDC_RP_SIGN_ALGO: RS256
+      OIDC_RP_SCOPES: "openid email"
+      OIDC_VERIFY_SSL: "false"
+      LOGIN_REDIRECT_URL: "{{ instance_url }}"
+      LOGIN_REDIRECT_URL_FAILURE: "{{ instance_url }}"
+      LOGOUT_REDIRECT_URL: "{{ instance_url }}"
+      OIDC_REDIRECT_ALLOWED_HOSTS: '["{{ instance_url }}"]'
+      # Mail (operator SMTP integration; stripped when unset)
+      DJANGO_EMAIL_HOST: "{{ smtp.host }}"
+      DJANGO_EMAIL_PORT: "{{ smtp.port }}"
+      DJANGO_EMAIL_HOST_USER: "{{ smtp.username }}"
+      DJANGO_EMAIL_HOST_PASSWORD: "{{ smtp.password }}"
+      DJANGO_EMAIL_FROM: "{{ smtp.from_address }}"
+      # Django: EMAIL_USE_TLS == STARTTLS (587), EMAIL_USE_SSL == implicit TLS
+      # (465). They are mutually exclusive, so map each tls_mode to the right
+      # flag (matches the Docs/Paperless entries).
+      DJANGO_EMAIL_USE_TLS: '{{ "true" if smtp.tls_mode == "starttls" else "false" }}'
+      DJANGO_EMAIL_USE_SSL: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+
+  celery:
+    image: lasuite/meet-backend:v1.19.0
+    restart: on-failure
+    command: ["celery", "-A", "meet.celery_app", "worker", "-l", "INFO"]
+    depends_on:
+      - backend
+    environment:
+      DJANGO_SETTINGS_MODULE: meet.settings
+      DJANGO_CONFIGURATION: Production
+      PYTHONPATH: /app
+      DB_HOST: postgresql
+      DB_NAME: meet
+      DB_USER: meet
+      DB_PORT: "5432"
+      # DB_PASSWORD injected (shared)
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      AWS_S3_ENDPOINT_URL: http://minio:9000
+      # AWS_S3_ACCESS_KEY_ID / AWS_S3_SECRET_ACCESS_KEY injected
+      AWS_STORAGE_BUCKET_NAME: meet-media-storage
+      LIVEKIT_API_KEY: meet
+      # LIVEKIT_API_SECRET injected
+
+  frontend:
+    image: lasuite/meet-frontend:v1.19.0
+    restart: on-failure
+    depends_on:
+      - backend
+    # No `ports:` — internal-only. Image exposes 8080 (nginx), calls /api
+    # same-origin. Reached at frontend:8080 by the gateway.
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    restart: on-failure
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      # KC_BOOTSTRAP_ADMIN_PASSWORD injected
+      KC_HTTP_RELATIVE_PATH: /identity
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: "false"
+      # Include /identity so issuer + login form/CSS URLs keep the path; pins a
+      # stable iss for the internal back-channel (see Docs entry).
+      KC_HOSTNAME: "{{ instance_url }}/identity"
+    volumes:
+      - keycloak_import:/opt/keycloak/data/import
+    # No `ports:` — internal-only.
+
+volumes:
+  postgres_data:
+  minio_data:
+  keycloak_import:
+  gateway_conf:
+  livekit_conf:
