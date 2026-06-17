@@ -94,7 +94,7 @@ services:
     # Single LiveKit node, so no redis (in-process single-node routing); see that
     # config's comment for the rationale and the literal-IP requirement on
     # GREFFER_PUBLIC_HOST / RATHOLE_PUBLIC_HOST.
-    image: livekit/livekit-server:v1.8
+    image: livekit/livekit-server:v1.10.0
     restart: on-failure
     command: ["--config", "/etc/livekit.yaml"]
     volumes:
