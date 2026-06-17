@@ -32,7 +32,8 @@
             "minLength": 32,
             "format": "greffon-secret-alnum"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "" },
       "destinations": [
@@ -53,7 +54,8 @@
             "minLength": 32,
             "format": "greffon-secret-alnum"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "" },
       "destinations": [

@@ -30,7 +30,8 @@
             "minLength": 16,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "" },
       "destinations": [

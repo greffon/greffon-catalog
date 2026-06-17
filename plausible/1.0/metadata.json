@@ -43,7 +43,8 @@
         "type": "object",
         "required": [
           "value"
-        ]
+        ],
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
