@@ -124,7 +124,11 @@ services:
       DJANGO_SETTINGS_MODULE: meet.settings
       DJANGO_CONFIGURATION: Production
       PYTHONPATH: /app
-      DJANGO_ALLOWED_HOSTS: '{{ instance_url.split("://")[1] }},localhost,backend'
+      # `gateway` is allowed because LiveKit webhooks are routed through the
+      # gateway (http://gateway:8083) so they pick up X-Forwarded-Proto: https
+      # and don't trip Production's SECURE_SSL_REDIRECT; the Host then reads
+      # `gateway:8083`. See the LiveKit config webhook url in metadata.json.
+      DJANGO_ALLOWED_HOSTS: '{{ instance_url.split("://")[1] }},localhost,backend,gateway'
       DJANGO_CSRF_TRUSTED_ORIGINS: "{{ instance_url }}"
       # DJANGO_SECRET_KEY injected
       MEET_BASE_URL: "{{ instance_url }}"

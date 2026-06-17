@@ -86,7 +86,7 @@
         "x-greffon-visibility": "hidden"
       },
       "default_value": {
-        "file": "data:text/plain;base64,cG9ydDogNzg4MApiaW5kX2FkZHJlc3NlczoKICAtICIwLjAuMC4wIgpydGM6CiAgdWRwX3BvcnQ6IHt7IGluc3RhbmNlX2w0X3BvcnQgfX0KICB1c2VfZXh0ZXJuYWxfaXA6IGZhbHNlCiAgbm9kZV9pcDoge3sgaW5zdGFuY2VfbDRfaG9zdCB9fQogIGVuYWJsZV9sb29wYmFja19jYW5kaWRhdGU6IGZhbHNlCmtleXM6CiAgbWVldDogInt7IGNvbmZpZy5MSVZFS0lUX0FQSV9TRUNSRVQgfX0iCndlYmhvb2s6CiAgYXBpX2tleTogbWVldAogIHVybHM6CiAgICAtIGh0dHA6Ly9iYWNrZW5kOjgwMDAvYXBpL3YxLjAvcm9vbXMvd2ViaG9va3MtbGl2ZWtpdC8KbG9nZ2luZzoKICBsZXZlbDogaW5mbwogIGpzb246IGZhbHNlCg=="
+        "file": "data:text/plain;base64,cG9ydDogNzg4MApiaW5kX2FkZHJlc3NlczoKICAtICIwLjAuMC4wIgpydGM6CiAgdWRwX3BvcnQ6IHt7IGluc3RhbmNlX2w0X3BvcnQgfX0KICB1c2VfZXh0ZXJuYWxfaXA6IGZhbHNlCiAgbm9kZV9pcDoge3sgaW5zdGFuY2VfbDRfaG9zdCB9fQogIGVuYWJsZV9sb29wYmFja19jYW5kaWRhdGU6IGZhbHNlCmtleXM6CiAgbWVldDogInt7IGNvbmZpZy5MSVZFS0lUX0FQSV9TRUNSRVQgfX0iCndlYmhvb2s6CiAgYXBpX2tleTogbWVldAogIHVybHM6CiAgICAtIGh0dHA6Ly9nYXRld2F5OjgwODMvYXBpL3YxLjAvcm9vbXMvd2ViaG9va3MtbGl2ZWtpdC8KbG9nZ2luZzoKICBsZXZlbDogaW5mbwogIGpzb246IGZhbHNlCg=="
       },
       "destinations": [
         {
