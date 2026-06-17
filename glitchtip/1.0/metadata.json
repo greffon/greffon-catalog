@@ -75,7 +75,8 @@
             "type": "string",
             "title": "Default sender email"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
