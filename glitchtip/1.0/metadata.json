@@ -42,7 +42,8 @@
             "type": "string",
             "title": "GlitchTip domain URL"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": "{{ instance_url }}"

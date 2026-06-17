@@ -8,7 +8,8 @@
     {
       "title": "MB_SITE_URL",
       "schema": {
-        "properties": { "value": { "type": "string", "title": "Public URL" } }
+        "properties": { "value": { "type": "string", "title": "Public URL" } },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "{{ instance_url }}" },
       "destinations": [
