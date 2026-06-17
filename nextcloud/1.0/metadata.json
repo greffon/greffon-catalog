@@ -61,7 +61,8 @@
             "type": "string",
             "title": "Trusted domains"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": "{{ instance_url.split('://')[1] }} localhost"
@@ -82,7 +83,8 @@
             "type": "string",
             "title": "OVERWRITEPROTOCOL"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": "https"
@@ -103,7 +105,8 @@
             "type": "string",
             "title": "OVERWRITECLIURL"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": "{{ instance_url }}"

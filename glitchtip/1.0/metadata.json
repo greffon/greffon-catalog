@@ -21,7 +21,8 @@
             "minLength": 32,
             "format": "greffon-secret"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""
@@ -42,7 +43,8 @@
             "type": "string",
             "title": "GlitchTip domain URL"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": "{{ instance_url }}"
@@ -73,7 +75,8 @@
             "type": "string",
             "title": "Default sender email"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": {
         "value": ""

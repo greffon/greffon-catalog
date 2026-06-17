@@ -13,7 +13,8 @@
             "type": "string",
             "title": "Public URL"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "{{ instance_url }}" },
       "destinations": [
@@ -34,7 +35,8 @@
             "format": "greffon-secret"
           }
         },
-        "required": ["value"]
+        "required": ["value"],
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "" },
       "destinations": [

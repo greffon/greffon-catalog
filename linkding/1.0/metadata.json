@@ -47,7 +47,8 @@
             "type": "string",
             "title": "Trusted origin (public URL)"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "{{ instance_url }}" },
       "destinations": [

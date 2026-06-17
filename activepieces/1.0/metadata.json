@@ -10,7 +10,8 @@
       "schema": {
         "properties": {
           "value": { "type": "string", "title": "Public URL" }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "{{ instance_url }}" },
       "destinations": [
@@ -31,7 +32,8 @@
             "minLength": 32,
             "format": "greffon-secret-alnum"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "" },
       "destinations": [
@@ -52,7 +54,8 @@
             "minLength": 32,
             "format": "greffon-secret-alnum"
           }
-        }
+        },
+        "x-greffon-visibility": "advanced"
       },
       "default_value": { "value": "" },
       "destinations": [
