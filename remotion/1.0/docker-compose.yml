@@ -17,6 +17,11 @@ version: "3"
 services:
   studio:
     image: ghcr.io/greffon/remotion-studio:1.0
+    labels:
+      # Studio streams live updates (preview + render progress) over SSE.
+      # Tell the greffer nginx to stop buffering this service's responses,
+      # otherwise the event stream is held and the UI never updates.
+      com.greffon.proxy.streaming: "true"
     ports:
       - "3000:3000"
     volumes:
