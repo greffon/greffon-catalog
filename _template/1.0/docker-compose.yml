@@ -22,6 +22,12 @@ version: "3"
 #     status. Otherwise its `exited` state reads as a stopped container and the
 #     instance gets stuck reporting the `unknow` status the manager rejects.
 #     The validator enforces this on any service that looks one-shot.
+#   - If a service streams responses (Server-Sent Events, long-poll, chunked
+#     transfer), label it `com.greffon.proxy.streaming: "true"`. The greffer
+#     nginx buffers proxied responses by default, which holds an event stream
+#     and the app's live updates never reach the browser. The label disables
+#     response buffering for that service's port(s). Leave it off otherwise:
+#     buffering helps normal request/response apps.
 
 services:
   app:

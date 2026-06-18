@@ -32,9 +32,15 @@ jobs:
       - name: Detect changed greffons
         id: detect
         run: |
+          # Also match files under a greffon's image/ dir (self-built images,
+          # e.g. remotion): a Dockerfile/source change must re-smoke the greffon
+          # so the candidate image is exercised before merge. The sed collapses
+          # any matched path to its <name>/<version> root (image/ files sit one
+          # level deeper than metadata.json, so strip to the first two
+          # components rather than just the filename).
           CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
-            | grep -E '^[^.][^/]+/[^/]+/(metadata\.json|docker-compose\.yml|smoke_test\.(json|spec\.ts))$' \
-            | sed 's|/[^/]*$||' \
+            | grep -E '^[^.][^/]+/[^/]+/(metadata\.json|docker-compose\.yml|smoke_test\.(json|spec\.ts)|image/.+)$' \
+            | sed -E 's|^([^/]+/[^/]+)/.*|\1|' \
             | sort -u || true)
           # Drop directories that no longer exist (delisted/removed greffons):
           # `git diff` still lists their paths, but every downstream consumer
@@ -144,6 +150,33 @@ jobs:
         run: |
           npm install --silent
           npx playwright install --with-deps chromium
+
+      # Self-built images (a greffon shipping an image/Dockerfile, e.g.
+      # remotion) are only published to GHCR on push to main, so the tag the
+      # compose references does not exist during a PR. Build it locally and tag
+      # it as the compose's image: ref, so the greffer's `docker-compose up`
+      # finds it on the runner's daemon and never pulls. This makes PR CI smoke
+      # the candidate image instead of a stale/absent registry tag. No-op for
+      # greffons that reference an upstream public image.
+      - name: Build self-built greffon images
+        if: needs.validate.outputs.has_changes == 'true'
+        working-directory: greffon-catalog
+        env:
+          CHANGED_DIRS: ${{ needs.validate.outputs.changed_dirs }}
+        run: |
+          echo "$CHANGED_DIRS" | while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            [ -f "$dir/image/Dockerfile" ] || continue
+            compose="$dir/docker-compose.yml"
+            # Every image: line pointing at our own registry is a candidate
+            # built from this dir's image/ context.
+            grep -E '^[[:space:]]*image:[[:space:]]*ghcr\.io/greffon/' "$compose" \
+              | sed -E 's|^[[:space:]]*image:[[:space:]]*||' \
+              | while IFS= read -r tag; do
+                  echo "Building $tag from $dir/image"
+                  docker build -t "$tag" "$dir/image"
+                done
+          done
 
       - name: Deploy + smoke each changed greffon (greffer-only)
         working-directory: greffer

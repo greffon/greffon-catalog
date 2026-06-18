@@ -1,0 +1,9 @@
+{
+  "name": "Remotion Studio",
+  "logo": "https://www.remotion.dev/img/logo-small.png",
+  "description": "Create videos programmatically in React. Remotion Studio is a browser-based editor and preview server. Source-available (Remotion License): free for individuals, non-profits, and for-profit orgs with up to 3 employees; larger orgs need a company license from remotion.pro.",
+  "min_greffer_version": "0.3.11",
+  "categories": [],
+  "images": [],
+  "configurations": []
+}
