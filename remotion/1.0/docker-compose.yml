@@ -1,0 +1,28 @@
+version: "3"
+
+# Remotion Studio — browser-based editor/preview for programmatic videos.
+#
+# No upstream Studio image exists, so we publish our own from ./image/ to
+# ghcr.io/greffon/remotion-studio. The greffer only pulls images (it never
+# builds), so this references the published tag.
+#
+# Single-tenant dev tool with no auth of its own; it relies on the
+# per-instance greffon_nginx TLS proxy and manager access control, same trust
+# model as the vscode greffon.
+#
+# Remotion is source-available under the Remotion License (NOT OSI open
+# source). Free for individuals, non-profits, and for-profit orgs with up to
+# 3 employees; larger orgs need a company license from remotion.pro. Deployers
+# are responsible for their own license compliance.
+services:
+  studio:
+    image: ghcr.io/greffon/remotion-studio:1.0
+    ports:
+      - "3000:3000"
+    volumes:
+      # Named volume seeded from the image's baked starter project on first
+      # run, then persists the user's compositions across restarts.
+      - project_data:/home/remotion/app
+
+volumes:
+  project_data:
