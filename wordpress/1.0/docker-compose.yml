@@ -52,10 +52,40 @@ services:
       MARIADB_DATABASE: "wordpress"
       MARIADB_USER: "wordpress"
       MARIADB_PASSWORD: "{{ instance_id }}"
-      # Root password also keyed off instance_id (unique per deploy).
+      # Root password also keyed off instance_id (unique per deploy). MariaDB 11
+      # root@localhost requires this password (it does not grant passwordless
+      # unix_socket auth), so the backup hooks below authenticate with it.
       MARIADB_ROOT_PASSWORD: "{{ instance_id }}"
+    # Phase 3 hot DB backup hooks (SERVICE -> container labels read by the
+    # greffer, which runs each as `docker exec <db> timeout 3600 <hook>`). dump:
+    # mariadb-dump (SQL text) to stdout; restore: the mariadb client applies that
+    # SQL from stdin. The password is NOT in the argv (ps-safe): the hook exports
+    # MYSQL_PWD from the container's MARIADB_ROOT_PASSWORD only for the
+    # dump/restore process (scoped via sh -c, never a persistent container env
+    # var). `exec` makes the client the direct child of the greffer's `timeout`
+    # wrapper so a hung dump is signalled, not the shell. The `$$` is REQUIRED
+    # (not `$`): docker-compose interpolates `$VAR` at up-time against the
+    # greffer's scrubbed launch env (password absent), so a single `$` would
+    # resolve to an EMPTY password; `$$` escapes to a literal `$` in the
+    # container label for the in-container `sh` to expand. --single-transaction =
+    # consistent hot dump of the InnoDB tables; --routines/--triggers/--events
+    # include stored programs; --no-tablespaces avoids needing PROCESS. The dump's
+    # default --add-drop-table makes a re-restore drop+recreate each table.
+    labels:
+      com.greffon.backup.dump: "sh -c 'export MYSQL_PWD=\"$$MARIADB_ROOT_PASSWORD\"; exec mariadb-dump --single-transaction --routines --triggers --events --no-tablespaces -u root wordpress'"
+      com.greffon.backup.restore: "sh -c 'export MYSQL_PWD=\"$$MARIADB_ROOT_PASSWORD\"; exec mariadb -u root wordpress'"
     volumes:
       - wordpress_db_data:/var/lib/mysql
+    # Required by the greffer's hot DB restore: _wait_db_healthy waits for this
+    # healthcheck to pass before streaming the restore in. The mariadb image
+    # ships healthcheck.sh; --connect proves the server accepts connections and
+    # --innodb_initialized proves the storage engine finished crash recovery.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
 volumes:
   wordpress_data:
