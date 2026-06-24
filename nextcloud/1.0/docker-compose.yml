@@ -35,8 +35,26 @@ services:
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: nextcloud
+    # Phase 3 hot DB backup hooks (SERVICE -> container labels read by the
+    # greffer). The DATA volume (nextcloud_data, the files) is captured by a
+    # live restic snapshot; this DB volume is captured by the dump hook instead
+    # (multi-artifact backup). dump: pg_dump custom format to stdout; restore:
+    # pg_restore from stdin, --clean --if-exists so a re-restore drops+recreates
+    # objects, --single-transaction so a failed restore aborts atomically.
+    # POSTGRES_USER is unset here so the superuser is `postgres`; both run over
+    # the unix socket (trust auth -> no password).
+    labels:
+      com.greffon.backup.dump: "pg_dump -U postgres -d nextcloud -Fc"
+      com.greffon.backup.restore: "pg_restore -U postgres -d nextcloud --clean --if-exists --no-owner --single-transaction"
     volumes:
       - db_data:/var/lib/postgresql/data
+    # Required by the greffer's hot DB restore: _wait_db_healthy waits for this
+    # healthcheck to pass before streaming pg_restore in.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nextcloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   nextcloud_data:
