@@ -13,9 +13,17 @@ test.describe('Umami', () => {
 
     const base = URL.replace(/\/$/, '');
 
-    // /api/heartbeat returns JSON when the app + DB are healthy.
-    const beat = await request.get(`${base}/api/heartbeat`, { timeout: 30_000 });
-    expect(beat.ok(), `GET /api/heartbeat -> ${beat.status()}`).toBe(true);
+    // /api/heartbeat returns JSON when the app + DB are healthy. umami (Next.js +
+    // prisma migrate on first boot) can take up to ~60s to start, and the proxy
+    // 502s until the app is up -- so POLL until ready rather than one-shot (a
+    // single request races startup and flakes).
+    await expect
+      .poll(async () => (await request.get(`${base}/api/heartbeat`)).status(), {
+        message: 'umami /api/heartbeat never became 200',
+        timeout: 90_000,
+        intervals: [2_000],
+      })
+      .toBe(200);
 
     // The login page renders (default admin/umami; change on first login).
     await page.goto(`${base}/login`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
