@@ -27,6 +27,20 @@ services:
       POSTGRES_DB: "umami"
       POSTGRES_USER: "umami"
       POSTGRES_PASSWORD: "{{ instance_id }}"
+    # Phase 3 hot DB backup hooks (read by the greffer as SERVICE -> container
+    # labels). dump: pg_dump custom format to stdout; restore: pg_restore from
+    # stdin, --clean --if-exists so a re-restore drops+recreates objects. Both run
+    # as the local superuser over the unix socket (trust auth -> no password).
+    labels:
+      com.greffon.backup.dump: "pg_dump -U umami -d umami -Fc"
+      com.greffon.backup.restore: "pg_restore -U umami -d umami --clean --if-exists --no-owner"
+    # Required by the greffer's hot DB restore (_wait_db_healthy): the restore
+    # waits for this healthcheck to pass before streaming pg_restore in.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami -d umami"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - umami_db_data:/var/lib/postgresql/data
 
