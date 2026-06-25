@@ -65,7 +65,7 @@
         "x-greffon-visibility": "advanced"
       },
       "default_value": {
-        "value": "{{ instance_url.split('://')[1] }} localhost"
+        "value": "{{ instance_url.split(\"://\")[1] }} localhost"
       },
       "destinations": [
         {
