@@ -9,6 +9,29 @@ const URL = process.env.NEXTCLOUD_URL!;
  *   - Login succeeds and lands on the dashboard
  */
 test.describe('Nextcloud', () => {
+  // Nextcloud's env-var auto-install runs on first boot (fresh volume) and lags
+  // the greffer's "running" signal (containers up != install done). Until it
+  // finishes, /status.php is 503 or reports installed=false, so the login +
+  // WebDAV flows race it. Gate every test on status.php reporting installed.
+  test.beforeEach(async ({ request }) => {
+    test.skip(!URL, 'NEXTCLOUD_URL not set');
+    const base = URL.replace(/\/$/, '');
+    await expect
+      .poll(
+        async () => {
+          const r = await request.get(`${base}/status.php`);
+          if (!r.ok()) return false;
+          return (await r.json().catch(() => ({})))?.installed === true;
+        },
+        {
+          message: 'nextcloud status.php never reported installed=true',
+          timeout: 150_000,
+          intervals: [3_000],
+        },
+      )
+      .toBe(true);
+  });
+
   test('admin logs in, lands on dashboard', async ({ page }) => {
     test.skip(!URL, 'NEXTCLOUD_URL not set');
 

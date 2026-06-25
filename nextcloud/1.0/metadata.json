@@ -135,5 +135,11 @@
         { "type": "smtp", "container": "nextcloud", "key": "SMTP_SECURE" }
       ]
     }
-  ]
+  ],
+  "backup": {
+    "volumes": {
+      "nextcloud_data": "data",
+      "db_data": "database"
+    }
+  }
 }
