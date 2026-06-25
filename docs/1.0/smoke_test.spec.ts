@@ -39,10 +39,32 @@ test.describe('Docs', () => {
       )
       .toBe(200);
 
-    // Visiting the app while logged out must land on a usable login form.
-    await page.goto(base, { waitUntil: 'networkidle', timeout: 90_000 });
-    await expect(page.locator('input[name="username"]').first())
-      .toBeVisible({ timeout: 30_000 });
+    // A 200 well-known proves Keycloak is up, but the Docs frontend+backend
+    // (~10 services behind the gateway) can still be warming up, so the app ->
+    // OIDC redirect transiently 502s / lands on a blank shell. Reload-poll the
+    // app origin until the bundled sign-in form actually renders its username
+    // field, rather than asserting it on a single (racy) navigation.
+    await expect
+      .poll(
+        async () => {
+          await page
+            .goto(base, { waitUntil: 'domcontentloaded', timeout: 90_000 })
+            .catch(() => {});
+          return page
+            .locator('input[name="username"]')
+            .first()
+            .isVisible({ timeout: 2_000 })
+            .catch(() => false);
+        },
+        {
+          message: 'docs never handed off to a rendered OIDC sign-in form',
+          timeout: 150_000,
+          intervals: [3_000],
+        },
+      )
+      .toBe(true);
+
+    // The sign-in surface is usable: password + submit are present too.
     await expect(page.locator('input[type="password"]').first())
       .toBeVisible({ timeout: 30_000 });
     await expect(page.locator('input[type="submit"], button[type="submit"]').first())
