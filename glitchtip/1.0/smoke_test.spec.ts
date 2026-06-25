@@ -12,37 +12,47 @@ test.describe('GlitchTip', () => {
   // GlitchTip's admin (createsuperuser) runs as a one-shot that depends on the
   // migrate job, both of which finish a little AFTER the web container starts
   // serving. The greffer reports "running" as soon as the containers are up, so
-  // a smoke that logs in immediately races the seed and the migrate (login then
-  // 4xx/5xx because the admin row / tables aren't there yet). Gate every test on
-  // the seed being live: poll the allauth login API (in the isolated `request`
-  // context, so the UI flows on `page` keep a clean session) until the seeded
-  // admin actually authenticates.
-  test.beforeEach(async ({ request }) => {
+  // a smoke that logs in immediately races the seed + migrate (login 4xx/5xx
+  // because the admin row / tables aren't there yet). Gate every test on the
+  // seed being live by driving the real SPA login in a THROWAWAY browser
+  // context (its own cookie jar => the SPA sets/sends the csrftoken exactly as
+  // in prod, and the test's own `page` session stays clean) and polling until
+  // the seeded admin authenticates.
+  test.beforeEach(async ({ browser }) => {
     test.skip(!URL, 'GLITCHTIP_URL not set');
-    const base = URL.replace(/\/$/, '');
-    await expect
-      .poll(
-        async () => {
-          // GET session first so allauth sets the csrftoken cookie in this
-          // request context; then POST login with the matching X-CSRFToken.
-          await request.get(`${base}/_allauth/browser/v1/auth/session`);
-          const csrf = (await request.storageState()).cookies.find(
-            (c) => c.name === 'csrftoken',
-          )?.value;
-          if (!csrf) return 0;
-          const r = await request.post(`${base}/_allauth/browser/v1/auth/login`, {
-            headers: { 'X-CSRFToken': csrf, Referer: URL },
-            data: { email: 'admin@greffon.io', password: 'Admin123!' },
-          });
-          return r.status();
-        },
-        {
-          message: 'glitchtip seeded admin never became able to log in',
-          timeout: 120_000,
-          intervals: [3_000],
-        },
-      )
-      .toBeLessThan(300);
+    const probe = await browser.newContext({ ignoreHTTPSErrors: true });
+    const p = await probe.newPage();
+    try {
+      await expect
+        .poll(
+          async () => {
+            await p.goto(URL, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => {});
+            const email = p.locator('input[type="email"]').first();
+            if (!(await email.isVisible({ timeout: 2_000 }).catch(() => false))) return 0;
+            await email.fill('admin@greffon.io');
+            await p.locator('input[type="password"]').first().fill('Admin123!');
+            const wait = p
+              .waitForResponse(
+                (r) =>
+                  r.url().includes('/_allauth/browser/v1/auth/login') &&
+                  r.request().method() === 'POST',
+                { timeout: 15_000 },
+              )
+              .catch(() => null);
+            await p.getByRole('button', { name: /log\s*in/i }).first().click();
+            const resp = await wait;
+            return !!resp && resp.status() >= 200 && resp.status() < 300;
+          },
+          {
+            message: 'glitchtip seeded admin never became able to log in',
+            timeout: 180_000,
+            intervals: [3_000],
+          },
+        )
+        .toBe(true);
+    } finally {
+      await probe.close();
+    }
   });
 
   test('seeded admin can log in', async ({ page }) => {
