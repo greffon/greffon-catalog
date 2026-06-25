@@ -21,6 +21,38 @@ test.describe('WordPress', () => {
     test.skip(!URL, 'WORDPRESS_URL not set');
     const base = URL.replace(/\/$/, '');
 
+    // MariaDB init + WP first-run lag the greffer's "running" signal (containers
+    // up != DB ready). Until the DB is reachable, install.php serves a STATIC
+    // "Error establishing a database connection" page. Poll the raw install.php
+    // HTML (cheap request, no browser) until it's DB-ready -- the WP installer
+    // markup is present and the DB-error page is gone -- BEFORE driving the
+    // wizard. Decoupling DB-readiness from the UI avoids re-navigating (which
+    // would loop on the language step and never settle on the form).
+    await expect
+      .poll(
+        async () => {
+          const r = await page.request
+            .get(`${base}/wp-admin/install.php`, { maxRedirects: 5 })
+            .catch(() => null);
+          if (!r || !r.ok()) return false; // 502/down while WP+PHP warm up
+          const html = await r.text();
+          // Ready == WP serves an install page (any step / language select) and
+          // it is NOT the DB-connection-error page. Keep the positive check
+          // broad ("WordPress" appears in every install screen) so a markup
+          // change can't make this hang.
+          return (
+            !/Error establishing a database connection/i.test(html) &&
+            /WordPress/i.test(html)
+          );
+        },
+        {
+          message: 'wordpress install.php never became DB-ready',
+          timeout: 180_000,
+          intervals: [3_000],
+        },
+      )
+      .toBe(true);
+
     // Fresh WP redirects / -> /wp-admin/install.php.
     await page.goto(`${base}/wp-admin/install.php`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
 
