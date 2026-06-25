@@ -22,34 +22,43 @@ test.describe('WordPress', () => {
     const base = URL.replace(/\/$/, '');
 
     // MariaDB init + WP first-run lag the greffer's "running" signal (containers
-    // up != DB ready). Until the DB is reachable, install.php renders a STATIC
-    // "Error establishing a database connection" page that never becomes the
-    // wizard on its own, so a one-shot goto + 30s wait for the form races and
-    // fails. Reload-poll install.php (handling the optional language step) until
-    // the wizard's first field (#weblog_title) actually renders.
+    // up != DB ready). Until the DB is reachable, install.php serves a STATIC
+    // "Error establishing a database connection" page. Poll the raw install.php
+    // HTML (cheap request, no browser) until it's DB-ready -- the WP installer
+    // markup is present and the DB-error page is gone -- BEFORE driving the
+    // wizard. Decoupling DB-readiness from the UI avoids re-navigating (which
+    // would loop on the language step and never settle on the form).
     await expect
       .poll(
         async () => {
-          await page.goto(`${base}/wp-admin/install.php`, {
-            waitUntil: 'domcontentloaded',
-            timeout: 60_000,
+          const r = await page.request.get(`${base}/wp-admin/install.php`, {
+            maxRedirects: 5,
           });
-          const langContinue = page.locator('#language-continue');
-          if (await langContinue.isVisible().catch(() => false)) {
-            await langContinue.click();
-            await page.waitForLoadState('domcontentloaded');
-          }
-          return page.locator('#weblog_title').isVisible().catch(() => false);
+          if (!r.ok()) return false;
+          const html = await r.text();
+          if (/Error establishing a database connection/i.test(html)) return false;
+          return /weblog_title|language-continue|setup-config|step=1/i.test(html);
         },
         {
-          message: 'wordpress install wizard never rendered (DB not ready?)',
+          message: 'wordpress install.php never became DB-ready',
           timeout: 150_000,
           intervals: [3_000],
         },
       )
       .toBe(true);
 
+    // Fresh WP redirects / -> /wp-admin/install.php.
+    await page.goto(`${base}/wp-admin/install.php`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+
+    // Optional language-select step: accept the default and continue.
+    const langContinue = page.locator('#language-continue');
+    if (await langContinue.isVisible().catch(() => false)) {
+      await langContinue.click();
+      await page.waitForLoadState('domcontentloaded');
+    }
+
     // Step 2 — site details + admin account.
+    await expect(page.locator('#weblog_title')).toBeVisible({ timeout: 30_000 });
     await page.fill('#weblog_title', 'Greffon Smoke');
     await page.fill('#user_login', ADMIN_USER);
     // WP pre-fills #pass1 with a generated strong password; replace it.
