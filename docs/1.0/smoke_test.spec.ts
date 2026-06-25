@@ -19,12 +19,25 @@ test.describe('Docs', () => {
 
     const base = URL.replace(/\/$/, '');
 
-    // The embedded identity provider must be reachable under /identity.
-    const realm = await request.get(
-      `${base}/identity/realms/docs/.well-known/openid-configuration`,
-      { timeout: 60_000 },
-    );
-    expect(realm.ok(), `GET /identity/.well-known -> ${realm.status()}`).toBe(true);
+    // The embedded Keycloak imports its realm on boot (~30-60s) and the gateway
+    // 502s until it's up, so the greffer reporting "running" (containers up)
+    // races realm readiness. A single request does NOT retry on 502 -- POLL the
+    // realm's well-known until it returns 200 (the realm is imported + served).
+    await expect
+      .poll(
+        async () =>
+          (
+            await request.get(
+              `${base}/identity/realms/docs/.well-known/openid-configuration`,
+            )
+          ).status(),
+        {
+          message: 'docs /identity realm well-known never became 200',
+          timeout: 120_000,
+          intervals: [3_000],
+        },
+      )
+      .toBe(200);
 
     // Visiting the app while logged out must land on a usable login form.
     await page.goto(base, { waitUntil: 'networkidle', timeout: 90_000 });
