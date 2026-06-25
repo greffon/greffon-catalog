@@ -21,18 +21,35 @@ test.describe('WordPress', () => {
     test.skip(!URL, 'WORDPRESS_URL not set');
     const base = URL.replace(/\/$/, '');
 
-    // Fresh WP redirects / -> /wp-admin/install.php.
-    await page.goto(`${base}/wp-admin/install.php`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-
-    // Optional language-select step: accept the default and continue.
-    const langContinue = page.locator('#language-continue');
-    if (await langContinue.isVisible().catch(() => false)) {
-      await langContinue.click();
-      await page.waitForLoadState('domcontentloaded');
-    }
+    // MariaDB init + WP first-run lag the greffer's "running" signal (containers
+    // up != DB ready). Until the DB is reachable, install.php renders a STATIC
+    // "Error establishing a database connection" page that never becomes the
+    // wizard on its own, so a one-shot goto + 30s wait for the form races and
+    // fails. Reload-poll install.php (handling the optional language step) until
+    // the wizard's first field (#weblog_title) actually renders.
+    await expect
+      .poll(
+        async () => {
+          await page.goto(`${base}/wp-admin/install.php`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 60_000,
+          });
+          const langContinue = page.locator('#language-continue');
+          if (await langContinue.isVisible().catch(() => false)) {
+            await langContinue.click();
+            await page.waitForLoadState('domcontentloaded');
+          }
+          return page.locator('#weblog_title').isVisible().catch(() => false);
+        },
+        {
+          message: 'wordpress install wizard never rendered (DB not ready?)',
+          timeout: 150_000,
+          intervals: [3_000],
+        },
+      )
+      .toBe(true);
 
     // Step 2 — site details + admin account.
-    await expect(page.locator('#weblog_title')).toBeVisible({ timeout: 30_000 });
     await page.fill('#weblog_title', 'Greffon Smoke');
     await page.fill('#user_login', ADMIN_USER);
     // WP pre-fills #pass1 with a generated strong password; replace it.
