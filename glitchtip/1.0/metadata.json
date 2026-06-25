@@ -149,10 +149,5 @@
         { "type": "smtp", "container": "glitchtip_worker", "key": "EMAIL_URL" }
       ]
     }
-  ],
-  "backup": {
-    "volumes": {
-      "db_data": "database"
-    }
-  }
+  ]
 }
