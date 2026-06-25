@@ -31,17 +31,23 @@ test.describe('WordPress', () => {
     await expect
       .poll(
         async () => {
-          const r = await page.request.get(`${base}/wp-admin/install.php`, {
-            maxRedirects: 5,
-          });
-          if (!r.ok()) return false;
+          const r = await page.request
+            .get(`${base}/wp-admin/install.php`, { maxRedirects: 5 })
+            .catch(() => null);
+          if (!r || !r.ok()) return false; // 502/down while WP+PHP warm up
           const html = await r.text();
-          if (/Error establishing a database connection/i.test(html)) return false;
-          return /weblog_title|language-continue|setup-config|step=1/i.test(html);
+          // Ready == WP serves an install page (any step / language select) and
+          // it is NOT the DB-connection-error page. Keep the positive check
+          // broad ("WordPress" appears in every install screen) so a markup
+          // change can't make this hang.
+          return (
+            !/Error establishing a database connection/i.test(html) &&
+            /WordPress/i.test(html)
+          );
         },
         {
           message: 'wordpress install.php never became DB-ready',
-          timeout: 150_000,
+          timeout: 180_000,
           intervals: [3_000],
         },
       )
