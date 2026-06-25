@@ -51,5 +51,10 @@
         { "type": "smtp", "container": "metabase", "key": "MB_EMAIL_SMTP_SECURITY" }
       ]
     }
-  ]
+  ],
+  "backup": {
+    "volumes": {
+      "metabase_db_data": "database"
+    }
+  }
 }
