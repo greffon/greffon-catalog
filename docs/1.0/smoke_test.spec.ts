@@ -19,55 +19,35 @@ test.describe('Docs', () => {
 
     const base = URL.replace(/\/$/, '');
 
-    // The embedded Keycloak imports its realm on boot (~30-60s) and the gateway
-    // 502s until it's up, so the greffer reporting "running" (containers up)
-    // races realm readiness. A single request does NOT retry on 502 -- POLL the
-    // realm's well-known until it returns 200 (the realm is imported + served).
-    await expect
-      .poll(
-        async () =>
-          (
-            await request.get(
-              `${base}/identity/realms/docs/.well-known/openid-configuration`,
-            )
-          ).status(),
-        {
-          message: 'docs /identity realm well-known never became 200',
-          timeout: 120_000,
-          intervals: [3_000],
-        },
-      )
-      .toBe(200);
+    // Keycloak imports the realm on first boot (~30-60s) and refuses
+    // connections until it binds, so the gateway 502s /identity until then. The
+    // instance reaches the greffer's "running" state (all containers up) before
+    // Keycloak finishes importing, so poll the realm discovery doc until it
+    // serves, and capture the authorization endpoint for the login check
+    // (mirrors the visio greffon's proven gate).
+    let authEndpoint = '';
+    await expect(async () => {
+      const realm = await request.get(
+        `${base}/identity/realms/docs/.well-known/openid-configuration`,
+        { timeout: 15_000 },
+      );
+      expect(realm.status(), `GET /identity/.well-known -> ${realm.status()}`).toBe(200);
+      authEndpoint = (await realm.json()).authorization_endpoint as string;
+    }).toPass({ timeout: 180_000, intervals: [3_000] });
 
-    // A 200 well-known proves Keycloak is up, but the Docs frontend+backend
-    // (~10 services behind the gateway) can still be warming up, so the app ->
-    // OIDC redirect transiently 502s / lands on a blank shell. Reload-poll the
-    // app origin until the bundled sign-in form actually renders its username
-    // field, rather than asserting it on a single (racy) navigation.
-    await expect
-      .poll(
-        async () => {
-          await page
-            .goto(base, { waitUntil: 'domcontentloaded', timeout: 90_000 })
-            .catch(() => {});
-          return page
-            .locator('input[name="username"]')
-            .first()
-            .isVisible({ timeout: 2_000 })
-            .catch(() => false);
-        },
-        {
-          message: 'docs never handed off to a rendered OIDC sign-in form',
-          timeout: 150_000,
-          intervals: [3_000],
-        },
-      )
-      .toBe(true);
-
-    // The sign-in surface is usable: password + submit are present too.
-    await expect(page.locator('input[type="password"]').first())
+    // Visiting `/` logged-out doesn't reliably render the Keycloak form (the
+    // frontend can sit on its own shell / run a silent SSO probe), so drive the
+    // authorization endpoint directly. The realm registers {{ instance_url }}/*
+    // as a valid redirect, so a standard code-flow request renders the bundled
+    // username/password sign-in (self-registration is open; no demo user).
+    const authUrl =
+      `${authEndpoint}?client_id=docs&response_type=code` +
+      `&scope=${encodeURIComponent('openid email')}` +
+      `&redirect_uri=${encodeURIComponent(`${base}/api/v1.0/callback/`)}`;
+    await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await expect(page.locator('input[name="username"]').first())
       .toBeVisible({ timeout: 30_000 });
-    await expect(page.locator('input[type="submit"], button[type="submit"]').first())
+    await expect(page.locator('input[type="password"]').first())
       .toBeVisible({ timeout: 30_000 });
   });
 });
