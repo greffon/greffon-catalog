@@ -16,9 +16,17 @@ test.describe('Metabase', () => {
 
     const base = URL.replace(/\/$/, '');
 
-    // Metabase can take a while to boot + run migrations (generous timeout).
-    const health = await request.get(`${base}/api/health`, { timeout: 90_000 });
-    expect(health.ok(), `GET /api/health -> ${health.status()}`).toBe(true);
+    // Metabase boots the JVM + runs migrations before it serves; until then the
+    // proxy/app returns 503/502. A single request (even with a long per-request
+    // timeout) does NOT retry on a non-2xx status, so it races startup -- POLL
+    // /api/health until it reports 200 (matches the umami heartbeat pattern).
+    await expect
+      .poll(async () => (await request.get(`${base}/api/health`)).status(), {
+        message: 'metabase /api/health never became 200',
+        timeout: 120_000,
+        intervals: [2_000],
+      })
+      .toBe(200);
 
     // Setup-specific signal: a fresh instance has no user yet. Confirms we hit
     // Metabase (not a proxy error page) and the first-user flow is available.

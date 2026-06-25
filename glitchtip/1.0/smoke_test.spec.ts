@@ -9,6 +9,42 @@ const URL = process.env.GLITCHTIP_URL!;
  * the auth state changes to authenticated.
  */
 test.describe('GlitchTip', () => {
+  // GlitchTip's admin (createsuperuser) runs as a one-shot that depends on the
+  // migrate job, both of which finish a little AFTER the web container starts
+  // serving. The greffer reports "running" as soon as the containers are up, so
+  // a smoke that logs in immediately races the seed and the migrate (login then
+  // 4xx/5xx because the admin row / tables aren't there yet). Gate every test on
+  // the seed being live: poll the allauth login API (in the isolated `request`
+  // context, so the UI flows on `page` keep a clean session) until the seeded
+  // admin actually authenticates.
+  test.beforeEach(async ({ request }) => {
+    test.skip(!URL, 'GLITCHTIP_URL not set');
+    const base = URL.replace(/\/$/, '');
+    await expect
+      .poll(
+        async () => {
+          // GET session first so allauth sets the csrftoken cookie in this
+          // request context; then POST login with the matching X-CSRFToken.
+          await request.get(`${base}/_allauth/browser/v1/auth/session`);
+          const csrf = (await request.storageState()).cookies.find(
+            (c) => c.name === 'csrftoken',
+          )?.value;
+          if (!csrf) return 0;
+          const r = await request.post(`${base}/_allauth/browser/v1/auth/login`, {
+            headers: { 'X-CSRFToken': csrf, Referer: URL },
+            data: { email: 'admin@greffon.io', password: 'Admin123!' },
+          });
+          return r.status();
+        },
+        {
+          message: 'glitchtip seeded admin never became able to log in',
+          timeout: 120_000,
+          intervals: [3_000],
+        },
+      )
+      .toBeLessThan(300);
+  });
+
   test('seeded admin can log in', async ({ page }) => {
     test.skip(!URL, 'GLITCHTIP_URL not set');
 
