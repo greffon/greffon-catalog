@@ -26,7 +26,13 @@ services:
       # Jinja parsing on the round-trip through the greffer.
       MAIL_FROM_ADDRESS: '{{ smtp.from_address.split("@")[0] }}'
       MAIL_DOMAIN: '{{ smtp.from_address.split("@")[1] }}'
-      SMTP_SECURE: '{{ {"tls": "ssl", "starttls": "tls", "none": ""}[smtp.tls_mode] }}'
+      # tls_mode -> Nextcloud SMTP_SECURE (tls=implicit->ssl, starttls->tls,
+      # none->""). Written as a chained inline-if, NOT a `{{ {..}[key] }}` dict
+      # literal: the dict form embeds a `{`/`:` that the greffer's yaml.dump ->
+      # Jinja round-trip can re-quote into an unparseable template
+      # ("expected ',', got ':'"). The inline-if has no dict/colon and matches
+      # the pattern plausible/glitchtip use for the same mapping.
+      SMTP_SECURE: '{{ "ssl" if smtp.tls_mode == "tls" else "tls" if smtp.tls_mode == "starttls" else "" }}'
     volumes:
       - nextcloud_data:/var/www/html
 
