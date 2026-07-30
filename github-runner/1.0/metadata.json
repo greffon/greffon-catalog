@@ -1,0 +1,223 @@
+{
+  "name": "GitHub Actions Runner",
+  "logo": "https://github.githubassets.com/favicons/favicon.svg",
+  "description": "Self-hosted GitHub Actions runner with Docker-in-Docker support",
+  "categories": [
+    "ci",
+    "developer-tools"
+  ],
+  "images": [],
+  "configurations": [
+    {
+      "title": "RUNNER_CONFIGURATION",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "auth_type": {
+            "type": "string",
+            "title": "Authentication method",
+            "description": "Choose a durable PAT-based setup or a short-lived GitHub runner registration token.",
+            "enum": [
+              "access_token",
+              "runner_token"
+            ],
+            "enumNames": [
+              "Personal access token (recommended)",
+              "Registration token"
+            ]
+          },
+          "access_token": {
+            "type": "string",
+            "title": "GitHub PAT",
+            "description": "PAT used to request short-lived self-hosted runner registration tokens automatically.",
+            "writeOnly": true
+          },
+          "runner_token": {
+            "type": "string",
+            "title": "GitHub runner registration token",
+            "description": "Short-lived registration token from GitHub's standard ./config.sh flow.",
+            "writeOnly": true
+          },
+          "runner_scope": {
+            "type": "string",
+            "title": "Runner scope",
+            "description": "Use repo for one repository, or org for an organization-level runner.",
+            "enum": [
+              "repo",
+              "org"
+            ]
+          },
+          "repo_url": {
+            "type": "string",
+            "title": "Repository URL",
+            "description": "Required when runner scope is repo, for example https://github.com/owner/repo."
+          },
+          "org_name": {
+            "type": "string",
+            "title": "Organization name",
+            "description": "Required when runner scope is org."
+          },
+          "runner_name_prefix": {
+            "type": "string",
+            "title": "Runner name prefix",
+            "description": "Prefix for the generated GitHub runner name."
+          },
+          "labels": {
+            "type": "string",
+            "title": "Runner labels",
+            "description": "Comma-separated labels added to this self-hosted runner."
+          },
+          "runner_group": {
+            "type": "string",
+            "title": "Runner group",
+            "description": "Optional runner group name. Leave blank to use GitHub's default runner group."
+          },
+          "github_host": {
+            "type": "string",
+            "title": "GitHub host",
+            "description": "GitHub host for GitHub Enterprise Server installations."
+          }
+        },
+        "dependencies": {
+          "auth_type": {
+            "oneOf": [
+              {
+                "properties": {
+                  "auth_type": {
+                    "enum": [
+                      "access_token"
+                    ]
+                  },
+                  "access_token": {
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "access_token"
+                ]
+              },
+              {
+                "properties": {
+                  "auth_type": {
+                    "enum": [
+                      "runner_token"
+                    ]
+                  },
+                  "runner_token": {
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "runner_token"
+                ]
+              }
+            ]
+          },
+          "runner_scope": {
+            "oneOf": [
+              {
+                "properties": {
+                  "runner_scope": {
+                    "enum": [
+                      "repo"
+                    ]
+                  },
+                  "repo_url": {
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "repo_url"
+                ]
+              },
+              {
+                "properties": {
+                  "runner_scope": {
+                    "enum": [
+                      "org"
+                    ]
+                  },
+                  "org_name": {
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "org_name"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "default_value": {
+        "auth_type": "access_token",
+        "access_token": "",
+        "runner_token": "",
+        "runner_scope": "repo",
+        "repo_url": "",
+        "org_name": "",
+        "runner_name_prefix": "greffon-{{ instance_id }}",
+        "labels": "greffon,self-hosted",
+        "runner_group": "",
+        "github_host": "github.com"
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "ACCESS_TOKEN",
+          "value_path": "access_token"
+        },
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "RUNNER_TOKEN",
+          "value_path": "runner_token"
+        },
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "RUNNER_SCOPE",
+          "value_path": "runner_scope"
+        },
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "REPO_URL",
+          "value_path": "repo_url"
+        },
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "ORG_NAME",
+          "value_path": "org_name"
+        },
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "RUNNER_NAME_PREFIX",
+          "value_path": "runner_name_prefix"
+        },
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "LABELS",
+          "value_path": "labels"
+        },
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "RUNNER_GROUP",
+          "value_path": "runner_group"
+        },
+        {
+          "type": "env",
+          "container": "github_runner",
+          "key": "GITHUB_HOST",
+          "value_path": "github_host"
+        }
+      ],
+      "x-greffon-allow-empty-secret": true
+    }
+  ]
+}
