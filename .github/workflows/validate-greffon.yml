@@ -48,59 +48,63 @@ jobs:
           # any matched path to its <name>/<version> root (image/ files sit one
           # level deeper than metadata.json, so strip to the first two
           # components rather than just the filename).
-          # -z is load-bearing, not a style choice. With git's default
-          # core.quotePath=true, any path containing non-ASCII, quotes,
-          # backslashes or tabs is emitted C-QUOTED —
-          # `"caf\303\251/1.0/metadata.json"` for `café/1.0/metadata.json`.
-          # The trailing quote breaks the `$` anchor below, so the entry is
-          # dropped, has_changes stays false, and that greffon's integration
-          # smoke is SILENTLY SKIPPED on a green PR, while
-          # `validate_catalog.py --all` still validates it. -z emits raw bytes
-          # with no quoting, so such names now reach the unsafe-name check and
-          # fail loudly instead.
+          # Records stay NUL-DELIMITED until each directory name is validated.
+          # Three silent-skip bugs came out of treating these paths as text,
+          # all the same shape: an entry that validate_catalog.py --all happily
+          # validates disappears from CHANGED, has_changes goes false, and that
+          # greffon's integration smoke never runs, on a green PR.
+          #   1. a narrowed grep dropped names like foo+bar
+          #   2. git core.quotePath C-quotes non-ASCII, so cafe/1.0/... arrived
+          #      quoted and failed the anchored match
+          #   3. splitting NUL records on newlines fragmented a name containing
+          #      a literal newline, so [ -d ] dropped every piece
           #
-          # Residual: a filename containing a literal newline would still split
-          # across the tr. Any resulting fragment that is not a real directory
-          # is dropped by the `[ -d ]` filter below, and anything that survives
-          # still faces the unsafe-name check, so it cannot silently widen
-          # coverage — it is just not worth a NUL-safe read loop here.
-          CHANGED=$(git diff --name-only -z origin/"$BASE_REF"...HEAD \
-            | tr '\0' '\n' \
-            | grep -E '^[^.][^/]+/[^/]+/(metadata\.json|docker-compose\.yml|smoke_test\.(json|spec\.ts)|image/.+)$' \
-            | sed -E 's|^([^/]+/[^/]+)/.*|\1|' \
-            | sort -u || true)
-          # Drop directories that no longer exist (delisted/removed greffons):
-          # `git diff` still lists their paths, but every downstream consumer
-          # (strict validator AND the integration runner) opens files under the
-          # dir and fails on a legitimate deletion. Filtering here is the single
-          # source of truth so both jobs receive only live entries.
-          # `|| true`: under the runner's default `set -eo pipefail`, the loop's
-          # last command is the `[ -n ] && [ -d ] && echo` chain, which returns 1
-          # when the final candidate is empty (no greffon files changed — e.g. a
-          # pure-CI PR) or filtered out (a deleted dir). Without this, the command
-          # substitution propagates that 1 and the whole step fails.
-          CHANGED=$(echo "$CHANGED" | while IFS= read -r d; do [ -n "$d" ] && [ -d "$d" ] && echo "$d"; done || true)
+          # -z for raw bytes, read -d "" so a newline inside a name is just
+          # data, parameter expansion for the components (never sed/grep on the
+          # raw value), and an explicit reject for anything outside the safe
+          # charset. Newlines cannot survive that charset.
+          changed=()
+          unsafe=()
+          while IFS= read -r -d "" path; do
+            case "$path" in
+              .*) continue ;;
+              */*/metadata.json|*/*/docker-compose.yml) ;;
+              */*/smoke_test.json|*/*/smoke_test.spec.ts) ;;
+              */*/image/*) ;;
+              *) continue ;;
+            esac
+            name="${path%%/*}"
+            rest="${path#*/}"
+            version="${rest%%/*}"
+            dir="$name/$version"
+            # bash [[ =~ ]], NOT grep. grep splits its input on newlines, so a
+            # directory named `we<newline>ird` would have its fragment `ird/1.0`
+            # match and the whole name would sail through as "safe". [[ =~ ]]
+            # matches against the entire string, where $ is end-of-string, so an
+            # embedded newline can never satisfy this charset.
+            if [[ ! "$dir" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              unsafe+=("$(printf "%q" "$dir")")
+              continue
+            fi
+            # Drop directories that no longer exist (a delisted greffon): git
+            # still lists the path, but downstream consumers open files under
+            # it and would fail on a legitimate deletion.
+            [ -d "$dir" ] || continue
+            seen=0
+            for c in ${changed[@]+"${changed[@]}"}; do [ "$c" = "$dir" ] && seen=1 && break; done
+            [ "$seen" = "1" ] || changed+=("$dir")
+          done < <(git diff --name-only -z origin/"$BASE_REF"...HEAD)
 
-          # Detection above stays BROAD on purpose. An earlier revision narrowed
-          # the grep to a safe charset, which silently DROPPED any entry outside
-          # it — and validate_catalog.py's find_all_greffon_dirs accepts any
-          # non-dot directory, so e.g. `foo+bar/1.0` would pass `--all`, vanish
-          # from CHANGED, and skip its integration smoke with a green PR. A
-          # security filter that silently removes coverage is worse than the
-          # thing it replaced.
-          #
-          # So detect everything, then REFUSE unsafe names loudly. Shell
-          # metacharacters in a path are never legitimate here, and the failure
-          # tells the contributor to rename rather than leaving them wondering
-          # why their greffon was not smoked.
-          UNSAFE=$(printf '%s\n' "$CHANGED" \
-            | grep -vE '^[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$' \
-            | grep -v '^$' || true)
-          if [ -n "$UNSAFE" ]; then
+          # Refuse unsafe names LOUDLY rather than dropping them. A security
+          # filter that silently removes test coverage is worse than the
+          # injection it replaced, because nobody finds out. %q so a control
+          # character in the name is visible in the log rather than mangling it.
+          if [ ${#unsafe[@]} -gt 0 ]; then
             echo "::error::Greffon directory names must match [A-Za-z0-9_][A-Za-z0-9._-]* in both the name and version component. Rename these and push again:"
-            printf '  %s\n' "$UNSAFE"
+            printf '  %s\n' "${unsafe[@]}"
             exit 1
           fi
+          CHANGED=$(printf '%s\n' ${changed[@]+"${changed[@]}"})
           echo "changed_dirs<<EOF" >> "$GITHUB_OUTPUT"
           echo "$CHANGED" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
