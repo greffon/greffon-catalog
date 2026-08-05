@@ -49,7 +49,7 @@ jobs:
           # level deeper than metadata.json, so strip to the first two
           # components rather than just the filename).
           CHANGED=$(git diff --name-only origin/"$BASE_REF"...HEAD \
-            | grep -E '^[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*/(metadata\.json|docker-compose\.yml|smoke_test\.(json|spec\.ts)|image/.+)$' \
+            | grep -E '^[^.][^/]+/[^/]+/(metadata\.json|docker-compose\.yml|smoke_test\.(json|spec\.ts)|image/.+)$' \
             | sed -E 's|^([^/]+/[^/]+)/.*|\1|' \
             | sort -u || true)
           # Drop directories that no longer exist (delisted/removed greffons):
@@ -63,6 +63,27 @@ jobs:
           # pure-CI PR) or filtered out (a deleted dir). Without this, the command
           # substitution propagates that 1 and the whole step fails.
           CHANGED=$(echo "$CHANGED" | while IFS= read -r d; do [ -n "$d" ] && [ -d "$d" ] && echo "$d"; done || true)
+
+          # Detection above stays BROAD on purpose. An earlier revision narrowed
+          # the grep to a safe charset, which silently DROPPED any entry outside
+          # it — and validate_catalog.py's find_all_greffon_dirs accepts any
+          # non-dot directory, so e.g. `foo+bar/1.0` would pass `--all`, vanish
+          # from CHANGED, and skip its integration smoke with a green PR. A
+          # security filter that silently removes coverage is worse than the
+          # thing it replaced.
+          #
+          # So detect everything, then REFUSE unsafe names loudly. Shell
+          # metacharacters in a path are never legitimate here, and the failure
+          # tells the contributor to rename rather than leaving them wondering
+          # why their greffon was not smoked.
+          UNSAFE=$(printf '%s\n' "$CHANGED" \
+            | grep -vE '^[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$' \
+            | grep -v '^$' || true)
+          if [ -n "$UNSAFE" ]; then
+            echo "::error::Greffon directory names must match [A-Za-z0-9_][A-Za-z0-9._-]* in both the name and version component. Rename these and push again:"
+            printf '  %s\n' "$UNSAFE"
+            exit 1
+          fi
           echo "changed_dirs<<EOF" >> "$GITHUB_OUTPUT"
           echo "$CHANGED" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
