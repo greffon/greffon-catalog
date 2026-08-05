@@ -48,7 +48,24 @@ jobs:
           # any matched path to its <name>/<version> root (image/ files sit one
           # level deeper than metadata.json, so strip to the first two
           # components rather than just the filename).
-          CHANGED=$(git diff --name-only origin/"$BASE_REF"...HEAD \
+          # -z is load-bearing, not a style choice. With git's default
+          # core.quotePath=true, any path containing non-ASCII, quotes,
+          # backslashes or tabs is emitted C-QUOTED —
+          # `"caf\303\251/1.0/metadata.json"` for `café/1.0/metadata.json`.
+          # The trailing quote breaks the `$` anchor below, so the entry is
+          # dropped, has_changes stays false, and that greffon's integration
+          # smoke is SILENTLY SKIPPED on a green PR, while
+          # `validate_catalog.py --all` still validates it. -z emits raw bytes
+          # with no quoting, so such names now reach the unsafe-name check and
+          # fail loudly instead.
+          #
+          # Residual: a filename containing a literal newline would still split
+          # across the tr. Any resulting fragment that is not a real directory
+          # is dropped by the `[ -d ]` filter below, and anything that survives
+          # still faces the unsafe-name check, so it cannot silently widen
+          # coverage — it is just not worth a NUL-safe read loop here.
+          CHANGED=$(git diff --name-only -z origin/"$BASE_REF"...HEAD \
+            | tr '\0' '\n' \
             | grep -E '^[^.][^/]+/[^/]+/(metadata\.json|docker-compose\.yml|smoke_test\.(json|spec\.ts)|image/.+)$' \
             | sed -E 's|^([^/]+/[^/]+)/.*|\1|' \
             | sort -u || true)
