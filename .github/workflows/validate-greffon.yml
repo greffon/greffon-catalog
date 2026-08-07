@@ -4,6 +4,12 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only token. This workflow executes PR-authored content by design:
+# `npm install` postinstall hooks, `docker build` on a PR's Dockerfile, and
+# `docker-compose up` of a PR's stack. None of it needs write scope.
+permissions:
+  contents: read
+
 jobs:
   # ─── Job 1: Static Validation ──────────────────────────────────────────
   validate:
@@ -31,6 +37,10 @@ jobs:
 
       - name: Detect changed greffons
         id: detect
+        # Both values reach the shell as env vars, never as `${{ }}` inside the
+        # script body — see the note on the strict-validate step below.
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           # Also match files under a greffon's image/ dir (self-built images,
           # e.g. remotion): a Dockerfile/source change must re-smoke the greffon
@@ -38,21 +48,63 @@ jobs:
           # any matched path to its <name>/<version> root (image/ files sit one
           # level deeper than metadata.json, so strip to the first two
           # components rather than just the filename).
-          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
-            | grep -E '^[^.][^/]+/[^/]+/(metadata\.json|docker-compose\.yml|smoke_test\.(json|spec\.ts)|image/.+)$' \
-            | sed -E 's|^([^/]+/[^/]+)/.*|\1|' \
-            | sort -u || true)
-          # Drop directories that no longer exist (delisted/removed greffons):
-          # `git diff` still lists their paths, but every downstream consumer
-          # (strict validator AND the integration runner) opens files under the
-          # dir and fails on a legitimate deletion. Filtering here is the single
-          # source of truth so both jobs receive only live entries.
-          # `|| true`: under the runner's default `set -eo pipefail`, the loop's
-          # last command is the `[ -n ] && [ -d ] && echo` chain, which returns 1
-          # when the final candidate is empty (no greffon files changed — e.g. a
-          # pure-CI PR) or filtered out (a deleted dir). Without this, the command
-          # substitution propagates that 1 and the whole step fails.
-          CHANGED=$(echo "$CHANGED" | while IFS= read -r d; do [ -n "$d" ] && [ -d "$d" ] && echo "$d"; done || true)
+          # Records stay NUL-DELIMITED until each directory name is validated.
+          # Three silent-skip bugs came out of treating these paths as text,
+          # all the same shape: an entry that validate_catalog.py --all happily
+          # validates disappears from CHANGED, has_changes goes false, and that
+          # greffon's integration smoke never runs, on a green PR.
+          #   1. a narrowed grep dropped names like foo+bar
+          #   2. git core.quotePath C-quotes non-ASCII, so cafe/1.0/... arrived
+          #      quoted and failed the anchored match
+          #   3. splitting NUL records on newlines fragmented a name containing
+          #      a literal newline, so [ -d ] dropped every piece
+          #
+          # -z for raw bytes, read -d "" so a newline inside a name is just
+          # data, parameter expansion for the components (never sed/grep on the
+          # raw value), and an explicit reject for anything outside the safe
+          # charset. Newlines cannot survive that charset.
+          changed=()
+          unsafe=()
+          while IFS= read -r -d "" path; do
+            case "$path" in
+              .*) continue ;;
+              */*/metadata.json|*/*/docker-compose.yml) ;;
+              */*/smoke_test.json|*/*/smoke_test.spec.ts) ;;
+              */*/image/*) ;;
+              *) continue ;;
+            esac
+            name="${path%%/*}"
+            rest="${path#*/}"
+            version="${rest%%/*}"
+            dir="$name/$version"
+            # bash [[ =~ ]], NOT grep. grep splits its input on newlines, so a
+            # directory named `we<newline>ird` would have its fragment `ird/1.0`
+            # match and the whole name would sail through as "safe". [[ =~ ]]
+            # matches against the entire string, where $ is end-of-string, so an
+            # embedded newline can never satisfy this charset.
+            if [[ ! "$dir" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              unsafe+=("$(printf "%q" "$dir")")
+              continue
+            fi
+            # Drop directories that no longer exist (a delisted greffon): git
+            # still lists the path, but downstream consumers open files under
+            # it and would fail on a legitimate deletion.
+            [ -d "$dir" ] || continue
+            seen=0
+            for c in ${changed[@]+"${changed[@]}"}; do [ "$c" = "$dir" ] && seen=1 && break; done
+            [ "$seen" = "1" ] || changed+=("$dir")
+          done < <(git diff --name-only -z origin/"$BASE_REF"...HEAD)
+
+          # Refuse unsafe names LOUDLY rather than dropping them. A security
+          # filter that silently removes test coverage is worse than the
+          # injection it replaced, because nobody finds out. %q so a control
+          # character in the name is visible in the log rather than mangling it.
+          if [ ${#unsafe[@]} -gt 0 ]; then
+            echo "::error::Greffon directory names must match [A-Za-z0-9_][A-Za-z0-9._-]* in both the name and version component. Rename these and push again:"
+            printf '  %s\n' "${unsafe[@]}"
+            exit 1
+          fi
+          CHANGED=$(printf '%s\n' ${changed[@]+"${changed[@]}"})
           echo "changed_dirs<<EOF" >> "$GITHUB_OUTPUT"
           echo "$CHANGED" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -70,8 +122,20 @@ jobs:
 
       - name: Validate changed greffons (strict)
         if: steps.detect.outputs.has_changes == 'true'
+        # changed_dirs via env, NEVER `${{ }}` inside `run:`. Actions substitutes
+        # ${{ }} into the script TEXT before bash parses it, so a directory name
+        # containing $(...), backticks or `;` executes as code. This is a PUBLIC
+        # repo that invites third-party greffon PRs, and this value is derived
+        # from attacker-controlled path names: a PR adding a directory literally
+        # named `x$(id)` produced a green run that executed `id`. The
+        # integration job below already used env; this step did not.
+        #
+        # printf '%s\n' rather than echo: echo mangles values starting with -n
+        # or containing backslashes.
+        env:
+          CHANGED_DIRS: ${{ steps.detect.outputs.changed_dirs }}
         run: |
-          echo "${{ steps.detect.outputs.changed_dirs }}" | while IFS= read -r dir; do
+          printf '%s\n' "$CHANGED_DIRS" | while IFS= read -r dir; do
             # changed_dirs is already filtered to existing dirs in the detect
             # step, so removed greffons never reach here (or the integration job).
             [ -n "$dir" ] && python .github/scripts/validate_catalog.py --dir "$dir"
