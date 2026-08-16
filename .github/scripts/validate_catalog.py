@@ -965,6 +965,22 @@ def validate_greffon_dir(catalog_root, rel_dir):
             required_config = smoke_test.get("required_config")
             if required_config is not None and not isinstance(required_config, dict):
                 errors.append(f"{prefix} 'required_config' must be an object or null")
+            elif isinstance(required_config, dict) and isinstance(meta, dict):
+                # Keys are configuration TITLES. A key matching no title pins
+                # nothing: the CI smoke then generates a random value, and a
+                # spec that logs in with a hardcoded credential fails on every
+                # run with no hint as to why. Catch the typo here instead.
+                titles = {
+                    c.get("title")
+                    for c in (meta.get("configurations") or [])
+                    if isinstance(c, dict)
+                }
+                unknown = sorted(k for k in required_config if k not in titles)
+                if unknown:
+                    errors.append(
+                        f"{prefix} 'required_config' keys match no configuration title: "
+                        f"{unknown}"
+                    )
 
     return errors
 

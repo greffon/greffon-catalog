@@ -1285,5 +1285,52 @@ class OneShotStatusLabelTest(unittest.TestCase):
             )
 
 
+class SmokeRequiredConfigTitleTest(unittest.TestCase):
+    """Linkding pinned credentials in smoke_test.json that the CI smoke runner
+    never read; glitchtip's spec logged in with a password the runner had
+    randomized. Once required_config is honoured, a key that matches no
+    configuration title silently pins nothing and the spec fails on every run
+    with no hint why — so the linter must reject the typo."""
+
+    @staticmethod
+    def _write_smoke(tmp, rel, required_config):
+        path = os.path.join(tmp, rel, "smoke_test.json")
+        with open(path, "w") as f:
+            json.dump({
+                "path": "/",
+                "expected_status": [200],
+                "expected_body_contains": None,
+                "required_config": required_config,
+            }, f)
+
+    def _metadata(self):
+        return _base_metadata(configurations=[{
+            "title": "ADMIN_PASSWORD",
+            "schema": {"properties": {"value": {"type": "string"}}},
+            "default_value": {"value": ""},
+            "destinations": [{"type": "env", "container": "app", "key": "ADMIN_PASSWORD"}],
+        }])
+
+    def test_unknown_title_caught(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=self._metadata())
+            self._write_smoke(tmp, rel, {"ADMIN_PASSWROD": "x"})  # typo
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertTrue(
+                any("match no configuration title" in e for e in errs),
+                f"expected unknown-title error, got {errs}",
+            )
+
+    def test_matching_title_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=self._metadata())
+            self._write_smoke(tmp, rel, {"ADMIN_PASSWORD": "x"})
+            errs = validate_greffon_dir(tmp, rel)
+            self.assertFalse(
+                any("match no configuration title" in e for e in errs),
+                f"matching title should not be flagged, got {errs}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

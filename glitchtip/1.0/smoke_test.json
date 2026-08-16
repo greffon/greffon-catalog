@@ -1,5 +1,9 @@
 {
   "path": "/",
   "expected_status": [200],
-  "expected_body_contains": "GlitchTip"
+  "expected_body_contains": "GlitchTip",
+  "required_config": {
+    "DJANGO_SUPERUSER_EMAIL": "admin@greffon.io",
+    "DJANGO_SUPERUSER_PASSWORD": "Admin123!"
+  }
 }
