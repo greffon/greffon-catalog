@@ -90,6 +90,90 @@
       ]
     },
     {
+      "title": "GLITCHTIP_RETENTION_DAYS",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Data retention (days)",
+            "description": "How long GlitchTip keeps ingested data before its cleanup job deletes it. This is the master default: events, transactions, logs, uptime checks and uploaded files all follow it unless pinned separately."
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": "90"
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "glitchtip",
+          "key": "GLITCHTIP_RETENTION_DAYS"
+        },
+        {
+          "type": "env",
+          "container": "glitchtip_worker",
+          "key": "GLITCHTIP_RETENTION_DAYS"
+        }
+      ]
+    },
+    {
+      "title": "GLITCHTIP_EVENT_HOT_DAYS",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Days events stay in PostgreSQL (hot)",
+            "description": "How long an error event stays in the database before it is archived out. This is the main driver of disk use on the instance, so lower it first if the greffon is growing. Keep it at or below the retention window above."
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": "30"
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "glitchtip",
+          "key": "GLITCHTIP_EVENT_HOT_DAYS"
+        },
+        {
+          "type": "env",
+          "container": "glitchtip_worker",
+          "key": "GLITCHTIP_EVENT_HOT_DAYS"
+        }
+      ]
+    },
+    {
+      "title": "GLITCHTIP_FILE_RETENTION_DAYS",
+      "schema": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Uploaded file retention (days)",
+            "description": "How long uploaded release files (JS source maps, debug symbols) are kept. Upstream lets this follow the master retention, but declaring it here pins it: if you lower the retention above, lower this too, or old stack traces stay unminifiable for longer than you expect."
+          }
+        },
+        "x-greffon-visibility": "advanced"
+      },
+      "default_value": {
+        "value": "90"
+      },
+      "destinations": [
+        {
+          "type": "env",
+          "container": "glitchtip",
+          "key": "GLITCHTIP_FILE_RETENTION_DAYS"
+        },
+        {
+          "type": "env",
+          "container": "glitchtip_worker",
+          "key": "GLITCHTIP_FILE_RETENTION_DAYS"
+        }
+      ]
+    },
+    {
       "title": "DJANGO_SUPERUSER_EMAIL",
       "schema": {
         "properties": {
