@@ -68,8 +68,8 @@ services:
     # and a backup landing inside that window aborts with `instance_missing`.
     # The problem it was meant to solve does not reproduce anyway: Keycloak
     # spends its first several seconds in Quarkus augmentation before it opens a
-    # JDBC connection, by which time Postgres is up, and `restart: on-failure`
-    # covers the case where it is not.
+    # JDBC connection, by which time Postgres is up, and the restart policy
+    # above covers the case where it is not.
     depends_on:
       - postgresql
     ports:

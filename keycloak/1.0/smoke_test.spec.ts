@@ -15,13 +15,14 @@ const URL = process.env.KEYCLOAK_URL!;
  *   3. Exchange the bootstrap admin credentials for a token via `admin-cli`.
  *
  * Why the issuer is compared exactly rather than pattern-matched. A loose
- * /^https:\/\/.+\/realms\/master$/ is nearly worthless here: the greffer sidecar
- * hardcodes `X-Forwarded-Proto: https`, so with KC_PROXY_HEADERS=xforwarded
- * Keycloak emits an https:// issuer for whatever host it computes. Swapping
- * KC_HOSTNAME from {{ instance_url }} to {{ instance_host }} would silently drop
- * the port, still match that pattern, and break token validation in every
- * federated app. The harness builds KEYCLOAK_URL and instance_url from the same
- * scheme/host/port, so the exact value is available and free.
+ * /^https:\/\/.+\/realms\/master$/ is nearly worthless here, because the scheme
+ * and host in the issuer come from KC_HOSTNAME, which the compose always renders
+ * from instance_url as a complete https:// URL. So the https:// prefix matches
+ * unconditionally and the `.+` swallows any host. Swap KC_HOSTNAME from
+ * {{ instance_url }} to {{ instance_host }} and the port is silently dropped:
+ * that pattern still matches, while token validation breaks in every federated
+ * app. The harness builds KEYCLOAK_URL and instance_url from the same scheme,
+ * host and port, so the exact value is available and free.
  *
  * Why step 3 exists. Discovery serves fine on an instance with NO admin user at
  * all, so step 2 alone cannot detect a broken bootstrap-credential injection.
