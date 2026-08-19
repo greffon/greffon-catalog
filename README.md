@@ -291,9 +291,17 @@ If your app has sessions, assert this in your `smoke_test.spec.ts` rather than r
 floor:
 
 ```ts
-const setCookie = r.headersArray().filter(h => h.name.toLowerCase() === 'set-cookie');
+const setCookie = r.headersArray().filter((h) => h.name.toLowerCase() === 'set-cookie');
+// Assert the list is non-empty FIRST. Without this the loop below passes happily
+// when the response sets no cookies at all, which is the same vacuous-green shape
+// this whole section exists to remove: point it at the endpoint that really sets
+// your session cookie, not just at `/`.
+expect(setCookie.length, 'expected this endpoint to set cookies').toBeGreaterThan(0);
 for (const { value } of setCookie) {
-  if (/HttpOnly/i.test(value)) expect(value).toMatch(/;\s*Secure/i);
+  const attrs = value.split(';').slice(1).map((a) => a.trim().split('=')[0].toLowerCase());
+  if (attrs.includes('httponly')) {
+    expect(value, `cookie ${value.split('=')[0]} is HttpOnly but not Secure`).toMatch(/;\s*Secure/i);
+  }
 }
 ```
 

@@ -208,6 +208,27 @@ def url_env_name(greffon_dir: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", greffon_dir.upper()) + "_URL"
 
 
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                          r"(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+
+
+def require_public_host_usable() -> None:
+    """PUBLIC_HOST is interpolated into an OpenSSL DN and a SAN, so an illegal value
+    fails deep inside cert generation and surfaces as an opaque CalledProcessError on
+    every entry, with no hint that the host name is at fault. A '/' is worse than a
+    hard failure: OpenSSL silently reads it as a second RDN. Reject early instead."""
+    if not _HOSTNAME_RE.match(PUBLIC_HOST):
+        raise SystemExit(
+            f"CI_PUBLIC_HOST={PUBLIC_HOST!r} is not a valid DNS hostname.\n"
+            f"  It is interpolated into the throwaway certificate's subject and SAN, "
+            f"where a '/' becomes a second RDN and '+' or a label over 63 characters "
+            f"aborts openssl with an error that names neither this variable nor the host.")
+    if len(PUBLIC_HOST) > 64:
+        raise SystemExit(
+            f"CI_PUBLIC_HOST={PUBLIC_HOST!r} is {len(PUBLIC_HOST)} characters; the "
+            f"certificate CN field caps at 64 and openssl will refuse it.")
+
+
 def require_public_host_resolves() -> None:
     """Fail fast, and legibly, when PUBLIC_HOST does not resolve.
 
@@ -217,7 +238,9 @@ def require_public_host_resolves() -> None:
     reads like a broken greffon, which is the sort of misdirection that costs an
     afternoon."""
     try:
-        socket.gethostbyname(PUBLIC_HOST)
+        # getaddrinfo, not gethostbyname: the latter is IPv4-only, so mapping the
+        # name to ::1 would be reported as "does not resolve" when it plainly does.
+        socket.getaddrinfo(PUBLIC_HOST, None)
     except OSError:
         raise SystemExit(
             f"CI_PUBLIC_HOST={PUBLIC_HOST!r} does not resolve.\n"
@@ -339,14 +362,36 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
             f"Failing rather than passing silently: an unreachable instance proves nothing.")
         return False
     raw = r.raw.headers.get_all("Set-Cookie") if hasattr(r.raw, "headers") else None
-    bad = [c for c in (raw or [])
-           if "httponly" in c.lower() and not re.search(r";\s*secure", c, re.I)]
+
+    def _attrs(header: str) -> set:
+        # Attributes only: everything after the first ';'. Matching the whole header
+        # would flag a cookie whose VALUE merely contains "httponly", and would
+        # accept a Secure belonging to a different cookie.
+        return {a.strip().split("=", 1)[0].lower() for a in header.split(";")[1:]}
+
+    bad = []
+    for c in raw or []:
+        attrs = _attrs(c)
+        if "httponly" in attrs and "secure" not in attrs:
+            bad.append(c)
+        # A server folding several cookies into one header (legal but rare; urllib3
+        # returns separate lines for separate headers) would hide the second cookie's
+        # attributes behind the first cookie's. Say so rather than quietly under-report.
+        if c.count("=") > 1 and ", " in c and "expires=" not in c.lower():
+            log(f"{entry_dir}: NOTE folded Set-Cookie header, only the first cookie's "
+                f"attributes were checked: {c[:80]}")
     if bad:
         for c in bad:
-            log(f"{entry_dir}: INSECURE COOKIE {c.split('=')[0]} is HttpOnly but not Secure")
+            name = c.split("=", 1)[0] or "<unnamed>"
+            # ::error:: so this surfaces as a GitHub annotation rather than a log line
+            # the reader has to find above a fully green Playwright report.
+            print(f"::error::{entry_dir}: cookie {name} is HttpOnly but not Secure")
+            log(f"{entry_dir}: INSECURE COOKIE {name} is HttpOnly but not Secure")
         log(f"{entry_dir}: instances are served over TLS, so an HttpOnly cookie without "
-            f"Secure can ride a plaintext request. If the app derives this from the request "
-            f"scheme it needs telling it sits behind a TLS-terminating proxy.")
+            f"Secure can ride a plaintext request. The app needs telling it sits behind a "
+            f"TLS-terminating proxy. NOTE this may PREDATE your change: this check only "
+            f"began working recently, so the first PR to touch an entry can surface a "
+            f"long-standing defect. The smoke spec itself may well have passed.")
         return False
     return True
 
@@ -427,6 +472,7 @@ def main() -> int:
     shutil.rmtree(tmp_data, ignore_errors=True)
     os.makedirs(tmp_data, exist_ok=True)
 
+    require_public_host_usable()
     require_public_host_resolves()
     greffer_proc = start_greffer(tmp_data)
     catalog_proc = start_catalog_server()
