@@ -7,8 +7,9 @@ const URL = process.env.KEYCLOAK_URL!;
  * a working admin account:
  *
  *   1. Wait through cold start: a Quarkus augmentation pass and the Postgres
- *      schema migration run before the first request is served (~20s measured,
- *      substantially longer on a cold image pull).
+ *      schema migration run before the first request is served: budget 30-40s on
+ *      an unloaded machine, minutes on a contended one, and longer still on a
+ *      cold image pull. That is what the toPass budget below is sized for.
  *   2. Fetch the master realm's OIDC discovery document and assert the issuer is
  *      EXACTLY the instance origin. This is the document every federated app
  *      reads to find the authorization, token and JWKS endpoints.

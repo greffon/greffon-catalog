@@ -52,21 +52,27 @@ version: "3"
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.2
-    # unless-stopped, not the catalog's usual on-failure. Docker only revives
-    # `always` and `unless-stopped` containers when the daemon itself restarts,
-    # so an on-failure pair would stay down after a host reboot while the
-    # greffer's injected nginx sidecar (which IS `unless-stopped`, see the
-    # greffer's compose.py) comes back and serves 502s. On an ordinary app that
-    # is one app down; here it is every federated app's login down until someone
-    # notices. `unless-stopped` still honours an operator stop through the
-    # manager, so it does not fight the platform's lifecycle.
+    # unless-stopped, not the catalog's usual on-failure, and the reason is the
+    # exit codes rather than a blanket rule about restart policies. On daemon
+    # restart `unless-stopped` is revived unconditionally, while `on-failure` is
+    # conditional on a non-zero exit. A graceful daemon shutdown SIGTERMs both
+    # containers, and they answer differently: measured here, keycloak exits 143
+    # and postgres exits 0. So an on-failure pair comes back HALF UP after a host
+    # reboot, Keycloak revived against a database that was not, which then
+    # crash-loops. The sidecar is `unless-stopped` (greffer compose.py) and comes
+    # back either way, but with no resolvable upstream it fails its own config
+    # test and crash-loops too, so the public URL is connection-refused rather
+    # than 502. unless-stopped removes the asymmetry. It still honours an
+    # operator stop through the manager, so it does not fight the lifecycle.
     restart: unless-stopped
     # `start` (production) rather than `start-dev`. The stock image is not
     # pre-built for this configuration, so the first boot runs a Quarkus
     # augmentation (logged as "Updating the server image") and then the Postgres
-    # schema migration before serving. Roughly 5s and 20s respectively on an idle
-    # machine once the images are pulled; both scale with load, and a contended
-    # host has been measured at 10s and 36s.
+    # schema migration before serving. Budget roughly 30-40s on an unloaded
+    # machine once the images are pulled, and minutes on a contended one: the
+    # Quarkus step dominates and scales badly with CPU contention, measured from
+    # ~10s up to ~165s on a loaded host. This PR's own CI run took ~35s on a
+    # clean runner. Do not quote a single number here; it is load-bound.
     command: ["start"]
     # Bare list, deliberately, and this is load-bearing: do not "improve" it to
     # `condition: service_healthy`. That was tried and measured, and it is worse
