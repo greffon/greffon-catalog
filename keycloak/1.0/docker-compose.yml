@@ -21,39 +21,55 @@ version: "3"
 # template).
 #
 # Be precise about who does what here, because it is easy to get backwards: the
-# https:// issuer and redirect URLs come from KC_HOSTNAME, NOT from the proxy
-# headers. When hostname is a complete URL, Keycloak resolves nothing from
-# X-Forwarded-*, and it emits https even if the header is absent entirely
-# (verified against 26.7.2). KC_PROXY_HEADERS=xforwarded buys exactly one thing:
-# the client IP that lands in Keycloak's admin/login event log.
+# https:// issuer and redirect URLs come from KC_HOSTNAME, NOT from proxy headers.
+# When hostname is a complete URL, Keycloak resolves nothing from X-Forwarded-*,
+# and it emits https even with the header absent entirely. Spoofed
+# X-Forwarded-Host / -Port / -Proto and a spoofed Host all leave the issuer alone.
 #
-# That client IP is attacker-controllable. Keycloak takes the LEFTMOST
-# X-Forwarded-For value and the sidecar APPENDS rather than replaces
-# ($proxy_add_x_forwarded_for), so a request carrying its own header has that
-# value recorded as the source of a login attempt. A real client IP is still
-# worth more than the sidecar's container IP for an IdP audit trail, so this
-# stays on, but treat the recorded address as a hint, not evidence. The durable
-# fix belongs in the greffer's nginx template, not here.
+# KC_PROXY_HEADERS is deliberately NOT set. Its only effect here would be to make
+# Keycloak read the client IP from X-Forwarded-For for its login and admin event
+# log. The sidecar APPENDS to that header ($proxy_add_x_forwarded_for) rather than
+# replacing it, and Keycloak takes the LEFTMOST value, so any unauthenticated
+# client can choose the IP recorded against a failed login. On an identity
+# provider the event log is a security control: a forgeable address is worse than
+# an unhelpful one, because it can frame a third party and poison anything built
+# on it. Without the flag Keycloak records the sidecar's container IP, which is
+# useless but true. Re-add it once the greffer's nginx template sets
+# X-Forwarded-For to $remote_addr.
 
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.2
-    restart: on-failure
+    # unless-stopped, not the catalog's usual on-failure. Docker only revives
+    # `always` and `unless-stopped` containers when the daemon itself restarts,
+    # so an on-failure pair would stay down after a host reboot while the
+    # greffer's injected nginx sidecar (which IS `unless-stopped`, see the
+    # greffer's compose.py) comes back and serves 502s. On an ordinary app that
+    # is one app down; here it is every federated app's login down until someone
+    # notices. `unless-stopped` still honours an operator stop through the
+    # manager, so it does not fight the platform's lifecycle.
+    restart: unless-stopped
     # `start` (production) rather than `start-dev`. The stock image is not
     # pre-built for this configuration, so the first boot runs a Quarkus
     # augmentation (~5s, logged as "Updating the server image") and then the
     # Postgres schema migration before serving. Measured cold start against a
     # real greffer: ~20s once the image is pulled.
     command: ["start"]
-    # Bare list, deliberately. Keycloak fails fast on an unreachable database
-    # ("Failed to obtain JDBC connection", exit 1) and `restart: on-failure`
-    # retries until Postgres is up, which resolves on its own. Gating this on
-    # `condition: service_healthy` was tried and reverted: compose then creates
-    # this container and holds it, so it sits `created` while Postgres goes
-    # healthy, the greffer still maps that to the `unknow` instance status, and
-    # the window moves rather than closing. Worse, it then appears on every warm
-    # restart too, where the bare form has none, and a backup landing inside it
-    # aborts with `instance_missing`.
+    # Bare list, deliberately, and this is load-bearing: do not "improve" it to
+    # `condition: service_healthy`. That was tried and measured, and it is worse
+    # in three ways. Compose creates this container but does not START it until
+    # Postgres is healthy (>=10s), docker DNS does not resolve a created-but-
+    # unstarted container, and the greffer's sidecar resolves its upstream at
+    # nginx config-parse time, so the sidecar dies with `host not found in
+    # upstream "keycloak:8080"` and crash-loops: measured 7 sidecar restarts and
+    # ~16s of connection-refused on the public URL, against ~2s for the bare
+    # form. It also extends the window in which the greffer reports the `unknow`
+    # instance status, including on warm restarts where the bare form has none,
+    # and a backup landing inside that window aborts with `instance_missing`.
+    # The problem it was meant to solve does not reproduce anyway: Keycloak
+    # spends its first several seconds in Quarkus augmentation before it opens a
+    # JDBC connection, by which time Postgres is up, and `restart: on-failure`
+    # covers the case where it is not.
     depends_on:
       - postgresql
     ports:
@@ -76,10 +92,8 @@ services:
       # document and every redirect, so it must be the browser-facing URL, not
       # an internal service name.
       KC_HOSTNAME: "{{ instance_url }}"
-      # Accept plain HTTP from the sidecar (TLS is terminated one hop up) and
-      # trust its X-Forwarded-* headers.
+      # Accept plain HTTP from the sidecar (TLS is terminated one hop up).
       KC_HTTP_ENABLED: "true"
-      KC_PROXY_HEADERS: "xforwarded"
       # Health endpoints on the management interface (port 9000, not published).
       KC_HEALTH_ENABLED: "true"
     # NO healthcheck here, for an upstream reason rather than squeamishness.
@@ -96,7 +110,8 @@ services:
 
   postgresql:
     image: postgres:16-alpine
-    restart: on-failure
+    # Same reasoning as keycloak above: must survive a daemon or host restart.
+    restart: unless-stopped
     environment:
       POSTGRES_DB: "keycloak"
       POSTGRES_USER: "keycloak"

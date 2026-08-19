@@ -1,7 +1,7 @@
 {
   "name": "Keycloak",
   "logo": "https://www.keycloak.org/resources/images/icon.svg",
-  "description": "Self-hosted identity provider (OIDC, OAuth2, SAML). Run one login for your other apps: create a realm, register a client, and point any OIDC-capable app at it. Production mode with a Postgres store, so realms, clients and user accounts survive a restart. Sign in at /admin/ with the generated admin password (reveal it on the install form and save it first). Harden it right after the first login, because Keycloak's defaults are permissive: in the master realm turn on Brute force detection under Realm settings, Security defenses, and turn on Login events and Admin events under Realm settings, Events. Then create a permanent admin account and delete the temporary one Keycloak bootstraps. Note that Keycloak stores SMTP settings per realm in its own database rather than in environment variables, so this greffon cannot inherit the platform SMTP integration: set mail per realm in the console, or password reset and email verification will not work. First boot runs a Quarkus build step before serving: about 20 seconds on an idle machine once the images are pulled, and several times that on a loaded one.",
+  "description": "Self-hosted identity provider (OIDC, OAuth2, SAML). Run one login for your other apps: create a realm, register a client, and point any OIDC-capable app at it. Production mode with a Postgres store, so realms, clients and user accounts survive a restart. Sign in at /admin/ with the generated admin password, and read the guidance on that field before you deploy: it carries the post-install hardening steps and a warning you cannot undo. Keycloak keeps SMTP per realm in its own database rather than in environment variables, so this greffon cannot inherit the platform SMTP integration, and password reset stays off until you set mail per realm. First boot runs a Quarkus build step: about 20 seconds on an idle machine, several times that on a loaded one.",
   "categories": [
     "security"
   ],
@@ -14,10 +14,14 @@
           "value": {
             "type": "string",
             "title": "Admin username",
-            "description": "Master-realm administrator, created on first boot only.",
+            "description": "Master-realm administrator, created on first boot only. Do not leave this blank: Keycloak then invents an account called temp-admin instead, and there is no second chance because the bootstrap only runs when no admin exists.",
             "minLength": 1
           }
-        }
+        },
+        "type": "object",
+        "required": [
+          "value"
+        ]
       },
       "default_value": {
         "value": "admin"
@@ -41,7 +45,7 @@
           "value": {
             "type": "string",
             "title": "Admin password",
-            "description": "Password for the admin console, minted by the platform. Reveal it with the eye icon and store it before you deploy. This account owns every realm on this instance, and Keycloak ships the master realm with brute-force protection OFF, so the token endpoint will accept unlimited guesses: a short human-chosen password is not safe here. Set on first boot only.",
+            "description": "Password for the admin console, minted by the platform. Reveal it with the eye icon and save it somewhere before you deploy. Do NOT regenerate this field after the instance exists: Keycloak sets the admin password on first boot only, so regenerating replaces the stored copy of the real password without changing the one Keycloak accepts, and you lose console access for good. Right after your first login, harden the master realm, because Keycloak's defaults are permissive and none of them can be set from this form: turn on Brute force detection under Realm settings, Security defenses (without it the token endpoint accepts unlimited password guesses), turn on Login events and Admin events under Realm settings, Events, then create a permanent admin account and delete the temporary one Keycloak bootstraps. This account owns every realm on this instance.",
             "writeOnly": true,
             "minLength": 32,
             "format": "greffon-secret-alnum"
