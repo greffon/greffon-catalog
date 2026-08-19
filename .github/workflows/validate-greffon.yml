@@ -65,7 +65,19 @@ jobs:
           # charset. Newlines cannot survive that charset.
           changed=()
           unsafe=()
+          # Detected inside this NUL-safe loop rather than by a second grepped
+          # `git diff`: one git call, and no pattern matching against raw paths.
+          # The harness is more than the runner script. playwright.config.ts
+          # governs every spec (run_smoke shells `npx playwright test` from the
+          # catalog root) and package.json pins @playwright/test, so a change to
+          # either breaks smoking just as thoroughly as the script itself.
+          harness_changed=0
           while IFS= read -r -d "" path; do
+            case "$path" in
+              .github/scripts/ci_greffer_smoke.py) harness_changed=1 ;;
+              .github/workflows/validate-greffon.yml) harness_changed=1 ;;
+              playwright.config.ts|package.json) harness_changed=1 ;;
+            esac
             case "$path" in
               .*) continue ;;
               */*/metadata.json|*/*/docker-compose.yml) ;;
@@ -112,11 +124,37 @@ jobs:
           # regression would reach main unnoticed. Fall back to a canary entry:
           # excalidraw is the fast static app the job comment already names as a
           # proven end-to-end case.
-          if [ ${#changed[@]} -eq 0 ]; then
-            if git diff --name-only origin/"$BASE_REF"...HEAD \
-                 | grep -qE '^\.github/(scripts/ci_greffer_smoke\.py|workflows/validate-greffon\.yml)$'; then
-              echo "Harness or workflow changed with no greffon changes: smoking the canary."
-              changed+=("excalidraw/1.0")
+          if [ ${#changed[@]} -eq 0 ] && [ "$harness_changed" = "1" ]; then
+            # Pick the first existing entry that has a smoke spec rather than
+            # naming one. Hard-coding excalidraw meant a PR delisting it while
+            # touching the harness would inject a directory that had just been
+            # deleted, and the run would fail citing a greffon the author removed
+            # on purpose, with nothing pointing at the canary. This also keeps the
+            # [ -d ] invariant the strict-validate step relies on downstream.
+            # Prefer excalidraw (the fast static app this job's comment already
+            # names as proven end to end), but do not hard-code it: fall back to
+            # the first real entry with a spec so delisting it while touching the
+            # harness does not inject a directory that no longer exists.
+            canary=""
+            if [ -d "excalidraw/1.0" ] && [ -f "excalidraw/1.0/smoke_test.spec.ts" ]; then
+              canary="excalidraw/1.0"
+            else
+              for d in */1.0; do
+                # Skip _template: it sorts first and is a scaffold full of TODO
+                # placeholders that cannot deploy, so picking it would fail every
+                # harness PR with an error about the template, not the change.
+                case "$d" in _*) continue ;; esac
+                [ -d "$d" ] && [ -f "$d/smoke_test.spec.ts" ] && canary="$d" && break
+              done
+            fi
+            if [ -n "$canary" ]; then
+              echo "Harness changed with no greffon changes: smoking canary $canary."
+              changed+=("$canary")
+            else
+              # Loud, never silent: a harness change that exercises nothing is
+              # exactly the hole this fallback exists to close.
+              echo "::error::Harness changed but no greffon with a smoke spec was found to use as a canary."
+              exit 1
             fi
           fi
           CHANGED=$(printf '%s\n' ${changed[@]+"${changed[@]}"})

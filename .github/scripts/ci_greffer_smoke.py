@@ -91,7 +91,12 @@ def make_cert(tmp: str) -> dict:
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
          "-keyout", key_path, "-out", crt_path, "-days", "2",
-         "-subj", f"/CN={PUBLIC_HOST}"],
+         "-subj", f"/CN={PUBLIC_HOST}",
+         # SAN, not just CN. OpenSSL and Chromium both ignore CN for hostname
+         # matching, so a CN-only cert is name-invalid no matter what it says.
+         # Without this the cookie probe below could not verify the certificate
+         # and would be back to verify=False.
+         "-addext", f"subjectAltName=DNS:{PUBLIC_HOST}"],
         check=True, capture_output=True,
     )
     with open(crt_path) as f:
@@ -280,28 +285,52 @@ def teardown(instance_id: str) -> None:
                        capture_output=True)
 
 
-def check_cookie_security(entry_dir: str, url: str) -> bool:
+def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
     """Every instance is served over TLS, so a session cookie without `Secure` is
-    wrong regardless of the app. Fetch the instance root and assert that any
-    HttpOnly cookie it sets also carries Secure.
+    wrong regardless of the app. Fetch the instance root and fail the entry if any
+    HttpOnly cookie it sets lacks Secure.
 
-    This is the generic half of the localhost fix: PUBLIC_HOST makes the flaw
-    observable, this makes it observed without each entry having to remember. It
-    only fires when the root actually sets a cookie, so it is a floor, not full
-    coverage."""
-    try:
-        r = requests.get(url, verify=False, timeout=30, allow_redirects=False)
-    except requests.RequestException as e:
-        log(f"{entry_dir}: cookie check skipped, root not fetchable ({e})")
-        return True
-    bad = [c for c in r.raw.headers.get_all("Set-Cookie") or []
+    Two things this deliberately does NOT do, because getting either wrong makes
+    the check worse than useless:
+
+    1. It does not fire immediately. ``deploy`` waits for compose to report
+       ``running``, which is not the same as the app serving: a slow starter has
+       the sidecar answering 502 for tens of seconds, and a 502 carries no cookies,
+       so a one-shot probe would pass vacuously on exactly the apps most likely to
+       be misconfigured. Poll until a non-5xx response.
+    2. It does not disable certificate verification. The repo rule is "never
+       verify=False", and beyond the rule, verifying is what proves the cert minted
+       for PUBLIC_HOST is actually usable for that name, which is the whole point of
+       moving off localhost. The cert is self-signed, so it is its own CA bundle.
+
+    Scope, stated so nobody over-trusts it: it only sees cookies set on the ROOT.
+    An app that sets its session cookie on a login or authorization endpoint (Keycloak
+    does) needs the assertion in its own spec. This is a floor, not coverage."""
+    deadline = time.time() + 180
+    r = None
+    while time.time() < deadline:
+        try:
+            r = requests.get(url, verify=ca_path, timeout=10, allow_redirects=False)
+        except requests.RequestException:
+            r = None
+        else:
+            if r.status_code < 500:
+                break
+        time.sleep(3)
+    if r is None or r.status_code >= 500:
+        log(f"{entry_dir}: cookie check INCONCLUSIVE, instance never returned a non-5xx "
+            f"response within 180s (last: {getattr(r, 'status_code', 'no response')}). "
+            f"Failing rather than passing silently: an unreachable instance proves nothing.")
+        return False
+    raw = r.raw.headers.get_all("Set-Cookie") if hasattr(r.raw, "headers") else None
+    bad = [c for c in (raw or [])
            if "httponly" in c.lower() and not re.search(r";\s*secure", c, re.I)]
     if bad:
         for c in bad:
             log(f"{entry_dir}: INSECURE COOKIE {c.split('=')[0]} is HttpOnly but not Secure")
-        log(f"{entry_dir}: served over TLS, so an HttpOnly cookie without Secure can ride "
-            f"a plaintext request. If the app decides this from the request scheme, it "
-            f"needs telling it is behind a TLS-terminating proxy.")
+        log(f"{entry_dir}: instances are served over TLS, so an HttpOnly cookie without "
+            f"Secure can ride a plaintext request. If the app derives this from the request "
+            f"scheme it needs telling it sits behind a TLS-terminating proxy.")
         return False
     return True
 
@@ -397,7 +426,8 @@ def main() -> int:
             try:
                 cert = make_cert(tmp_cert)
                 instance_id, url = deploy(entry, metadata, cert, required_config)
-                cookies_ok = check_cookie_security(entry, url)
+                cookies_ok = check_cookie_security(
+                    entry, url, os.path.join(tmp_cert, "ci.crt"))
                 results[entry] = run_smoke(entry, url) and cookies_ok
             except Exception as e:  # noqa: BLE001 — report per-entry, continue
                 log(f"{entry}: FAILED — {e}")

@@ -262,18 +262,22 @@ host differing:
 | `CI_PUBLIC_HOST` | Result |
 |---|---|
 | `localhost` | PASS (regression invisible) |
-| a real hostname | FAIL: `session cookie lacks Secure: AUTH_SESSION_ID` |
+| a real hostname | FAIL: `session cookie AUTH_SESSION_ID is HttpOnly but not Secure` |
 
 So the smoke harness now defaults `CI_PUBLIC_HOST` to `catalog-ci.test`, which the workflow
 maps to `127.0.0.1` in `/etc/hosts`. Running the harness locally needs the same mapping, or
 `CI_PUBLIC_HOST=localtest.me` (a public name that resolves to loopback); the harness fails fast
 with instructions if the name does not resolve. **Do not set it back to `localhost`.**
 
-The harness also applies a generic check after each deploy: it fetches the instance root and
-fails the entry if a cookie is `HttpOnly` but not `Secure`. Be clear about its reach, because it
-is a floor rather than coverage: it only fires when **the root** sets a cookie. Keycloak, for
-instance, sets its session cookies on the authorization endpoint, so the generic check passes it
-and the real assertion lives in that entry's own spec.
+The harness also applies a generic check after each deploy: it polls the instance root until it
+answers non-5xx (compose reporting `running` is not the same as the app serving, and a 502 carries
+no cookies), then fails the entry if a cookie is `HttpOnly` but not `Secure`.
+
+Be clear about its reach, because it is a floor rather than coverage: **it only sees cookies set on
+the root**. Keycloak sets its session cookies on the authorization endpoint, so the generic check
+cannot see them, and `keycloak/1.0/smoke_test.spec.ts` carries the assertion itself. That split is
+the general rule: the generic check is a backstop for apps that set a session cookie on `/`, and
+anything else needs its own assertion.
 
 If your app has sessions, assert this in your `smoke_test.spec.ts` rather than relying on the
 floor:

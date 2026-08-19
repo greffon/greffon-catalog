@@ -33,6 +33,15 @@ const URL = process.env.KEYCLOAK_URL!;
  * load-bearing: the same request with a wrong password returns 400
  * invalid_grant, and the assertion demands 200.
  *
+ * Why step 4 exists. KC_PROXY_HEADERS is what keeps session cookies `Secure` and
+ * `SameSite=None`: the sidecar terminates TLS and speaks plain HTTP upstream, so
+ * without it Keycloak judges the request insecure and downgrades them. That
+ * exact regression shipped once and CI stayed green, because CI used to deploy
+ * at https://localhost and loopback is a secure context, so the flags looked
+ * right there no matter how the entry was configured. The harness no longer uses
+ * localhost, but a host change alone changes nothing unless something actually
+ * looks at the cookies. This is that something.
+ *
  * Why this asserts instead of `test.skip` on a missing URL, unlike the other
  * specs in this repo. CI never runs the suite as a whole: ci_greffer_smoke.py
  * runs one spec at a time and always sets that greffon's URL, so a skip here
@@ -76,5 +85,32 @@ test.describe('Keycloak', () => {
     });
     expect(token.status(), 'bootstrap admin could not obtain a token').toBe(200);
     expect((await token.json()).access_token, 'no access_token in the grant response').toBeTruthy();
+
+    // 4. Session cookies must be Secure. The authorization endpoint is where
+    // Keycloak sets them; the instance root is a 302 that sets none, which is why
+    // the harness's generic root-fetch check cannot cover this entry.
+    const authz = await request.get(
+      `${base}/realms/master/protocol/openid-connect/auth` +
+        `?client_id=security-admin-console` +
+        `&redirect_uri=${encodeURIComponent(`${base}/admin/master/console/`)}` +
+        `&response_type=code&scope=openid&state=smoke&nonce=smoke` +
+        // security-admin-console enforces PKCE; without these the endpoint 302s
+        // to an error and sets no cookies, and the assertion below would pass
+        // vacuously.
+        `&code_challenge=_-BU_nrgy23GXDr5th1SCfQ5hR20PQulmXM33xVGaOs` +
+        `&code_challenge_method=S256`,
+    );
+    expect(authz.status(), 'authorization endpoint should render the login page').toBe(200);
+    const setCookie = authz
+      .headersArray()
+      .filter((h) => h.name.toLowerCase() === 'set-cookie')
+      .map((h) => h.value);
+    expect(setCookie.length, 'expected the authorization endpoint to set session cookies').toBeGreaterThan(0);
+    for (const cookie of setCookie) {
+      if (/HttpOnly/i.test(cookie)) {
+        const name = cookie.split('=')[0];
+        expect(cookie, `session cookie ${name} is HttpOnly but not Secure`).toMatch(/;\s*Secure/i);
+      }
+    }
   });
 });
