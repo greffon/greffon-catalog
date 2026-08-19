@@ -1,7 +1,7 @@
 {
   "name": "Keycloak",
   "logo": "https://www.keycloak.org/resources/images/icon.svg",
-  "description": "Self-hosted identity provider (OIDC, OAuth2, SAML). Run one login for your other apps: create a realm, register a client, and point any OIDC-capable app at it. Production mode with a Postgres store, so realms, clients and user accounts survive a restart. Sign in at /admin/ with the generated admin password, and read the guidance on that field before you deploy: it carries the post-install hardening steps and a warning you cannot undo. Keycloak keeps SMTP per realm in its own database rather than in environment variables, so this greffon cannot inherit the platform SMTP integration, and password reset stays off until you set mail per realm. First boot runs a Quarkus build step: about 20 seconds on an idle machine, several times that on a loaded one.",
+  "description": "Self-hosted identity provider (OIDC, OAuth2, SAML). Run one login for your other apps: create a realm, register a client, and point any OIDC-capable app at it. Production mode with a Postgres store, so realms, clients and user accounts survive a restart. Sign in at /admin/ with the generated admin password, and read the guidance on that field before you deploy: it carries the post-install hardening steps and a warning you cannot undo. Keycloak keeps SMTP per realm in its own database rather than in environment variables, so this greffon cannot inherit the platform SMTP integration, and password reset stays off until you set mail per realm. First boot runs a Quarkus build step and then a schema migration before serving, about 20 seconds all told on an idle machine and several times that on a loaded one.",
   "categories": [
     "security"
   ],

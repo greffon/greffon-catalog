@@ -114,8 +114,9 @@ services:
     # NO healthcheck here, for an upstream reason rather than squeamishness.
     # Keycloak's /health/ready carries no datasource check: with Postgres stopped
     # it still answers 200 {"status": "UP"} while token requests fail outright
-    # (500 on 26.7.2, 400 on 26.3.4; the point is that health disagrees with
-    # reality on both). A probe that calls a server healthy when it
+    # (measured on the pinned 26.7.2: 400 unauthorized_client, "Unexpected error
+    # when authenticating client"). The exact code is not the point; health
+    # disagreeing with reality is. A probe that calls a server healthy when it
     # cannot serve is worse than no probe, because whatever consumes it next,
     # such as a `condition: service_healthy` gate, inherits the lie. 26.7.2 also
     # nests per-subsystem checks in that body, each with its own "status": "UP",
