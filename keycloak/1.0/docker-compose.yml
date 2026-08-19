@@ -65,9 +65,12 @@ services:
     # two containers exit differently: keycloak 143, postgres 0. So an
     # exit-code-conditional revival would restore Keycloak against a database it
     # did not restore, which then crash-loops. The sidecar is `unless-stopped`
-    # (greffer compose.py) and comes back either way, but with no resolvable
-    # upstream it fails its own nginx config test and crash-loops too, so the
-    # public URL is connection-refused rather than 502. It still honours an
+    # (greffer compose.py) and comes back regardless, and in THAT case its
+    # upstream resolves, because the Keycloak container is running even though
+    # the app inside it is not: the public URL then serves 502. Do not confuse
+    # this with the depends_on case below, where the container is never started
+    # at all, docker DNS has nothing to resolve, and the sidecar dies on its own
+    # config test instead. Same sidecar, two different failures. It still honours an
     # operator stop through the manager, so it does not fight the lifecycle.
     restart: unless-stopped
     # `start` (production) rather than `start-dev`. The stock image is not
@@ -76,9 +79,9 @@ services:
     # schema migration before serving. Budget roughly 30-40s on an unloaded
     # machine once the images are pulled, and minutes on a contended one: the
     # Quarkus step dominates and scales badly with CPU contention, measured from
-    # ~10s up to ~165s on a loaded host. In this PR's CI on a clean runner, the
-    # smoke poll took 27s from compose reporting `running` to the first
-    # successful response. Do not quote a single number here; it is load-bound.
+    # ~10s up to ~165s on a loaded host. The smoke test, which polls until the
+    # first successful response, has taken 27s to 37s across this PR's CI runs on
+    # clean runners. Do not quote a single number here; it is load-bound.
     command: ["start"]
     # Bare list, deliberately, and this is load-bearing: do not "improve" it to
     # `condition: service_healthy`. That was tried and measured, and it is worse
@@ -161,8 +164,10 @@ services:
     healthcheck:
       # -h 127.0.0.1 on purpose: the postgres entrypoint runs a TEMPORARY server
       # on the unix socket during initdb, and a socket-based pg_isready reports
-      # ready against it about a second before the real server exists. That temp
-      # server sets listen_addresses='', so forcing TCP cannot see it.
+      # ready against it a fraction of a second before the real server exists
+      # (measured ~0.26s, and the probe interval is 10s, so hitting it is
+      # unlikely rather than impossible). That temp server sets
+      # listen_addresses='', so forcing TCP cannot see it.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U keycloak -d keycloak"]
       interval: 10s
       timeout: 5s
