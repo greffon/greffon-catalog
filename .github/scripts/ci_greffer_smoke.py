@@ -21,7 +21,7 @@ instance_url
 ------------
 We send an empty `ports` map, so the greffer takes its documented dev/test
 fallback and builds `instance_url = ${GREFFER_PUBLIC_SCHEME}://${GREFFER_PUBLIC_HOST}:<allocated-port>`
-— i.e. https://localhost:<port>, WITH the real port. That mirrors a real deploy
+— i.e. https://<CI_PUBLIC_HOST>:<port>, WITH the real port. That mirrors a real deploy
 closely and avoids the portless-placeholder problem a manager-driven harness has.
 
 Usage
@@ -53,14 +53,29 @@ GREFFER_DIR = os.environ.get("GREFFER_DIR", os.path.join(os.path.dirname(CATALOG
 GREFFER_TOKEN = os.environ.get("CI_GREFFER_TOKEN", "ci-greffer-token")
 GREFFER_PORT = int(os.environ.get("CI_GREFFER_PORT", "9001"))
 CATALOG_PORT = int(os.environ.get("CI_CATALOG_PORT", "9999"))
-# NOT "localhost", deliberately. Browsers and several server frameworks treat
-# loopback as a secure context, so an instance deployed at https://localhost:<port>
-# gets cookie flags it would not get on a real hostname. Keycloak is the proven
-# case: with its proxy-headers setting removed, session cookies lose `Secure` and
-# drop from SameSite=None to Lax on a real host, while on localhost they stay
-# `Secure; SameSite=None` and CI goes green. That regression reached a green
-# pipeline exactly this way. The workflow maps this name to 127.0.0.1 in
-# /etc/hosts, so it resolves locally with no external DNS dependency.
+# NOT "localhost", deliberately, and the mechanism is worth stating precisely
+# because the obvious guess is wrong. The discriminator is the HOST, not the
+# perceived scheme. Apps that implement the W3C potentially-trustworthy-origin
+# rule server-side treat a loopback Host as secure REGARDLESS of scheme: Keycloak's
+# SecureContextResolver accepts `scheme == https` OR a loopback host, and
+# DefaultCookieProvider then drops `Secure` and downgrades SameSite=None to Lax
+# when the origin is not trusted. Measured on 26.7.2 with the request scheme held
+# at http and X-Forwarded-Proto: https sent in every case, varying only the Host:
+#
+#   Host localhost,        proxy-headers unset -> Secure; SameSite=None
+#   Host catalog-ci.test,  proxy-headers unset -> no Secure; SameSite=Lax
+#   Host catalog-ci.test,  xforwarded          -> Secure; SameSite=None
+#
+# So deploying at localhost hid a real regression, and CI went green on it.
+#
+# Note what this does NOT cover, so nobody scopes an audit by the wrong rule:
+# frameworks that key purely on the scheme are unaffected by the hostname. Django's
+# HttpRequest.is_secure() is `return self.scheme == "https"` with no loopback
+# carve-out, so a Django greffon emits identical cookie flags either way and needs
+# its proxy/scheme settings checked directly instead.
+#
+# The workflow maps this name to 127.0.0.1 in /etc/hosts, so it resolves with no
+# external DNS dependency.
 PUBLIC_HOST = os.environ.get("CI_PUBLIC_HOST", "catalog-ci.test")
 GREFFER_BASE = f"http://127.0.0.1:{GREFFER_PORT}"
 TOKEN_HEADER = "X-GREFFON-TOKEN"
@@ -209,8 +224,9 @@ def require_public_host_resolves() -> None:
             f"  CI maps it in /etc/hosts (see the workflow's 'Map the smoke hostname' step).\n"
             f"  Locally, either add it:   echo '127.0.0.1 {PUBLIC_HOST}' | sudo tee -a /etc/hosts\n"
             f"  or point it at a public loopback name:   CI_PUBLIC_HOST=localtest.me\n"
-            f"  Do NOT set it to 'localhost': loopback is a secure context, which hides\n"
-            f"  cookie-security regressions (that is why this default changed).")
+            f"  Do NOT set it to 'localhost': apps applying the secure-context rule to\n"
+            f"  the Host treat loopback as trusted, which hides cookie-security\n"
+            f"  regressions (that is why this default changed).")
 
 
 def wait_port(port: int, name: str, timeout: int = 30) -> None:

@@ -245,19 +245,21 @@ Rules and gotchas (all validator-enforced):
 ## Cookie security and why CI does not use `localhost`
 
 Every instance is served over TLS by the greffer's per-instance nginx sidecar, which
-terminates TLS and proxies **plain HTTP** upstream. Apps that decide cookie flags from the
-perceived request scheme therefore see HTTP, and unless they are told they sit behind a
-TLS-terminating proxy they will emit session cookies without `Secure`, and downgrade
+terminates TLS and proxies **plain HTTP** upstream. Unless an app is told it sits behind a
+TLS-terminating proxy, it can emit session cookies without `Secure` and downgrade
 `SameSite=None` to `Lax`.
 
 That is not theoretical. The Keycloak entry shipped this way briefly: with `KC_PROXY_HEADERS`
 unset, `AUTH_SESSION_ID` and `KC_RESTART` came back `SameSite=Lax` with no `Secure`. A session
 cookie without `Secure` can ride a plaintext request, and `Lax` breaks iframe SSO.
 
-**CI could not see it**, because it deployed every instance at `https://localhost:<port>` and
-loopback is a secure context: the same image emits `Secure; SameSite=None` on localhost no
-matter how it is configured. Demonstrated directly, same entry and same assertion, only the
-host differing:
+**CI could not see it**, for two reasons that both had to be fixed. It deployed every instance
+at `https://localhost:<port>`, and the discriminator here is the **host**, not the scheme: apps
+applying the W3C potentially-trustworthy-origin rule server-side (Keycloak's
+`SecureContextResolver` accepts `scheme == https` **or** a loopback host) treat localhost as
+trusted however they are configured. And nothing looked at the cookies: the Keycloak spec
+exercised discovery and a password grant, neither of which sets one. Demonstrated directly, same
+entry and same assertion, only the host differing:
 
 | `CI_PUBLIC_HOST` | Result |
 |---|---|
@@ -278,6 +280,12 @@ the root**. Keycloak sets its session cookies on the authorization endpoint, so 
 cannot see them, and `keycloak/1.0/smoke_test.spec.ts` carries the assertion itself. That split is
 the general rule: the generic check is a backstop for apps that set a session cookie on `/`, and
 anything else needs its own assertion.
+
+Scope an audit by the right rule. The hostname matters only for apps applying the secure-context
+rule to the **host**. A framework keying purely on the scheme is unaffected by it: Django's
+`HttpRequest.is_secure()` is `return self.scheme == "https"` with no loopback carve-out, so a
+Django greffon emits the same flags either way and needs its proxy and scheme settings checked
+directly.
 
 If your app has sessions, assert this in your `smoke_test.spec.ts` rather than relying on the
 floor:
