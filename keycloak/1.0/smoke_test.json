@@ -1,0 +1,8 @@
+{
+  "path": "/realms/master/.well-known/openid-configuration",
+  "expected_status": [200],
+  "expected_body_contains": "authorization_endpoint",
+  "required_config": {
+    "KC_BOOTSTRAP_ADMIN_PASSWORD": "Kc-Smoke-Adm-7431"
+  }
+}

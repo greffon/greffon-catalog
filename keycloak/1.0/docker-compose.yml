@@ -1,0 +1,93 @@
+version: "3"
+
+# Keycloak: standalone identity provider (OIDC / OAuth2 / SAML).
+#
+# This is the *unbundled* Keycloak: a first-class greffon an operator runs once
+# and points other apps at, rather than the per-app embedded Keycloak that the
+# Docs and Visio greffons ship inside their own compose project. Those stay as
+# they are; this entry exists so Grafana, Forgejo, custom app deploys and any
+# external service can federate against one login the operator controls.
+#
+#   {{ instance_url }}/                     -> account console
+#   {{ instance_url }}/admin/               -> admin console (bootstrap admin)
+#   {{ instance_url }}/realms/<realm>/...   -> OIDC / SAML endpoints
+#
+# Production mode, not start-dev: state lives in Postgres so realms, clients and
+# user accounts survive a restart. An identity provider that forgets its users
+# locks every federated app out, so the DB is not optional here.
+#
+# TLS is terminated by the greffer's per-instance nginx sidecar, which proxies
+# plain HTTP upstream and sets `X-Forwarded-Proto: https` (see the greffer
+# nginx template). KC_PROXY_HEADERS=xforwarded is what makes Keycloak trust
+# that header and emit https:// issuer and redirect URLs instead of http://.
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3.4
+    restart: on-failure
+    # `start` (production) rather than `start-dev`. The stock image is not
+    # pre-built for this configuration, so the first boot runs a Quarkus
+    # augmentation (~5s, logged as "Updating the server image") and then the
+    # Postgres schema migration before serving. Measured cold start against a
+    # real greffer: ~20s once the image is pulled.
+    command: ["start"]
+    depends_on:
+      - postgresql
+    ports:
+      - "8080:8080"
+    environment:
+      KC_DB: "postgres"
+      KC_DB_URL_HOST: "postgresql"
+      KC_DB_URL_DATABASE: "keycloak"
+      KC_DB_USERNAME: "keycloak"
+      # KC_DB_PASSWORD injected (platform-minted, shared with POSTGRES_PASSWORD)
+      KC_DB_PASSWORD: ""
+      # First-boot admin. Keycloak creates this user in the master realm only
+      # when no admin exists yet; changing it later has no effect. Keycloak 26
+      # logs it as a TEMPORARY admin (KC-SERVICES0077): create a permanent
+      # admin account from the console and drop this one.
+      KC_BOOTSTRAP_ADMIN_USERNAME: "admin"
+      # KC_BOOTSTRAP_ADMIN_PASSWORD injected (user-supplied, required)
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ""
+      # Public origin. Keycloak bakes this into the OIDC issuer, the discovery
+      # document and every redirect, so it must be the browser-facing URL, not
+      # an internal service name.
+      KC_HOSTNAME: "{{ instance_url }}"
+      # Accept plain HTTP from the sidecar (TLS is terminated one hop up) and
+      # trust its X-Forwarded-* headers.
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: "xforwarded"
+      # Health endpoints on the management interface (port 9000, not published).
+      # Not wired to a compose healthcheck: the image has no curl or wget, so
+      # the only probe upstream documents is a raw /dev/tcp bash redirect, which
+      # is too brittle to ship unverified.
+      KC_HEALTH_ENABLED: "true"
+
+  postgresql:
+    image: postgres:16-alpine
+    restart: on-failure
+    environment:
+      POSTGRES_DB: "keycloak"
+      POSTGRES_USER: "keycloak"
+      # POSTGRES_PASSWORD injected (same config as KC_DB_PASSWORD above)
+      POSTGRES_PASSWORD: ""
+    # Hot DB backup hooks, read by the greffer as service labels (same shape as
+    # the umami entry). dump: pg_dump custom format to stdout; restore:
+    # pg_restore from stdin, --clean --if-exists so a re-restore drops and
+    # recreates. Both run as the local superuser over the unix socket (trust
+    # auth), so no password reaches the command line.
+    labels:
+      com.greffon.backup.dump: "pg_dump -U keycloak -d keycloak -Fc"
+      com.greffon.backup.restore: "pg_restore -U keycloak -d keycloak --clean --if-exists --no-owner --single-transaction"
+    # Required by the greffer's hot DB restore (_wait_db_healthy): it waits for
+    # this healthcheck before streaming pg_restore in.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
