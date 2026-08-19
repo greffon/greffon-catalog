@@ -215,8 +215,8 @@ jobs:
           npm install --silent
           npx playwright install --with-deps chromium
 
-      # Self-built images (a greffon shipping an image/Dockerfile, e.g.
-      # remotion) are only published to GHCR on push to main, so the tag the
+      # Self-built images (a greffon shipping an image/ dir, e.g. remotion or
+      # openfamily) are only published to GHCR on push to main, so the tag the
       # compose references does not exist during a PR. Build it locally and tag
       # it as the compose's image: ref, so the greffer's `docker-compose up`
       # finds it on the runner's daemon and never pulls. This makes PR CI smoke
@@ -230,15 +230,29 @@ jobs:
         run: |
           echo "$CHANGED_DIRS" | while IFS= read -r dir; do
             [ -n "$dir" ] || continue
-            [ -f "$dir/image/Dockerfile" ] || continue
+            [ -d "$dir/image" ] || continue
             compose="$dir/docker-compose.yml"
-            # Every image: line pointing at our own registry is a candidate
-            # built from this dir's image/ context.
+            # Every image: line pointing at our own registry is a candidate.
+            # A single-image greffon keeps its context at image/ (remotion); a
+            # multi-image greffon keeps one context per image at
+            # image/<repo-basename>/ (openfamily -> image/openfamily/ and
+            # image/openfamily-db/), since one shared context can't map two
+            # tags to two Dockerfiles.
             grep -E '^[[:space:]]*image:[[:space:]]*ghcr\.io/greffon/' "$compose" \
               | sed -E 's|^[[:space:]]*image:[[:space:]]*||' \
               | while IFS= read -r tag; do
-                  echo "Building $tag from $dir/image"
-                  docker build -t "$tag" "$dir/image"
+                  name="${tag##*/}"
+                  name="${name%%:*}"
+                  if [ -f "$dir/image/$name/Dockerfile" ]; then
+                    ctx="$dir/image/$name"
+                  elif [ -f "$dir/image/Dockerfile" ]; then
+                    ctx="$dir/image"
+                  else
+                    echo "::error::$compose references $tag but neither $dir/image/$name/Dockerfile nor $dir/image/Dockerfile exists"
+                    exit 1
+                  fi
+                  echo "Building $tag from $ctx"
+                  docker build -t "$tag" "$ctx"
                 done
           done
 
