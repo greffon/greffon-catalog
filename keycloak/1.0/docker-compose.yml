@@ -21,22 +21,33 @@ version: "3"
 # plain HTTP upstream and sets `X-Forwarded-Proto: https` (see the greffer nginx
 # template).
 #
-# Be precise about who does what here, because it is easy to get backwards: the
-# https:// issuer and redirect URLs come from KC_HOSTNAME, NOT from proxy headers.
-# When hostname is a complete URL, Keycloak resolves nothing from X-Forwarded-*,
-# and it emits https even with the header absent entirely. Spoofed
-# X-Forwarded-Host / -Port / -Proto and a spoofed Host all leave the issuer alone.
+# Be precise about who does what here, because it is easy to get backwards. The
+# https:// issuer and redirect URLs come from KC_HOSTNAME, NOT from proxy
+# headers: when hostname is a complete URL, Keycloak resolves nothing from
+# X-Forwarded-*, and it emits https even with the header absent entirely.
+# Spoofed X-Forwarded-Host / -Port / -Proto and a spoofed Host all leave the
+# issuer alone.
 #
-# KC_PROXY_HEADERS is deliberately NOT set. Its only effect here would be to make
-# Keycloak read the client IP from X-Forwarded-For for its login and admin event
-# log. The sidecar APPENDS to that header ($proxy_add_x_forwarded_for) rather than
-# replacing it, and Keycloak takes the LEFTMOST value, so any unauthenticated
-# client can choose the IP recorded against a failed login. On an identity
-# provider the event log is a security control: a forgeable address is worse than
-# an unhelpful one, because it can frame a third party and poison anything built
-# on it. Without the flag Keycloak records the sidecar's container IP, which is
-# useless but true. Re-add it once the greffer's nginx template sets
-# X-Forwarded-For to $remote_addr.
+# KC_PROXY_HEADERS is nonetheless REQUIRED, for cookies rather than URLs. The
+# sidecar terminates TLS and speaks plain HTTP upstream, so without it Keycloak
+# judges the request insecure and downgrades every session cookie. Measured on
+# 26.7.2 against a non-localhost hostname:
+#
+#   unset               AUTH_SESSION_ID / KC_RESTART -> SameSite=Lax, NO Secure
+#   xforwarded          AUTH_SESSION_ID / KC_RESTART -> Secure, SameSite=None
+#
+# Dropping Secure lets a session cookie ride a plaintext request, and Lax breaks
+# iframe SSO and cross-site federated login. Note this is invisible on localhost,
+# which Keycloak already treats as a secure context, so the CI smoke test cannot
+# catch it: a previous revision removed this flag and CI stayed green.
+#
+# The cost, stated plainly because it is real: this makes Keycloak read the
+# client IP for its login and admin event log from X-Forwarded-For, the sidecar
+# APPENDS to that header rather than replacing it, and Keycloak takes the
+# LEFTMOST value, so an unauthenticated client can choose the IP recorded against
+# a failed login. Treat that address as a hint, not evidence, until the greffer's
+# nginx template sets X-Forwarded-For to $remote_addr. Secure cookies are worth
+# more than a trustworthy audit IP; the durable fix gets both.
 
 services:
   keycloak:
@@ -94,8 +105,12 @@ services:
       # document and every redirect, so it must be the browser-facing URL, not
       # an internal service name.
       KC_HOSTNAME: "{{ instance_url }}"
-      # Accept plain HTTP from the sidecar (TLS is terminated one hop up).
+      # Accept plain HTTP from the sidecar (TLS is terminated one hop up), and
+      # trust its X-Forwarded-Proto so session cookies keep Secure/SameSite=None.
+      # See the header comment: removing KC_PROXY_HEADERS silently downgrades
+      # them, and localhost-based CI cannot see it.
       KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: "xforwarded"
     # NO healthcheck here, for an upstream reason rather than squeamishness.
     # Keycloak's /health/ready carries no datasource check: with Postgres stopped
     # it still answers 200 {"status": "UP"} while token requests fail outright
