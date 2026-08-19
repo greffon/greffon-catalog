@@ -17,9 +17,23 @@ version: "3"
 # locks every federated app out, so the DB is not optional here.
 #
 # TLS is terminated by the greffer's per-instance nginx sidecar, which proxies
-# plain HTTP upstream and sets `X-Forwarded-Proto: https` (see the greffer
-# nginx template). KC_PROXY_HEADERS=xforwarded is what makes Keycloak trust
-# that header and emit https:// issuer and redirect URLs instead of http://.
+# plain HTTP upstream and sets `X-Forwarded-Proto: https` (see the greffer nginx
+# template).
+#
+# Be precise about who does what here, because it is easy to get backwards: the
+# https:// issuer and redirect URLs come from KC_HOSTNAME, NOT from the proxy
+# headers. When hostname is a complete URL, Keycloak resolves nothing from
+# X-Forwarded-*, and it emits https even if the header is absent entirely
+# (verified against 26.3.4). KC_PROXY_HEADERS=xforwarded buys exactly one thing:
+# the client IP that lands in Keycloak's admin/login event log.
+#
+# That client IP is attacker-controllable. Keycloak takes the LEFTMOST
+# X-Forwarded-For value and the sidecar APPENDS rather than replaces
+# ($proxy_add_x_forwarded_for), so a request carrying its own header has that
+# value recorded as the source of a login attempt. A real client IP is still
+# worth more than the sidecar's container IP for an IdP audit trail, so this
+# stays on, but treat the recorded address as a hint, not evidence. The durable
+# fix belongs in the greffer's nginx template, not here.
 
 services:
   keycloak:
@@ -31,8 +45,15 @@ services:
     # Postgres schema migration before serving. Measured cold start against a
     # real greffer: ~20s once the image is pulled.
     command: ["start"]
+    # Long form with a condition, not a bare list. Keycloak fails fast on an
+    # unreachable database ("Failed to obtain JDBC connection", exit 1); with a
+    # bare depends_on a cold start crash-loops until Postgres catches up, and
+    # while it restarts the greffer maps the container to `stopped`, which makes
+    # the whole instance report the `unknow` status the manager rejects. Gating
+    # on the Postgres healthcheck below removes that window.
     depends_on:
-      - postgresql
+      postgresql:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
@@ -58,10 +79,24 @@ services:
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: "xforwarded"
       # Health endpoints on the management interface (port 9000, not published).
-      # Not wired to a compose healthcheck: the image has no curl or wget, so
-      # the only probe upstream documents is a raw /dev/tcp bash redirect, which
-      # is too brittle to ship unverified.
       KC_HEALTH_ENABLED: "true"
+    # The image ships neither curl nor wget, so the probe is bash's /dev/tcp
+    # against the management port. That works under CMD-SHELL because /bin/sh in
+    # this image IS bash (5.1.8); a future base-image switch to dash would break
+    # it. Verified against 26.3.4: returns 0 on a ready server and 1 when the
+    # port is wrong. NOTE this does not change when the
+    # manager reports STARTED: the greffer derives instance status from container
+    # state, not container health, so an instance still reads as started for the
+    # ~20s before Keycloak serves. Lifting that is a platform change, not a
+    # catalog one.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'exec 3<>/dev/tcp/127.0.0.1/9000; echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; grep -q ''"status": "UP"'' <&3'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   postgresql:
     image: postgres:16-alpine
