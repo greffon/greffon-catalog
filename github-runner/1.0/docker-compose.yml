@@ -1,0 +1,41 @@
+version: "3"
+
+services:
+  github_runner:
+    image: myoung34/github-runner:2.333.1-ubuntu-noble
+    restart: unless-stopped
+    depends_on:
+      - docker
+    environment:
+      DOCKER_HOST: tcp://docker:2375
+      EPHEMERAL: "1"
+      DISABLE_AUTO_UPDATE: "1"
+      START_DOCKER_SERVICE: "false"
+      UNSET_CONFIG_VARS: "true"
+      RUN_AS_ROOT: "false"
+      RUNNER_WORKDIR: /runner/_work
+      RUNNER_SCOPE: repo
+      RUNNER_NAME_PREFIX: greffon-{{ instance_id }}
+      LABELS: greffon,self-hosted
+      GITHUB_HOST: github.com
+    volumes:
+      - runner-work:/runner/_work
+
+  docker:
+    image: docker:29.4.0-dind
+    restart: unless-stopped
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    command:
+      - dockerd
+      - --host=tcp://0.0.0.0:2375
+      - --host=unix:///var/run/docker.sock
+      - --tls=false
+    volumes:
+      - runner-work:/runner/_work
+      - docker-data:/var/lib/docker
+
+volumes:
+  runner-work:
+  docker-data:
