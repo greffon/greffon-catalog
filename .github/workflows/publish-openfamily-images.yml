@@ -1,0 +1,51 @@
+name: Publish OpenFamily images
+
+# The greffer only pulls images, it never builds. Upstream OpenFamily publishes
+# no greffer-compatible image (see openfamily/1.0/image/README.md), so we
+# publish the combined app image and the schema-baked db image to GHCR whenever
+# their sources change. Pure packaging of a pinned upstream release; no fork.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "openfamily/1.0/image/**"
+      - ".github/workflows/publish-openfamily-images.yml"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags pin the upstream release the Dockerfiles build (OPENFAMILY_TAG
+      # default); keep them in sync per openfamily/1.0/image/README.md.
+      - name: Build and push combined app image
+        uses: docker/build-push-action@v6
+        with:
+          context: openfamily/1.0/image/openfamily
+          # amd64 for production greffers; arm64 for local dev on Apple Silicon.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/greffon/openfamily:v1.2.0
+
+      - name: Build and push schema-baked db image
+        uses: docker/build-push-action@v6
+        with:
+          context: openfamily/1.0/image/openfamily-db
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/greffon/openfamily-db:v1.2.0
