@@ -53,5 +53,11 @@
       "default_value": { "value": "" },
       "destinations": [ { "type": "env", "container": "wordpress", "key": "WORDPRESS_NONCE_SALT" } ]
     }
-  ]
+  ],
+  "backup": {
+    "volumes": {
+      "wordpress_data": "data",
+      "wordpress_db_data": "database"
+    }
+  }
 }

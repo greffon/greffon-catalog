@@ -30,10 +30,38 @@ services:
     image: mysql:8
     restart: unless-stopped
     environment:
+      # Placeholder overwritten at deploy by the generated DB_PASSWORD secret
+      # (metadata.json injects it into MYSQL_ROOT_PASSWORD and the app's
+      # database__connection__password), so the running DB has a real
+      # per-instance root password — never the empty string here.
       MYSQL_ROOT_PASSWORD: ""
       MYSQL_DATABASE: ghost
+    # Phase 3 hot DB backup hooks (SERVICE -> container labels read by the
+    # greffer, which runs each as `docker exec <db> timeout 3600 <hook>`). dump:
+    # mysqldump (SQL text) to stdout; restore: the mysql client applies that SQL
+    # from stdin. The password is NOT in the argv (ps-safe): the hook exports
+    # MYSQL_PWD from the container's MYSQL_ROOT_PASSWORD only for the dump/restore
+    # process. NOTE: MYSQL_PWD must NOT be a persistent container env var — the
+    # mysql image entrypoint's own client picks it up during init (before root's
+    # password is set) and fails with "Access denied", so it is scoped to the
+    # hook via sh -c here. `exec` makes mysqldump the direct child of the
+    # greffer's `timeout` wrapper so a hung dump is signalled, not the shell.
+    # The `$$` is REQUIRED (not `$`): docker-compose interpolates `$VAR` at
+    # up-time against the greffer's scrubbed launch env (where the password is
+    # absent), so a single `$` would resolve to an EMPTY password; `$$` escapes
+    # to a literal `$` in the container label, left for the in-container `sh` to
+    # expand from the container's own env (same form as the healthcheck below).
+    # --single-transaction = consistent hot dump of the InnoDB tables;
+    # --routines/--triggers/--events include stored programs; --no-tablespaces
+    # avoids needing PROCESS. The dump's default --add-drop-table makes a
+    # re-restore drop+recreate each table.
+    labels:
+      com.greffon.backup.dump: "sh -c 'export MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\"; exec mysqldump --single-transaction --routines --triggers --events --no-tablespaces -u root ghost'"
+      com.greffon.backup.restore: "sh -c 'export MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\"; exec mysql -u root ghost'"
     volumes:
       - db_data:/var/lib/mysql
+    # Required by the greffer's hot DB restore (_wait_db_healthy waits for this
+    # to pass before streaming the restore in). Already present pre-Phase-3.
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
       interval: 5s
