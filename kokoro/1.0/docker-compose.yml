@@ -1,0 +1,41 @@
+version: "3"
+
+# Kokoro TTS (FastKoko) — self-hosted text-to-speech with an OpenAI-compatible
+# /v1/audio/speech API and a web UI. Pairs with the Remotion greffon to produce
+# fully self-hosted video voiceovers: POST your script text, get audio, drop it
+# into a Remotion <Audio> track.
+#
+# Kokoro serves its UI at /web (root "/" 404s with {"detail":"Not Found"}), and
+# the platform opens an instance at its root. A tiny nginx front redirects "/"
+# to "/web/" so the Open button lands on the UI, and proxies everything else
+# (the /web assets and the /v1 API) straight through to the TTS service.
+#
+# nginx runtime variables are written as $$ so docker-compose's own variable
+# interpolation passes a literal $ through to the container.
+#
+# CPU image: the Kokoro-82M model (Apache-2.0) is small enough to run on a
+# commodity greffer without a GPU. Model + voices are baked into the image
+# (no first-run download), so the service is stateless and needs no volume.
+services:
+  web:
+    image: nginx:alpine
+    depends_on:
+      - tts
+    ports:
+      - "80:80"
+    # Config written on one line (no heredoc / multi-line YAML) so it survives
+    # the greffer's parse -> Jinja-render -> re-serialize pipeline regardless of
+    # the YAML dumper's scalar style. Notes on the directives:
+    #   absolute_redirect off  - TLS terminates at the greffer's upstream nginx,
+    #     so this server sees plain HTTP and would emit an absolute http://
+    #     Location, downgrading the browser off https. Keep redirects relative.
+    #   resolver + variable upstream - resolve `tts` at request time so nginx
+    #     boots even before the (slow-loading) tts container is reachable.
+    #   $$  - docker-compose collapses $$ -> $ so nginx gets literal $vars.
+    command:
+      - sh
+      - -c
+      - "printf '%s' 'server { listen 80; absolute_redirect off; resolver 127.0.0.11 ipv6=off valid=5s; set $$u tts; location = / { return 302 /web/; } location / { proxy_pass http://$$u:8880; proxy_set_header Host $$host; proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for; proxy_read_timeout 120s; } }' > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"
+
+  tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
