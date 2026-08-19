@@ -6,6 +6,6 @@
   "expected_body_contains": "authorization_endpoint",
   "required_config": {
     "KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
-    "KC_BOOTSTRAP_ADMIN_PASSWORD": "Kc-Smoke-Adm-7431"
+    "KC_BOOTSTRAP_ADMIN_PASSWORD": "KcSmokeAdmin7431QwertyZxcvbn9024"
   }
 }

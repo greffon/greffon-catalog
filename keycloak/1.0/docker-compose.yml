@@ -24,7 +24,7 @@ version: "3"
 # https:// issuer and redirect URLs come from KC_HOSTNAME, NOT from the proxy
 # headers. When hostname is a complete URL, Keycloak resolves nothing from
 # X-Forwarded-*, and it emits https even if the header is absent entirely
-# (verified against 26.3.4). KC_PROXY_HEADERS=xforwarded buys exactly one thing:
+# (verified against 26.7.2). KC_PROXY_HEADERS=xforwarded buys exactly one thing:
 # the client IP that lands in Keycloak's admin/login event log.
 #
 # That client IP is attacker-controllable. Keycloak takes the LEFTMOST
@@ -37,7 +37,7 @@ version: "3"
 
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:26.3.4
+    image: quay.io/keycloak/keycloak:26.7.2
     restart: on-failure
     # `start` (production) rather than `start-dev`. The stock image is not
     # pre-built for this configuration, so the first boot runs a Quarkus
@@ -45,15 +45,17 @@ services:
     # Postgres schema migration before serving. Measured cold start against a
     # real greffer: ~20s once the image is pulled.
     command: ["start"]
-    # Long form with a condition, not a bare list. Keycloak fails fast on an
-    # unreachable database ("Failed to obtain JDBC connection", exit 1); with a
-    # bare depends_on a cold start crash-loops until Postgres catches up, and
-    # while it restarts the greffer maps the container to `stopped`, which makes
-    # the whole instance report the `unknow` status the manager rejects. Gating
-    # on the Postgres healthcheck below removes that window.
+    # Bare list, deliberately. Keycloak fails fast on an unreachable database
+    # ("Failed to obtain JDBC connection", exit 1) and `restart: on-failure`
+    # retries until Postgres is up, which resolves on its own. Gating this on
+    # `condition: service_healthy` was tried and reverted: compose then creates
+    # this container and holds it, so it sits `created` while Postgres goes
+    # healthy, the greffer still maps that to the `unknow` instance status, and
+    # the window moves rather than closing. Worse, it then appears on every warm
+    # restart too, where the bare form has none, and a backup landing inside it
+    # aborts with `instance_missing`.
     depends_on:
-      postgresql:
-        condition: service_healthy
+      - postgresql
     ports:
       - "8080:8080"
     environment:
@@ -80,23 +82,17 @@ services:
       KC_PROXY_HEADERS: "xforwarded"
       # Health endpoints on the management interface (port 9000, not published).
       KC_HEALTH_ENABLED: "true"
-    # The image ships neither curl nor wget, so the probe is bash's /dev/tcp
-    # against the management port. That works under CMD-SHELL because /bin/sh in
-    # this image IS bash (5.1.8); a future base-image switch to dash would break
-    # it. Verified against 26.3.4: returns 0 on a ready server and 1 when the
-    # port is wrong. NOTE this does not change when the
-    # manager reports STARTED: the greffer derives instance status from container
-    # state, not container health, so an instance still reads as started for the
-    # ~20s before Keycloak serves. Lifting that is a platform change, not a
-    # catalog one.
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - 'exec 3<>/dev/tcp/127.0.0.1/9000; echo -e "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; grep -q ''"status": "UP"'' <&3'
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
+    # NO healthcheck here, for an upstream reason rather than squeamishness.
+    # Keycloak's /health/ready carries no datasource check: with Postgres stopped
+    # it still answers 200 {"status": "UP"} while every token request 500s
+    # (checked on 26.3.4 and 26.7.2). A probe that calls a server healthy when it
+    # cannot serve is worse than no probe, because whatever consumes it next,
+    # such as a `condition: service_healthy` gate, inherits the lie. 26.7.2 also
+    # nests per-subsystem checks in that body, each with its own "status": "UP",
+    # so a naive grep would match even a DOWN aggregate. Nothing consumes a
+    # keycloak healthcheck today in any case: the greffer derives instance status
+    # from container state, not health. Revisit if upstream ships a
+    # datasource-aware readiness endpoint.
 
   postgresql:
     image: postgres:16-alpine
@@ -117,7 +113,11 @@ services:
     # Required by the greffer's hot DB restore (_wait_db_healthy): it waits for
     # this healthcheck before streaming pg_restore in.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      # -h 127.0.0.1 on purpose: the postgres entrypoint runs a TEMPORARY server
+      # on the unix socket during initdb, and a socket-based pg_isready reports
+      # ready against it about a second before the real server exists. That temp
+      # server sets listen_addresses='', so forcing TCP cannot see it.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U keycloak -d keycloak"]
       interval: 10s
       timeout: 5s
       retries: 5

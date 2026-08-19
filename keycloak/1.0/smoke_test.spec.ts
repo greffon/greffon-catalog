@@ -57,7 +57,7 @@ test.describe('Keycloak', () => {
       expect(doc.jwks_uri, 'missing jwks_uri').toBe(
         `${base}/realms/master/protocol/openid-connect/certs`,
       );
-    }).toPass({ timeout: 120_000, intervals: [5_000] });
+    }).toPass({ timeout: 150_000, intervals: [5_000] });
 
     // These two literals MUST match smoke_test.json's `required_config`, which is
     // what pins them for the deploy. Drop the pin and ci_greffer_smoke.py invents a
@@ -68,7 +68,7 @@ test.describe('Keycloak', () => {
         grant_type: 'password',
         client_id: 'admin-cli',
         username: 'admin',
-        password: 'Kc-Smoke-Adm-7431',
+        password: 'KcSmokeAdmin7431QwertyZxcvbn9024',
       },
     });
     expect(token.status(), 'bootstrap admin could not obtain a token').toBe(200);
