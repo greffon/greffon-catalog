@@ -1,0 +1,179 @@
+version: "3"
+
+# Keycloak: standalone identity provider (OIDC / OAuth2 / SAML).
+#
+# This is the *unbundled* Keycloak: a first-class greffon an operator runs once
+# and points other apps at, rather than the per-app embedded Keycloak that the
+# Docs and Visio greffons ship inside their own compose project. Those stay as
+# they are; this entry exists so Grafana, Forgejo, custom app deploys and any
+# external service can federate against one login the operator controls.
+#
+#   {{ instance_url }}/                     -> 302 to /admin/
+#   {{ instance_url }}/admin/               -> admin console (bootstrap admin)
+#   {{ instance_url }}/realms/master/account/ -> account console
+#   {{ instance_url }}/realms/<realm>/...   -> OIDC / SAML endpoints
+#
+# Production mode, not start-dev: state lives in Postgres so realms, clients and
+# user accounts survive a restart. An identity provider that forgets its users
+# locks every federated app out, so the DB is not optional here.
+#
+# TLS is terminated by the greffer's per-instance nginx sidecar, which proxies
+# plain HTTP upstream and sets `X-Forwarded-Proto: https` (see the greffer nginx
+# template).
+#
+# Be precise about who does what here, because it is easy to get backwards. The
+# https:// issuer and redirect URLs come from KC_HOSTNAME, NOT from proxy
+# headers: when hostname is a complete URL, Keycloak resolves nothing from
+# X-Forwarded-*, and it emits https even with the header absent entirely.
+# Spoofed X-Forwarded-Host / -Port / -Proto and a spoofed Host all leave the
+# issuer alone.
+#
+# KC_PROXY_HEADERS is nonetheless REQUIRED, for cookies rather than URLs. The
+# sidecar terminates TLS and speaks plain HTTP upstream, so without it Keycloak
+# judges the request insecure and downgrades every session cookie. Measured on
+# 26.7.2 against a non-localhost hostname:
+#
+#   unset               AUTH_SESSION_ID / KC_RESTART -> SameSite=Lax, NO Secure
+#   xforwarded          AUTH_SESSION_ID / KC_RESTART -> Secure, SameSite=None
+#
+# Dropping Secure lets a session cookie ride a plaintext request, and Lax breaks
+# iframe SSO and cross-site federated login. Note this is invisible on localhost,
+# which Keycloak already treats as a secure context, so the CI smoke test cannot
+# catch it: a previous revision removed this flag and CI stayed green.
+#
+# The cost, stated plainly because it is real: this makes Keycloak read the
+# client IP for its login and admin event log from X-Forwarded-For, the sidecar
+# APPENDS to that header rather than replacing it, and Keycloak takes the
+# LEFTMOST value, so an unauthenticated client can choose the IP recorded against
+# a failed login. Treat that address as a hint, not evidence, until the greffer's
+# nginx template sets X-Forwarded-For to $remote_addr. Secure cookies are worth
+# more than a trustworthy audit IP; the durable fix gets both.
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.2
+    # unless-stopped, not the catalog's usual on-failure. `unless-stopped` is
+    # revived when the daemon restarts; that much is uncontested and it is the
+    # property this service needs. What on-failure does at daemon restart is
+    # genuinely disputed: Docker's own documentation says it "doesn't restart the
+    # container if the daemon restarts", while a reading of moby's restart
+    # manager says a non-zero exit still qualifies. Settling that needs a daemon
+    # restart, which is not worth doing on a shared machine, so this comment
+    # asserts neither. It does not matter to the choice, because both readings
+    # are worse here: either the pair stays down, or it comes back HALF UP.
+    # Measured on a graceful stop, which is what daemon shutdown performs, the
+    # two containers exit differently: keycloak 143, postgres 0. So an
+    # exit-code-conditional revival would restore Keycloak against a database it
+    # did not restore, which then crash-loops. The sidecar is `unless-stopped`
+    # (greffer compose.py) and comes back regardless, and in THAT case its
+    # upstream resolves, because the Keycloak container is running even though
+    # the app inside it is not: the public URL then serves 502. Do not confuse
+    # this with the depends_on case below, where the container is never started
+    # at all, docker DNS has nothing to resolve, and the sidecar dies on its own
+    # config test instead. Same sidecar, two different failures. It still honours an
+    # operator stop through the manager, so it does not fight the lifecycle.
+    restart: unless-stopped
+    # `start` (production) rather than `start-dev`. The stock image is not
+    # pre-built for this configuration, so the first boot runs a Quarkus
+    # augmentation (logged as "Updating the server image") and then the Postgres
+    # schema migration before serving. Budget roughly 30-40s on an unloaded
+    # machine once the images are pulled, and minutes on a contended one: the
+    # Quarkus step dominates and scales badly with CPU contention, measured from
+    # ~10s up to ~165s on a loaded host. The smoke test, which polls until the
+    # first successful response, has taken 27s to 37s across this PR's CI runs on
+    # clean runners. Do not quote a single number here; it is load-bound.
+    command: ["start"]
+    # Bare list, deliberately, and this is load-bearing: do not "improve" it to
+    # `condition: service_healthy`. That was tried and measured, and it is worse
+    # in three ways. Compose creates this container but does not START it until
+    # Postgres is healthy (>=10s), docker DNS does not resolve a created-but-
+    # unstarted container, and the greffer's sidecar resolves its upstream at
+    # nginx config-parse time, so the sidecar dies with `host not found in
+    # upstream "keycloak:8080"` and crash-loops: measured 7 sidecar restarts and
+    # ~16s of connection-refused on the public URL, against ~2s for the bare
+    # form. It also extends the window in which the greffer reports the `unknow`
+    # instance status, including on warm restarts where the bare form has none,
+    # and a backup landing inside that window aborts with `instance_missing`.
+    # The problem it was meant to solve does not reproduce anyway: Keycloak
+    # spends its first several seconds in Quarkus augmentation before it opens a
+    # JDBC connection, by which time Postgres is up, and the restart policy
+    # above covers the case where it is not.
+    depends_on:
+      - postgresql
+    ports:
+      - "8080:8080"
+    environment:
+      KC_DB: "postgres"
+      KC_DB_URL_HOST: "postgresql"
+      KC_DB_URL_DATABASE: "keycloak"
+      KC_DB_USERNAME: "keycloak"
+      # KC_DB_PASSWORD injected (platform-minted, shared with POSTGRES_PASSWORD)
+      KC_DB_PASSWORD: ""
+      # First-boot admin. Keycloak creates this user in the master realm only
+      # when no admin exists yet; changing it later has no effect. Keycloak 26
+      # logs it as a TEMPORARY admin (KC-SERVICES0077): create a permanent
+      # admin account from the console and drop this one.
+      KC_BOOTSTRAP_ADMIN_USERNAME: "admin"
+      # KC_BOOTSTRAP_ADMIN_PASSWORD injected (user-supplied, required)
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ""
+      # Public origin. Keycloak bakes this into the OIDC issuer, the discovery
+      # document and every redirect, so it must be the browser-facing URL, not
+      # an internal service name.
+      KC_HOSTNAME: "{{ instance_url }}"
+      # Accept plain HTTP from the sidecar (TLS is terminated one hop up), and
+      # trust its X-Forwarded-Proto so session cookies keep Secure/SameSite=None.
+      # See the header comment: removing KC_PROXY_HEADERS silently downgrades
+      # them, and localhost-based CI cannot see it.
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: "xforwarded"
+    # NO healthcheck here, for an upstream reason rather than squeamishness.
+    # Keycloak's /health/ready carries no datasource check: with Postgres stopped
+    # it still answers 200 {"status": "UP"} while token requests fail outright
+    # (measured on the pinned 26.7.2: 400 unauthorized_client, "Unexpected error
+    # when authenticating client"). The exact code is not the point; health
+    # disagreeing with reality is. A probe that calls a server healthy when it
+    # cannot serve is worse than no probe, because whatever consumes it next,
+    # such as a `condition: service_healthy` gate, inherits the lie. 26.7.2 also
+    # nests per-subsystem checks in that body, each with its own "status": "UP",
+    # so a naive grep would match even a DOWN aggregate. Nothing consumes a
+    # keycloak healthcheck today in any case: the greffer derives instance status
+    # from container state, not health. KC_HEALTH_ENABLED is left unset for the
+    # same reason: with no probe consuming it and port 9000 unpublished, it would
+    # be config that does nothing. Set it, and add a probe, if upstream ships a
+    # datasource-aware readiness endpoint.
+
+  postgresql:
+    image: postgres:16-alpine
+    # Same reasoning as keycloak above: must survive a daemon or host restart.
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "keycloak"
+      POSTGRES_USER: "keycloak"
+      # POSTGRES_PASSWORD injected (same config as KC_DB_PASSWORD above)
+      POSTGRES_PASSWORD: ""
+    # Hot DB backup hooks, read by the greffer as service labels (same shape as
+    # the umami entry). dump: pg_dump custom format to stdout; restore:
+    # pg_restore from stdin, --clean --if-exists so a re-restore drops and
+    # recreates. Both run as the local superuser over the unix socket (trust
+    # auth), so no password reaches the command line.
+    labels:
+      com.greffon.backup.dump: "pg_dump -U keycloak -d keycloak -Fc"
+      com.greffon.backup.restore: "pg_restore -U keycloak -d keycloak --clean --if-exists --no-owner --single-transaction"
+    # Required by the greffer's hot DB restore (_wait_db_healthy): it waits for
+    # this healthcheck before streaming pg_restore in.
+    healthcheck:
+      # -h 127.0.0.1 on purpose: the postgres entrypoint runs a TEMPORARY server
+      # on the unix socket during initdb, and a socket-based pg_isready reports
+      # ready against it a fraction of a second before the real server exists
+      # (measured ~0.26s, and the probe interval is 10s, so hitting it is
+      # unlikely rather than impossible). That temp server sets
+      # listen_addresses='', so forcing TCP cannot see it.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
