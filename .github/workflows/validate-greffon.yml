@@ -242,11 +242,21 @@ jobs:
                 done
           done
 
+      # Instances must NOT be deployed at https://localhost. Loopback is a secure
+      # context to browsers and to several server frameworks, so cookie flags that
+      # would be wrong on a real hostname come out right there and the smoke test
+      # passes. A Keycloak session-cookie regression reached a green pipeline
+      # exactly this way. Mapping a name in /etc/hosts keeps it resolvable with no
+      # external DNS dependency.
+      - name: Map the smoke hostname to loopback
+        run: echo "127.0.0.1 catalog-ci.test" | sudo tee -a /etc/hosts
+
       - name: Deploy + smoke each changed greffon (greffer-only)
         working-directory: greffer
         env:
           GREFFER_DIR: ${{ github.workspace }}/greffer
           CHANGED_DIRS: ${{ needs.validate.outputs.changed_dirs }}
+          CI_PUBLIC_HOST: catalog-ci.test
         run: |
           # Run under the greffer's poetry env so uvicorn + docker SDK (with the
           # correct urllib3<2) are on the interpreter the runner launches.

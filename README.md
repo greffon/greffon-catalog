@@ -242,6 +242,49 @@ Rules and gotchas (all validator-enforced):
 - **Brace safety.** Avoid Jinja-colliding braces in the file body; in particular, Keycloak's own `${...}` placeholders must not sit adjacent to `{`/`}`.
 - **Rollout.** Render-flagged greffons require a render-capable greffer. Upgrade workers before publishing a render-flagged catalog entry (ship order: greffer → manager/front → catalog).
 
+## Cookie security and why CI does not use `localhost`
+
+Every instance is served over TLS by the greffer's per-instance nginx sidecar, which
+terminates TLS and proxies **plain HTTP** upstream. Apps that decide cookie flags from the
+perceived request scheme therefore see HTTP, and unless they are told they sit behind a
+TLS-terminating proxy they will emit session cookies without `Secure`, and downgrade
+`SameSite=None` to `Lax`.
+
+That is not theoretical. The Keycloak entry shipped this way briefly: with `KC_PROXY_HEADERS`
+unset, `AUTH_SESSION_ID` and `KC_RESTART` came back `SameSite=Lax` with no `Secure`. A session
+cookie without `Secure` can ride a plaintext request, and `Lax` breaks iframe SSO.
+
+**CI could not see it**, because it deployed every instance at `https://localhost:<port>` and
+loopback is a secure context: the same image emits `Secure; SameSite=None` on localhost no
+matter how it is configured. Demonstrated directly, same entry and same assertion, only the
+host differing:
+
+| `CI_PUBLIC_HOST` | Result |
+|---|---|
+| `localhost` | PASS (regression invisible) |
+| a real hostname | FAIL: `session cookie lacks Secure: AUTH_SESSION_ID` |
+
+So the smoke harness now defaults `CI_PUBLIC_HOST` to `catalog-ci.test`, which the workflow
+maps to `127.0.0.1` in `/etc/hosts`. Running the harness locally needs the same mapping, or
+`CI_PUBLIC_HOST=localtest.me` (a public name that resolves to loopback); the harness fails fast
+with instructions if the name does not resolve. **Do not set it back to `localhost`.**
+
+The harness also applies a generic check after each deploy: it fetches the instance root and
+fails the entry if a cookie is `HttpOnly` but not `Secure`. Be clear about its reach, because it
+is a floor rather than coverage: it only fires when **the root** sets a cookie. Keycloak, for
+instance, sets its session cookies on the authorization endpoint, so the generic check passes it
+and the real assertion lives in that entry's own spec.
+
+If your app has sessions, assert this in your `smoke_test.spec.ts` rather than relying on the
+floor:
+
+```ts
+const setCookie = r.headersArray().filter(h => h.name.toLowerCase() === 'set-cookie');
+for (const { value } of setCookie) {
+  if (/HttpOnly/i.test(value)) expect(value).toMatch(/;\s*Secure/i);
+}
+```
+
 ## CI Quality Gate
 
 Every PR to this repo runs `.github/scripts/validate_catalog.py`, which enforces:

@@ -53,7 +53,15 @@ GREFFER_DIR = os.environ.get("GREFFER_DIR", os.path.join(os.path.dirname(CATALOG
 GREFFER_TOKEN = os.environ.get("CI_GREFFER_TOKEN", "ci-greffer-token")
 GREFFER_PORT = int(os.environ.get("CI_GREFFER_PORT", "9001"))
 CATALOG_PORT = int(os.environ.get("CI_CATALOG_PORT", "9999"))
-PUBLIC_HOST = os.environ.get("CI_PUBLIC_HOST", "localhost")
+# NOT "localhost", deliberately. Browsers and several server frameworks treat
+# loopback as a secure context, so an instance deployed at https://localhost:<port>
+# gets cookie flags it would not get on a real hostname. Keycloak is the proven
+# case: with its proxy-headers setting removed, session cookies lose `Secure` and
+# drop from SameSite=None to Lax on a real host, while on localhost they stay
+# `Secure; SameSite=None` and CI goes green. That regression reached a green
+# pipeline exactly this way. The workflow maps this name to 127.0.0.1 in
+# /etc/hosts, so it resolves locally with no external DNS dependency.
+PUBLIC_HOST = os.environ.get("CI_PUBLIC_HOST", "catalog-ci.test")
 GREFFER_BASE = f"http://127.0.0.1:{GREFFER_PORT}"
 TOKEN_HEADER = "X-GREFFON-TOKEN"
 # GREFFON_PATH for the greffer: each instance's rendered compose lands at
@@ -83,7 +91,7 @@ def make_cert(tmp: str) -> dict:
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
          "-keyout", key_path, "-out", crt_path, "-days", "2",
-         "-subj", "/CN=localhost"],
+         "-subj", f"/CN={PUBLIC_HOST}"],
         check=True, capture_output=True,
     )
     with open(crt_path) as f:
@@ -180,6 +188,26 @@ def url_env_name(greffon_dir: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", greffon_dir.upper()) + "_URL"
 
 
+def require_public_host_resolves() -> None:
+    """Fail fast, and legibly, when PUBLIC_HOST does not resolve.
+
+    The default is deliberately not `localhost` (see PUBLIC_HOST above), which
+    means a fresh local checkout has nothing mapping it. Without this check that
+    shows up much later as a connection error against the deployed instance and
+    reads like a broken greffon, which is the sort of misdirection that costs an
+    afternoon."""
+    try:
+        socket.gethostbyname(PUBLIC_HOST)
+    except OSError:
+        raise SystemExit(
+            f"CI_PUBLIC_HOST={PUBLIC_HOST!r} does not resolve.\n"
+            f"  CI maps it in /etc/hosts (see the workflow's 'Map the smoke hostname' step).\n"
+            f"  Locally, either add it:   echo '127.0.0.1 {PUBLIC_HOST}' | sudo tee -a /etc/hosts\n"
+            f"  or point it at a public loopback name:   CI_PUBLIC_HOST=localtest.me\n"
+            f"  Do NOT set it to 'localhost': loopback is a secure context, which hides\n"
+            f"  cookie-security regressions (that is why this default changed).")
+
+
 def wait_port(port: int, name: str, timeout: int = 30) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -250,6 +278,32 @@ def teardown(instance_id: str) -> None:
     if os.path.isfile(compose_file):
         subprocess.run(["docker", "compose", "-f", compose_file, "down", "-v", "--remove-orphans"],
                        capture_output=True)
+
+
+def check_cookie_security(entry_dir: str, url: str) -> bool:
+    """Every instance is served over TLS, so a session cookie without `Secure` is
+    wrong regardless of the app. Fetch the instance root and assert that any
+    HttpOnly cookie it sets also carries Secure.
+
+    This is the generic half of the localhost fix: PUBLIC_HOST makes the flaw
+    observable, this makes it observed without each entry having to remember. It
+    only fires when the root actually sets a cookie, so it is a floor, not full
+    coverage."""
+    try:
+        r = requests.get(url, verify=False, timeout=30, allow_redirects=False)
+    except requests.RequestException as e:
+        log(f"{entry_dir}: cookie check skipped, root not fetchable ({e})")
+        return True
+    bad = [c for c in r.raw.headers.get_all("Set-Cookie") or []
+           if "httponly" in c.lower() and not re.search(r";\s*secure", c, re.I)]
+    if bad:
+        for c in bad:
+            log(f"{entry_dir}: INSECURE COOKIE {c.split('=')[0]} is HttpOnly but not Secure")
+        log(f"{entry_dir}: served over TLS, so an HttpOnly cookie without Secure can ride "
+            f"a plaintext request. If the app decides this from the request scheme, it "
+            f"needs telling it is behind a TLS-terminating proxy.")
+        return False
+    return True
 
 
 def run_smoke(entry_dir: str, url: str) -> bool:
@@ -328,6 +382,7 @@ def main() -> int:
     shutil.rmtree(tmp_data, ignore_errors=True)
     os.makedirs(tmp_data, exist_ok=True)
 
+    require_public_host_resolves()
     greffer_proc = start_greffer(tmp_data)
     catalog_proc = start_catalog_server()
     results = {}
@@ -342,7 +397,8 @@ def main() -> int:
             try:
                 cert = make_cert(tmp_cert)
                 instance_id, url = deploy(entry, metadata, cert, required_config)
-                results[entry] = run_smoke(entry, url)
+                cookies_ok = check_cookie_security(entry, url)
+                results[entry] = run_smoke(entry, url) and cookies_ok
             except Exception as e:  # noqa: BLE001 — report per-entry, continue
                 log(f"{entry}: FAILED — {e}")
                 results[entry] = False
