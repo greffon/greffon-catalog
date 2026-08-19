@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import re
 import secrets
@@ -92,12 +93,49 @@ def make_cert(tmp: str) -> dict:
     return {"certificate": cert, "private_key": key}
 
 
+def load_required_config(entry_dir: str) -> dict:
+    """``required_config`` from the entry's optional smoke_test.json (may be {})."""
+    path = os.path.join(CATALOG_DIR, entry_dir, "smoke_test.json")
+    if not os.path.isfile(path):
+        return {}
+    with open(path) as f:
+        pins = (json.load(f) or {}).get("required_config") or {}
+    if pins:
+        log(f"{entry_dir}: pinning config {sorted(pins)} from smoke_test.json")
+    return pins
+
+
 # ── build the /start/ configurations[] from an entry's metadata.json ───────────
-def build_configurations(metadata: dict) -> list:
+def build_configurations(metadata: dict, required_config: dict | None = None) -> list:
+    """Values for the /start/ payload; ``required_config`` pins them by title.
+
+    A spec that logs in has to know the credential it is logging in with.
+    Without a pin, a config with an empty default (an admin password) gets a
+    fresh random value on every run — see the fallback at the end of this
+    function — so any credential hardcoded in a spec can never match, and the
+    spec fails on every run. smoke_test.json's ``required_config`` is the
+    documented way to pin one (.github/README.md), but this greffer-only
+    harness never read it, silently breaking every such spec.
+    """
+    required_config = required_config or {}
+    titles = {c.get("title") for c in metadata.get("configurations", []) or []}
+    unknown = set(required_config) - titles
+    if unknown:
+        # A typo'd key would otherwise pin nothing and read as working — the
+        # exact silent-no-op this function is being fixed for.
+        raise SystemExit(
+            f"smoke_test.json required_config keys match no configuration title: {sorted(unknown)}")
     configs = []
     for cfg in metadata.get("configurations", []) or []:
         dests = cfg.get("destinations", []) or []
         types = {d.get("type") for d in dests}
+        pinned = required_config.get(cfg.get("title"))
+        if pinned is not None and types & {"smtp", "file", "json"}:
+            # Only a scalar {"value": ...} config can be pinned; smtp/file/json
+            # values have a different shape entirely.
+            raise SystemExit(
+                f"smoke_test.json required_config pins {cfg.get('title')!r}, but its "
+                f"destinations are {'/'.join(sorted(types))} — only scalar configs can be pinned")
         # SMTP-only configs carry no user value; the greffer fills them from the
         # integrations.smtp blob (or strips them when no integration is linked).
         if types == {"smtp"}:
@@ -122,7 +160,9 @@ def build_configurations(metadata: dict) -> list:
         schema_val = (cfg.get("schema", {}) or {}).get("properties", {}).get("value", {}) or {}
         fmt = schema_val.get("format")
         default = (cfg.get("default_value", {}) or {}).get("value")
-        if fmt == "greffon-secret":
+        if pinned is not None:
+            value = str(pinned)  # explicit smoke_test.json pin wins
+        elif fmt == "greffon-secret":
             value = gen_secret()
         elif fmt == "greffon-secret-alnum":
             value = gen_secret_alnum()
@@ -152,7 +192,8 @@ def wait_port(port: int, name: str, timeout: int = 30) -> None:
     raise SystemExit(f"{name} did not come up on :{port}")
 
 
-def deploy(entry_dir: str, metadata: dict, cert: dict) -> tuple[str, str]:
+def deploy(entry_dir: str, metadata: dict, cert: dict,
+           required_config: dict | None = None) -> tuple[str, str]:
     """POST /start/, wait for running, return (instance_id, url)."""
     # Must be a real UUID: /start/ accepts any [A-Za-z0-9_-] id, but the status
     # route is typed `greffon_id: UUID` and 422s on anything else, so the poll
@@ -164,7 +205,7 @@ def deploy(entry_dir: str, metadata: dict, cert: dict) -> tuple[str, str]:
         "id": instance_id,
         "repository_url": repo_url,
         "cert": cert,
-        "configurations": build_configurations(metadata),
+        "configurations": build_configurations(metadata, required_config),
         "ports": {},          # empty -> greffer fallback builds https://host:port
         "integrations": {},   # no SMTP integration -> smtp env keys stripped
     }
@@ -283,7 +324,6 @@ def main() -> int:
         return 0
     log(f"entries: {entries}")
 
-    import json
     tmp_data = DATA_DIR
     shutil.rmtree(tmp_data, ignore_errors=True)
     os.makedirs(tmp_data, exist_ok=True)
@@ -295,12 +335,13 @@ def main() -> int:
         for entry in entries:
             with open(os.path.join(CATALOG_DIR, entry, "metadata.json")) as f:
                 metadata = json.load(f)
+            required_config = load_required_config(entry)
             tmp_cert = os.path.join(tmp_data, "certs", entry.replace("/", "_"))
             os.makedirs(tmp_cert, exist_ok=True)
             instance_id = None
             try:
                 cert = make_cert(tmp_cert)
-                instance_id, url = deploy(entry, metadata, cert)
+                instance_id, url = deploy(entry, metadata, cert, required_config)
                 results[entry] = run_smoke(entry, url)
             except Exception as e:  # noqa: BLE001 — report per-entry, continue
                 log(f"{entry}: FAILED — {e}")
