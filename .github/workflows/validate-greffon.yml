@@ -211,9 +211,16 @@ jobs:
 
       - name: Install Playwright
         working-directory: greffon-catalog
+        # No --with-deps: it runs apt-get, and the runner's azure apt mirror
+        # being down hung two consecutive runs for the full 45-minute job
+        # budget (2026-08-19). The ubuntu-24.04 runner image already ships
+        # every library chromium needs; the browser binary itself comes from
+        # the Playwright CDN, not apt. The step timeout keeps any future
+        # environment hang from consuming the whole job budget.
+        timeout-minutes: 10
         run: |
           npm install --silent
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
 
       # Self-built images (a greffon shipping an image/ dir, e.g. remotion or
       # openfamily) are only published to GHCR on push to main, so the tag the
