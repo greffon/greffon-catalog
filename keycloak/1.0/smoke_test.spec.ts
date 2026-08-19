@@ -29,7 +29,8 @@ const URL = process.env.KEYCLOAK_URL!;
  * Keycloak has already renamed those variables once (KEYCLOAK_ADMIN ->
  * KC_BOOTSTRAP_ADMIN_USERNAME in 26.0); the next rename would leave the operator
  * with an IdP they cannot sign in to while smoke stayed green. Verified
- * load-bearing: the same request with a wrong password returns 401.
+ * load-bearing: the same request with a wrong password returns 400
+ * invalid_grant, and the assertion demands 200.
  *
  * Why this asserts instead of `test.skip` on a missing URL, unlike the other
  * specs in this repo. CI never runs the suite as a whole: ci_greffer_smoke.py
@@ -62,8 +63,8 @@ test.describe('Keycloak', () => {
 
     // These two literals MUST match smoke_test.json's `required_config`, which is
     // what pins them for the deploy. Drop the pin and ci_greffer_smoke.py invents a
-    // random password, this returns 401, and the test fails: that coupling is the
-    // point, it keeps `required_config` load-bearing rather than decorative.
+    // random password, this returns 400 invalid_grant, the test fails, and that
+    // coupling is the point: it keeps `required_config` load-bearing, not decorative.
     const token = await request.post(`${base}/realms/master/protocol/openid-connect/token`, {
       form: {
         grant_type: 'password',

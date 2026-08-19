@@ -8,8 +8,9 @@ version: "3"
 # they are; this entry exists so Grafana, Forgejo, custom app deploys and any
 # external service can federate against one login the operator controls.
 #
-#   {{ instance_url }}/                     -> account console
+#   {{ instance_url }}/                     -> 302 to /admin/
 #   {{ instance_url }}/admin/               -> admin console (bootstrap admin)
+#   {{ instance_url }}/realms/master/account/ -> account console
 #   {{ instance_url }}/realms/<realm>/...   -> OIDC / SAML endpoints
 #
 # Production mode, not start-dev: state lives in Postgres so realms, clients and
@@ -51,9 +52,10 @@ services:
     restart: unless-stopped
     # `start` (production) rather than `start-dev`. The stock image is not
     # pre-built for this configuration, so the first boot runs a Quarkus
-    # augmentation (~5s, logged as "Updating the server image") and then the
-    # Postgres schema migration before serving. Measured cold start against a
-    # real greffer: ~20s once the image is pulled.
+    # augmentation (logged as "Updating the server image") and then the Postgres
+    # schema migration before serving. Roughly 5s and 20s respectively on an idle
+    # machine once the images are pulled; both scale with load, and a contended
+    # host has been measured at 10s and 36s.
     command: ["start"]
     # Bare list, deliberately, and this is load-bearing: do not "improve" it to
     # `condition: service_healthy`. That was tried and measured, and it is worse
@@ -94,18 +96,19 @@ services:
       KC_HOSTNAME: "{{ instance_url }}"
       # Accept plain HTTP from the sidecar (TLS is terminated one hop up).
       KC_HTTP_ENABLED: "true"
-      # Health endpoints on the management interface (port 9000, not published).
-      KC_HEALTH_ENABLED: "true"
     # NO healthcheck here, for an upstream reason rather than squeamishness.
     # Keycloak's /health/ready carries no datasource check: with Postgres stopped
-    # it still answers 200 {"status": "UP"} while every token request 500s
-    # (checked on 26.3.4 and 26.7.2). A probe that calls a server healthy when it
+    # it still answers 200 {"status": "UP"} while token requests fail outright
+    # (500 on 26.7.2, 400 on 26.3.4; the point is that health disagrees with
+    # reality on both). A probe that calls a server healthy when it
     # cannot serve is worse than no probe, because whatever consumes it next,
     # such as a `condition: service_healthy` gate, inherits the lie. 26.7.2 also
     # nests per-subsystem checks in that body, each with its own "status": "UP",
     # so a naive grep would match even a DOWN aggregate. Nothing consumes a
     # keycloak healthcheck today in any case: the greffer derives instance status
-    # from container state, not health. Revisit if upstream ships a
+    # from container state, not health. KC_HEALTH_ENABLED is left unset for the
+    # same reason: with no probe consuming it and port 9000 unpublished, it would
+    # be config that does nothing. Set it, and add a probe, if upstream ships a
     # datasource-aware readiness endpoint.
 
   postgresql:
