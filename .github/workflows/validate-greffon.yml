@@ -209,11 +209,46 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install Playwright
+      # Resolve the pinned version first so the cache key below is exact rather
+      # than a guess, and so a @playwright/test bump invalidates it on its own.
+      - name: Install node deps
+        id: npmdeps
         working-directory: greffon-catalog
+        timeout-minutes: 10
         run: |
           npm install --silent
-          npx playwright install --with-deps chromium
+          echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.npmdeps.outputs.version }}-chromium
+
+      # NOT `--with-deps`. That flag shells out to `sudo sh -c "apt-get update &&
+      # apt-get install"`, and on this runner it hung three separate times for the
+      # full 45-minute job timeout, emitting no output at all: not one apt line, so
+      # it stalled before apt printed anything (mirror stall, or blocked on the
+      # dpkg lock that unattended-upgrades holds on a fresh runner). The evidence
+      # is the cancelled job's orphan list, which names
+      # `npm exec playwright install --with-deps chromium` with `sh` and `node`
+      # children and nothing else. Steps 9 onward were skipped, so the greffon was
+      # never deployed and the run reported a red check that was not a real
+      # failure.
+      #
+      # The ubuntu-latest image already ships the shared libraries Chromium needs
+      # (it preinstalls Chrome, Firefox and Edge), so the browser binary alone is
+      # enough here. If a launch ever does fail on a missing library, add a bounded
+      # apt step installing exactly that library with
+      # `-o DPkg::Lock::Timeout=120`, rather than restoring an unbounded helper.
+      #
+      # timeout-minutes is the point as much as the flag change: a hang now fails
+      # in 10 minutes naming this step, instead of consuming the job budget and
+      # surfacing as a generic cancellation that reads like a broken greffon.
+      - name: Install Playwright browser
+        working-directory: greffon-catalog
+        timeout-minutes: 10
+        run: npx playwright install chromium
 
       # Self-built images (a greffon shipping an image/Dockerfile, e.g.
       # remotion) are only published to GHCR on push to main, so the tag the
