@@ -65,7 +65,19 @@ jobs:
           # charset. Newlines cannot survive that charset.
           changed=()
           unsafe=()
+          # Detected inside this NUL-safe loop rather than by a second grepped
+          # `git diff`: one git call, and no pattern matching against raw paths.
+          # The harness is more than the runner script. playwright.config.ts
+          # governs every spec (run_smoke shells `npx playwright test` from the
+          # catalog root) and package.json pins @playwright/test, so a change to
+          # either breaks smoking just as thoroughly as the script itself.
+          harness_changed=0
           while IFS= read -r -d "" path; do
+            case "$path" in
+              .github/scripts/ci_greffer_smoke.py) harness_changed=1 ;;
+              .github/workflows/validate-greffon.yml) harness_changed=1 ;;
+              playwright.config.ts|package.json) harness_changed=1 ;;
+            esac
             case "$path" in
               .*) continue ;;
               */*/metadata.json|*/*/docker-compose.yml) ;;
@@ -103,6 +115,47 @@ jobs:
             echo "::error::Greffon directory names must match [A-Za-z0-9_][A-Za-z0-9._-]* in both the name and version component. Rename these and push again:"
             printf '  %s\n' "${unsafe[@]}"
             exit 1
+          fi
+          # A change to the smoke harness or to this workflow must re-smoke
+          # SOMETHING, or the change ships unexercised. The detector above only
+          # matches entry files, and skips dotted paths outright, so a PR that
+          # touches only .github/ produces an empty list and the integration job
+          # runs against nothing while reporting green. That is how a harness
+          # regression would reach main unnoticed. Fall back to a canary entry:
+          # excalidraw is the fast static app the job comment already names as a
+          # proven end-to-end case.
+          if [ ${#changed[@]} -eq 0 ] && [ "$harness_changed" = "1" ]; then
+            # Pick the first existing entry that has a smoke spec rather than
+            # naming one. Hard-coding excalidraw meant a PR delisting it while
+            # touching the harness would inject a directory that had just been
+            # deleted, and the run would fail citing a greffon the author removed
+            # on purpose, with nothing pointing at the canary. This also keeps the
+            # [ -d ] invariant the strict-validate step relies on downstream.
+            # Prefer excalidraw (the fast static app this job's comment already
+            # names as proven end to end), but do not hard-code it: fall back to
+            # the first real entry with a spec so delisting it while touching the
+            # harness does not inject a directory that no longer exists.
+            canary=""
+            if [ -d "excalidraw/1.0" ] && [ -f "excalidraw/1.0/smoke_test.spec.ts" ]; then
+              canary="excalidraw/1.0"
+            else
+              for d in */1.0; do
+                # Skip _template: it sorts first and is a scaffold full of TODO
+                # placeholders that cannot deploy, so picking it would fail every
+                # harness PR with an error about the template, not the change.
+                case "$d" in _*) continue ;; esac
+                [ -d "$d" ] && [ -f "$d/smoke_test.spec.ts" ] && canary="$d" && break
+              done
+            fi
+            if [ -n "$canary" ]; then
+              echo "Harness changed with no greffon changes: smoking canary $canary."
+              changed+=("$canary")
+            else
+              # Loud, never silent: a harness change that exercises nothing is
+              # exactly the hole this fallback exists to close.
+              echo "::error::Harness changed but no greffon with a smoke spec was found to use as a canary."
+              exit 1
+            fi
           fi
           CHANGED=$(printf '%s\n' ${changed[@]+"${changed[@]}"})
           echo "changed_dirs<<EOF" >> "$GITHUB_OUTPUT"
@@ -277,11 +330,21 @@ jobs:
                 done
           done
 
+      # Instances must NOT be deployed at https://localhost. Loopback is a secure
+      # context to browsers and to several server frameworks, so cookie flags that
+      # would be wrong on a real hostname come out right there and the smoke test
+      # passes. A Keycloak session-cookie regression reached a green pipeline
+      # exactly this way. Mapping a name in /etc/hosts keeps it resolvable with no
+      # external DNS dependency.
+      - name: Map the smoke hostname to loopback
+        run: echo "127.0.0.1 catalog-ci.test" | sudo tee -a /etc/hosts
+
       - name: Deploy + smoke each changed greffon (greffer-only)
         working-directory: greffer
         env:
           GREFFER_DIR: ${{ github.workspace }}/greffer
           CHANGED_DIRS: ${{ needs.validate.outputs.changed_dirs }}
+          CI_PUBLIC_HOST: catalog-ci.test
         run: |
           # Run under the greffer's poetry env so uvicorn + docker SDK (with the
           # correct urllib3<2) are on the interpreter the runner launches.

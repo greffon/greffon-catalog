@@ -242,6 +242,69 @@ Rules and gotchas (all validator-enforced):
 - **Brace safety.** Avoid Jinja-colliding braces in the file body; in particular, Keycloak's own `${...}` placeholders must not sit adjacent to `{`/`}`.
 - **Rollout.** Render-flagged greffons require a render-capable greffer. Upgrade workers before publishing a render-flagged catalog entry (ship order: greffer → manager/front → catalog).
 
+## Cookie security and why CI does not use `localhost`
+
+Every instance is served over TLS by the greffer's per-instance nginx sidecar, which
+terminates TLS and proxies **plain HTTP** upstream. Unless an app is told it sits behind a
+TLS-terminating proxy, it can emit session cookies without `Secure` and downgrade
+`SameSite=None` to `Lax`.
+
+That is not theoretical. The Keycloak entry shipped this way briefly: with `KC_PROXY_HEADERS`
+unset, `AUTH_SESSION_ID` and `KC_RESTART` came back `SameSite=Lax` with no `Secure`. A session
+cookie without `Secure` can ride a plaintext request, and `Lax` breaks iframe SSO.
+
+**CI could not see it**, for two reasons that both had to be fixed. It deployed every instance
+at `https://localhost:<port>`, and the discriminator here is the **host**, not the scheme: apps
+applying the W3C potentially-trustworthy-origin rule server-side (Keycloak's
+`SecureContextResolver` accepts `scheme == https` **or** a loopback host) treat localhost as
+trusted however they are configured. And nothing looked at the cookies: the Keycloak spec
+exercised discovery and a password grant, neither of which sets one. Demonstrated directly, same
+entry and same assertion, only the host differing:
+
+| `CI_PUBLIC_HOST` | Result |
+|---|---|
+| `localhost` | PASS (regression invisible) |
+| a real hostname | FAIL: `session cookie AUTH_SESSION_ID is HttpOnly but not Secure` |
+
+So the smoke harness now defaults `CI_PUBLIC_HOST` to `catalog-ci.test`, which the workflow
+maps to `127.0.0.1` in `/etc/hosts`. Running the harness locally needs the same mapping, or
+`CI_PUBLIC_HOST=localtest.me` (a public name that resolves to loopback); the harness fails fast
+with instructions if the name does not resolve. **Do not set it back to `localhost`.**
+
+The harness also applies a generic check after each deploy: it polls the instance root until it
+answers non-5xx (compose reporting `running` is not the same as the app serving, and a 502 carries
+no cookies), then fails the entry if a cookie is `HttpOnly` but not `Secure`.
+
+Be clear about its reach, because it is a floor rather than coverage: **it only sees cookies set on
+the root**. Keycloak sets its session cookies on the authorization endpoint, so the generic check
+cannot see them, and `keycloak/1.0/smoke_test.spec.ts` carries the assertion itself. That split is
+the general rule: the generic check is a backstop for apps that set a session cookie on `/`, and
+anything else needs its own assertion.
+
+Scope an audit by the right rule. The hostname matters only for apps applying the secure-context
+rule to the **host**. A framework keying purely on the scheme is unaffected by it: Django's
+`HttpRequest.is_secure()` is `return self.scheme == "https"` with no loopback carve-out, so a
+Django greffon emits the same flags either way and needs its proxy and scheme settings checked
+directly.
+
+If your app has sessions, assert this in your `smoke_test.spec.ts` rather than relying on the
+floor:
+
+```ts
+const setCookie = r.headersArray().filter((h) => h.name.toLowerCase() === 'set-cookie');
+// Assert the list is non-empty FIRST. Without this the loop below passes happily
+// when the response sets no cookies at all, which is the same vacuous-green shape
+// this whole section exists to remove: point it at the endpoint that really sets
+// your session cookie, not just at `/`.
+expect(setCookie.length, 'expected this endpoint to set cookies').toBeGreaterThan(0);
+for (const { value } of setCookie) {
+  const attrs = value.split(';').slice(1).map((a) => a.trim().split('=')[0].toLowerCase());
+  if (attrs.includes('httponly')) {
+    expect(value, `cookie ${value.split('=')[0]} is HttpOnly but not Secure`).toMatch(/;\s*Secure/i);
+  }
+}
+```
+
 ## CI Quality Gate
 
 Every PR to this repo runs `.github/scripts/validate_catalog.py`, which enforces:

@@ -21,7 +21,7 @@ instance_url
 ------------
 We send an empty `ports` map, so the greffer takes its documented dev/test
 fallback and builds `instance_url = ${GREFFER_PUBLIC_SCHEME}://${GREFFER_PUBLIC_HOST}:<allocated-port>`
-— i.e. https://localhost:<port>, WITH the real port. That mirrors a real deploy
+— i.e. https://<CI_PUBLIC_HOST>:<port>, WITH the real port. That mirrors a real deploy
 closely and avoids the portless-placeholder problem a manager-driven harness has.
 
 Usage
@@ -53,7 +53,30 @@ GREFFER_DIR = os.environ.get("GREFFER_DIR", os.path.join(os.path.dirname(CATALOG
 GREFFER_TOKEN = os.environ.get("CI_GREFFER_TOKEN", "ci-greffer-token")
 GREFFER_PORT = int(os.environ.get("CI_GREFFER_PORT", "9001"))
 CATALOG_PORT = int(os.environ.get("CI_CATALOG_PORT", "9999"))
-PUBLIC_HOST = os.environ.get("CI_PUBLIC_HOST", "localhost")
+# NOT "localhost", deliberately, and the mechanism is worth stating precisely
+# because the obvious guess is wrong. The discriminator is the HOST, not the
+# perceived scheme. Apps that implement the W3C potentially-trustworthy-origin
+# rule server-side treat a loopback Host as secure REGARDLESS of scheme: Keycloak's
+# SecureContextResolver accepts `scheme == https` OR a loopback host, and
+# DefaultCookieProvider then drops `Secure` and downgrades SameSite=None to Lax
+# when the origin is not trusted. Measured on 26.7.2 with the request scheme held
+# at http and X-Forwarded-Proto: https sent in every case, varying only the Host:
+#
+#   Host localhost,        proxy-headers unset -> Secure; SameSite=None
+#   Host catalog-ci.test,  proxy-headers unset -> no Secure; SameSite=Lax
+#   Host catalog-ci.test,  xforwarded          -> Secure; SameSite=None
+#
+# So deploying at localhost hid a real regression, and CI went green on it.
+#
+# Note what this does NOT cover, so nobody scopes an audit by the wrong rule:
+# frameworks that key purely on the scheme are unaffected by the hostname. Django's
+# HttpRequest.is_secure() is `return self.scheme == "https"` with no loopback
+# carve-out, so a Django greffon emits identical cookie flags either way and needs
+# its proxy/scheme settings checked directly instead.
+#
+# The workflow maps this name to 127.0.0.1 in /etc/hosts, so it resolves with no
+# external DNS dependency.
+PUBLIC_HOST = os.environ.get("CI_PUBLIC_HOST", "catalog-ci.test")
 GREFFER_BASE = f"http://127.0.0.1:{GREFFER_PORT}"
 TOKEN_HEADER = "X-GREFFON-TOKEN"
 # GREFFON_PATH for the greffer: each instance's rendered compose lands at
@@ -83,7 +106,12 @@ def make_cert(tmp: str) -> dict:
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
          "-keyout", key_path, "-out", crt_path, "-days", "2",
-         "-subj", "/CN=localhost"],
+         "-subj", f"/CN={PUBLIC_HOST}",
+         # SAN, not just CN. OpenSSL and Chromium both ignore CN for hostname
+         # matching, so a CN-only cert is name-invalid no matter what it says.
+         # Without this the cookie probe below could not verify the certificate
+         # and would be back to verify=False.
+         "-addext", f"subjectAltName=DNS:{PUBLIC_HOST}"],
         check=True, capture_output=True,
     )
     with open(crt_path) as f:
@@ -180,6 +208,50 @@ def url_env_name(greffon_dir: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", greffon_dir.upper()) + "_URL"
 
 
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                          r"(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+
+
+def require_public_host_usable() -> None:
+    """PUBLIC_HOST is interpolated into an OpenSSL DN and a SAN, so an illegal value
+    fails deep inside cert generation and surfaces as an opaque CalledProcessError on
+    every entry, with no hint that the host name is at fault. A '/' is worse than a
+    hard failure: OpenSSL silently reads it as a second RDN. Reject early instead."""
+    if not _HOSTNAME_RE.match(PUBLIC_HOST):
+        raise SystemExit(
+            f"CI_PUBLIC_HOST={PUBLIC_HOST!r} is not a valid DNS hostname.\n"
+            f"  It is interpolated into the throwaway certificate's subject and SAN, "
+            f"where a '/' becomes a second RDN and '+' or a label over 63 characters "
+            f"aborts openssl with an error that names neither this variable nor the host.")
+    if len(PUBLIC_HOST) > 64:
+        raise SystemExit(
+            f"CI_PUBLIC_HOST={PUBLIC_HOST!r} is {len(PUBLIC_HOST)} characters; the "
+            f"certificate CN field caps at 64 and openssl will refuse it.")
+
+
+def require_public_host_resolves() -> None:
+    """Fail fast, and legibly, when PUBLIC_HOST does not resolve.
+
+    The default is deliberately not `localhost` (see PUBLIC_HOST above), which
+    means a fresh local checkout has nothing mapping it. Without this check that
+    shows up much later as a connection error against the deployed instance and
+    reads like a broken greffon, which is the sort of misdirection that costs an
+    afternoon."""
+    try:
+        # getaddrinfo, not gethostbyname: the latter is IPv4-only, so mapping the
+        # name to ::1 would be reported as "does not resolve" when it plainly does.
+        socket.getaddrinfo(PUBLIC_HOST, None)
+    except OSError:
+        raise SystemExit(
+            f"CI_PUBLIC_HOST={PUBLIC_HOST!r} does not resolve.\n"
+            f"  CI maps it in /etc/hosts (see the workflow's 'Map the smoke hostname' step).\n"
+            f"  Locally, either add it:   echo '127.0.0.1 {PUBLIC_HOST}' | sudo tee -a /etc/hosts\n"
+            f"  or point it at a public loopback name:   CI_PUBLIC_HOST=localtest.me\n"
+            f"  Do NOT set it to 'localhost': apps applying the secure-context rule to\n"
+            f"  the Host treat loopback as trusted, which hides cookie-security\n"
+            f"  regressions (that is why this default changed).")
+
+
 def wait_port(port: int, name: str, timeout: int = 30) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -250,6 +322,78 @@ def teardown(instance_id: str) -> None:
     if os.path.isfile(compose_file):
         subprocess.run(["docker", "compose", "-f", compose_file, "down", "-v", "--remove-orphans"],
                        capture_output=True)
+
+
+def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
+    """Every instance is served over TLS, so a session cookie without `Secure` is
+    wrong regardless of the app. Fetch the instance root and fail the entry if any
+    HttpOnly cookie it sets lacks Secure.
+
+    Two things this deliberately does NOT do, because getting either wrong makes
+    the check worse than useless:
+
+    1. It does not fire immediately. ``deploy`` waits for compose to report
+       ``running``, which is not the same as the app serving: a slow starter has
+       the sidecar answering 502 for tens of seconds, and a 502 carries no cookies,
+       so a one-shot probe would pass vacuously on exactly the apps most likely to
+       be misconfigured. Poll until a non-5xx response.
+    2. It does not disable certificate verification. The repo rule is "never
+       verify=False", and beyond the rule, verifying is what proves the cert minted
+       for PUBLIC_HOST is actually usable for that name, which is the whole point of
+       moving off localhost. The cert is self-signed, so it is its own CA bundle.
+
+    Scope, stated so nobody over-trusts it: it only sees cookies set on the ROOT.
+    An app that sets its session cookie on a login or authorization endpoint (Keycloak
+    does) needs the assertion in its own spec. This is a floor, not coverage."""
+    deadline = time.time() + 180
+    r = None
+    while time.time() < deadline:
+        try:
+            r = requests.get(url, verify=ca_path, timeout=10, allow_redirects=False)
+        except requests.RequestException:
+            r = None
+        else:
+            if r.status_code < 500:
+                break
+        time.sleep(3)
+    if r is None or r.status_code >= 500:
+        log(f"{entry_dir}: cookie check INCONCLUSIVE, instance never returned a non-5xx "
+            f"response within 180s (last: {getattr(r, 'status_code', 'no response')}). "
+            f"Failing rather than passing silently: an unreachable instance proves nothing.")
+        return False
+    raw = r.raw.headers.get_all("Set-Cookie") if hasattr(r.raw, "headers") else None
+
+    def _attrs(header: str) -> set:
+        # Attributes only: everything after the first ';'. Matching the whole header
+        # would flag a cookie whose VALUE merely contains "httponly", and would
+        # accept a Secure belonging to a different cookie.
+        return {a.strip().split("=", 1)[0].lower() for a in header.split(";")[1:]}
+
+    bad = []
+    for c in raw or []:
+        attrs = _attrs(c)
+        if "httponly" in attrs and "secure" not in attrs:
+            bad.append(c)
+        # A server folding several cookies into one header (legal but rare; urllib3
+        # returns separate lines for separate headers) would hide the second cookie's
+        # attributes behind the first cookie's. Say so rather than quietly under-report.
+        if c.count("=") > 1 and ", " in c and "expires=" not in c.lower():
+            log(f"{entry_dir}: NOTE folded Set-Cookie header, only the first cookie's "
+                f"attributes were checked: {c[:80]}")
+    if bad:
+        for c in bad:
+            name = c.split("=", 1)[0] or "<unnamed>"
+            # ::error:: so this surfaces as a GitHub annotation rather than a log line
+            # the reader has to find above a fully green Playwright report.
+            print(f"::error::{entry_dir}: cookie {name} is HttpOnly but not Secure")
+            log(f"{entry_dir}: INSECURE COOKIE {name} is HttpOnly but not Secure")
+        log(f"{entry_dir}: instances are served over TLS, so an HttpOnly cookie without "
+            f"Secure can ride a plaintext request. The app needs telling it sits behind a "
+            f"TLS-terminating proxy. NOTE this may PREDATE your change: this check only "
+            f"began working recently, so the first PR to touch an entry can surface a "
+            f"long-standing defect. The smoke spec itself may well have passed.")
+        return False
+    return True
 
 
 def run_smoke(entry_dir: str, url: str) -> bool:
@@ -328,6 +472,8 @@ def main() -> int:
     shutil.rmtree(tmp_data, ignore_errors=True)
     os.makedirs(tmp_data, exist_ok=True)
 
+    require_public_host_usable()
+    require_public_host_resolves()
     greffer_proc = start_greffer(tmp_data)
     catalog_proc = start_catalog_server()
     results = {}
@@ -342,7 +488,9 @@ def main() -> int:
             try:
                 cert = make_cert(tmp_cert)
                 instance_id, url = deploy(entry, metadata, cert, required_config)
-                results[entry] = run_smoke(entry, url)
+                cookies_ok = check_cookie_security(
+                    entry, url, os.path.join(tmp_cert, "ci.crt"))
+                results[entry] = run_smoke(entry, url) and cookies_ok
             except Exception as e:  # noqa: BLE001 — report per-entry, continue
                 log(f"{entry}: FAILED — {e}")
                 results[entry] = False
