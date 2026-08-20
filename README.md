@@ -119,6 +119,51 @@ By default every compose-exposed port is **Tier A**: the greffer strips it from 
 
 `min_greffer_version` (top-level, optional) makes the manager refuse to start the greffon on an older greffer. It is required at `>= 0.3.3` whenever any port sets `same_port` (the floor that covers both the proxy and tunnel datapaths).
 
+### Hot Backup (`backup.volumes` + dump/restore hooks)
+
+By default an instance is **unclassified**, and a backup is COLD: the greffer stops the instance,
+snapshots its volumes, and starts it again. To get a HOT backup (no downtime, and databases
+captured by an app-aware dump rather than a raw volume snapshot) an entry must declare **both**
+halves. They live in different files and the platform reads them from different places, which is
+exactly why they drift.
+
+**metadata.json** classifies every volume:
+
+```json
+{
+  "backup": { "volumes": { "postgres_data": "database" } }
+}
+```
+
+| Class | Meaning |
+|-------|---------|
+| `data` | live-snapshot the volume with restic |
+| `regenerable` | skip it; the app rebuilds it on start |
+| `database` | do NOT snapshot; capture it with the dump hook below |
+
+**docker-compose.yml** carries the hooks, as SERVICE labels on the database service, plus a
+`healthcheck` the greffer's restore waits on before streaming the dump back in:
+
+```yaml
+  postgresql:
+    labels:
+      com.greffon.backup.dump: "pg_dump -U app -d app -Fc"
+      com.greffon.backup.restore: "pg_restore -U app -d app --clean --if-exists --no-owner --single-transaction"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app"]
+```
+
+Hooks run as argv (never a shell), so DB credentials must come from the container's environment
+rather than the command line. See `umami/1.0` and `keycloak/1.0` for worked examples.
+
+**The two halves must agree, and CI now enforces it.** Declaring hooks without `backup.volumes` is
+the trap: the manager reads classes only from metadata, so the instance stays unclassified, the
+backup silently falls back to COLD, and the hooks are never invoked. That shipped once, review-ready
+and validator-green, before this check existed. The validator now rejects hooks without a block, a
+`database` class without both hooks, more than one `database` volume or hook (the greffer's hot path
+is single-DB), a classified volume that is not a top-level compose volume, and a hook service with
+no healthcheck.
+
 ### Custom Schema Formats
 
 The platform reads JSON Schema's `format` keyword to dispatch special handling for fields whose intent goes beyond plain validation. Custom formats use the `greffon-` prefix to avoid collision with standard JSON Schema formats (`email`, `uri`, `date-time`, …) and with vendor formats from other tools.

@@ -421,6 +421,102 @@ def validate_greffon_dir(catalog_root, rel_dir):
         if val is not None and not isinstance(val, list):
             errors.append(f"{rel_dir}: metadata.json '{field}' must be a list")
 
+    # Hot-backup declarations (optional `backup.volumes`). Two halves have to
+    # agree and nothing checked that before: the compose-side dump/restore hooks,
+    # and the metadata-side volume classification the MANAGER reads. A real defect
+    # shipped review-ready because of it. The keycloak entry declared both hooks
+    # and a healthcheck, with comments saying the greffer read them, while
+    # metadata.json had no `backup` block. The manager takes classes only from
+    # there (`import_catalog.py`: `(meta.get("backup") or {}).get("volumes")`),
+    # empty means unclassified, unclassified means COLD, and the COLD path never
+    # invokes a dump hook. So every backup would have stopped the instance and
+    # snapshotted raw volumes while the hooks sat unused, and the validator was
+    # green. Mirrors the importer's shape checks, plus the pairing rules the
+    # importer cannot express because it never sees the compose.
+    _BACKUP_CLASSES = {"data", "regenerable", "database"}
+    backup_meta = meta.get("backup")
+    backup_vols = {}
+    if backup_meta is not None:
+        if not isinstance(backup_meta, dict):
+            errors.append(f"{rel_dir}: metadata.json 'backup' must be an object")
+        else:
+            raw_vols = backup_meta.get("volumes")
+            if raw_vols is not None and not isinstance(raw_vols, dict):
+                errors.append(
+                    f"{rel_dir}: 'backup.volumes' must be an object {{volume: class}}")
+            elif isinstance(raw_vols, dict):
+                backup_vols = raw_vols
+                for vol_name, vol_class in raw_vols.items():
+                    if not isinstance(vol_name, str) or not vol_name.strip():
+                        errors.append(
+                            f"{rel_dir}: 'backup.volumes' keys must be non-empty volume names")
+                        continue
+                    if vol_class not in _BACKUP_CLASSES:
+                        errors.append(
+                            f"{rel_dir}: backup.volumes[{vol_name!r}] must be one of "
+                            f"{sorted(_BACKUP_CLASSES)}, got {vol_class!r}")
+                    if compose_volumes and vol_name not in compose_volumes:
+                        errors.append(
+                            f"{rel_dir}: backup.volumes names {vol_name!r}, which is not a "
+                            f"top-level volume in docker-compose.yml. The greffer looks the "
+                            f"class up by compose name and would raise volume_unclassified")
+
+    # Dump/restore hooks are SERVICE labels the greffer reads at backup time.
+    dump_hooks, restore_hooks, hook_services = [], [], set()
+    if isinstance(compose, dict):
+        for svc_name, svc in (compose.get("services") or {}).items():
+            if not isinstance(svc, dict):
+                continue
+            labels = svc.get("labels") or {}
+            if isinstance(labels, list):  # list form: ["k=v", ...]
+                labels = dict(
+                    (item.split("=", 1) + [""])[:2] for item in labels if isinstance(item, str))
+            if not isinstance(labels, dict):
+                continue
+            if labels.get("com.greffon.backup.dump"):
+                dump_hooks.append(svc_name); hook_services.add(svc_name)
+            if labels.get("com.greffon.backup.restore"):
+                restore_hooks.append(svc_name); hook_services.add(svc_name)
+
+    db_vols = [v for v, c in backup_vols.items() if c == "database"]
+
+    if (dump_hooks or restore_hooks) and not backup_vols:
+        errors.append(
+            f"{rel_dir}: declares backup hooks on {sorted(hook_services)} but metadata.json has "
+            f"no 'backup.volumes'. The manager reads classes only from there, so the instance is "
+            f"unclassified, the backup falls back to COLD (stop the instance, snapshot volumes) "
+            f"and these hooks are never invoked. Add the block, or drop the hooks")
+    if db_vols and not dump_hooks:
+        errors.append(
+            f"{rel_dir}: backup.volumes classes {db_vols[0]!r} as 'database' but no service "
+            f"declares a 'com.greffon.backup.dump' label. The greffer refuses the backup with "
+            f"no_dump_hook rather than snapshotting a database volume it was told not to")
+    if db_vols and not restore_hooks:
+        errors.append(
+            f"{rel_dir}: backup.volumes classes {db_vols[0]!r} as 'database' but no service "
+            f"declares a 'com.greffon.backup.restore' label, so a backup could be taken and "
+            f"never restored")
+    if len(db_vols) > 1:
+        errors.append(
+            f"{rel_dir}: {len(db_vols)} volumes classed 'database' ({sorted(db_vols)}). The "
+            f"greffer's hot path is single-DB; the manager silently downgrades this entry to "
+            f"COLD backups, so the hooks would never run")
+    for kind, hooks in (("dump", dump_hooks), ("restore", restore_hooks)):
+        if len(hooks) > 1:
+            errors.append(
+                f"{rel_dir}: {len(hooks)} services declare a backup.{kind} hook ({sorted(hooks)}). "
+                f"The greffer refuses with multiple_database_unsupported")
+    # The greffer's hot restore waits on the DB service's compose healthcheck
+    # before streaming pg_restore in; without one it cannot know when to start.
+    if isinstance(compose, dict):
+        for svc_name in sorted(hook_services):
+            svc = (compose.get("services") or {}).get(svc_name)
+            if isinstance(svc, dict) and not svc.get("healthcheck"):
+                errors.append(
+                    f"{rel_dir}: service {svc_name!r} declares a backup hook but has no "
+                    f"'healthcheck'. The greffer's hot restore waits for that healthcheck "
+                    f"before streaming the dump back in")
+
     # L4 per-port declarations (optional `ports` list). Mirrors the structural
     # checks in the manager's import_catalog._validate_meta (the importer is
     # still authoritative server-side) so a malformed entry fails at CI, not
