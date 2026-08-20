@@ -44,6 +44,7 @@ import subprocess
 import sys
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import requests
 
@@ -349,7 +350,7 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
     r = None
     while time.time() < deadline:
         try:
-            r = requests.get(url, verify=ca_path, timeout=10, allow_redirects=False)
+            r = requests.get(url, verify=ca_path, timeout=10, allow_redirects=True)
         except requests.RequestException:
             r = None
         else:
@@ -361,7 +362,27 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
             f"response within 180s (last: {getattr(r, 'status_code', 'no response')}). "
             f"Failing rather than passing silently: an unreachable instance proves nothing.")
         return False
-    raw = r.raw.headers.get_all("Set-Cookie") if hasattr(r.raw, "headers") else None
+    # Inspect the WHOLE redirect chain, and follow it. Measured across the
+    # catalog, most roots set no cookie at all: stirling-pdf, memos and vscode
+    # answer 200 with none, and freshrss and uptime-kuma answer 302. Stopping at
+    # the first response therefore saw nothing for any of them. Following to the
+    # destination found freshrss's session cookie (HttpOnly, Secure, SameSite),
+    # turning that entry from unmeasured into genuinely verified.
+    #
+    # The chain rather than only the final response, because the original
+    # no-follow behaviour existed to catch a cookie set ON a 302, and that case is
+    # real. Looking at history plus the final response keeps both.
+    #
+    # Same-host only: an app redirecting to an external identity provider would
+    # otherwise have us inspecting someone else's Set-Cookie, and reporting a
+    # third party's cookie hygiene as this entry's is worse than reporting nothing.
+    want_host = urlsplit(url).hostname
+    raw = []
+    for resp in list(r.history) + [r]:
+        if urlsplit(resp.url).hostname != want_host:
+            continue
+        if hasattr(resp.raw, "headers"):
+            raw.extend(resp.raw.headers.get_all("Set-Cookie") or [])
 
     def _attrs(header: str) -> set:
         # Attributes only: everything after the first ';'. Matching the whole header

@@ -273,13 +273,25 @@ with instructions if the name does not resolve. **Do not set it back to `localho
 
 The harness also applies a generic check after each deploy: it polls the instance root until it
 answers non-5xx (compose reporting `running` is not the same as the app serving, and a 502 carries
-no cookies), then fails the entry if a cookie is `HttpOnly` but not `Secure`.
+no cookies), follows the redirect chain on the same host, and fails the entry if any cookie in that
+chain is `HttpOnly` but not `Secure`.
 
-Be clear about its reach, because it is a floor rather than coverage: **it only sees cookies set on
-the root**. Keycloak sets its session cookies on the authorization endpoint, so the generic check
-cannot see them, and `keycloak/1.0/smoke_test.spec.ts` carries the assertion itself. That split is
-the general rule: the generic check is a backstop for apps that set a session cookie on `/`, and
-anything else needs its own assertion.
+**Do not mistake it for coverage.** It was measured across the catalog and it sees very little:
+
+| entry | root | cookies the generic check can see |
+|---|---|---|
+| freshrss | 302 → 200 | 1 (`HttpOnly`, `Secure`, `SameSite`) |
+| stirling-pdf | 200 | none |
+| memos | 200 | none |
+| vscode | 200 | none |
+| uptime-kuma | 302 → 200 | none |
+| keycloak | 302 → console | none |
+
+Most apps set their session cookie on a login or authorization endpoint, not on the landing page,
+so the generic check simply has nothing to look at. That is why `keycloak/1.0/smoke_test.spec.ts`
+carries its own assertion against the authorization endpoint, and why **a per-entry assertion is
+the real mechanism**. Treat the generic check as a cheap catch for the minority of apps that do set
+a cookie on `/`, not as a reason to skip writing one.
 
 Scope an audit by the right rule. The hostname matters only for apps applying the secure-context
 rule to the **host**. A framework keying purely on the scheme is unaffected by it: Django's
