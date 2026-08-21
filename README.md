@@ -119,6 +119,89 @@ By default every compose-exposed port is **Tier A**: the greffer strips it from 
 
 `min_greffer_version` (top-level, optional) makes the manager refuse to start the greffon on an older greffer. It is required at `>= 0.3.3` whenever any port sets `same_port` (the floor that covers both the proxy and tunnel datapaths).
 
+### Hot Backup (`backup.volumes` + dump/restore hooks)
+
+By default an instance is **unclassified**, and a backup is COLD: the greffer stops the instance,
+snapshots its volumes, and starts it again. Classifying volumes opts the entry into HOT backup (no
+downtime), and what that requires depends on the classes you use:
+
+| Entry shape | Needs | Greffer floor | Below the floor |
+|---|---|---|---|
+| only `data` / `regenerable` volumes | just `backup.volumes`, **no hooks** | >= 0.8.0 | falls back to COLD |
+| any `database` volume | `backup.volumes` **and** a dump + restore hook on that service | >= 0.9.0 | falls back to COLD |
+
+The fallback is deliberate: an older worker takes a COLD backup rather than failing, so an entry
+declaring hooks still works everywhere, just without the no-downtime path.
+
+Two constraints on the hook command itself, both enforced by CI:
+
+- **It is exec'd with no shell.** A pipe, a redirect or a `$VAR` is handed to the program as a
+  literal argument. Write `$$VAR` so compose passes the `$` through rather than interpolating it
+  away, and when you need a shell use exactly one of these two forms, with nothing after the script:
+
+  ```
+  sh -c '<script>'
+  busybox sh -c '<script>'
+  ```
+
+  Shell options are not accepted around the `-c`: put `set -eu` inside the script instead. The
+  narrowness is deliberate, so that what the shell interprets is never in question.
+- **Its service must run exactly one container, and keep running.** The greffer finds the hook by
+  looking at running containers, so a service behind a `profiles:` never starts (no_dump_hook), one
+  with `replicas: 2` presents the label twice (multiple_database_unsupported), and a one-shot that
+  exits after deploy has nothing left to exec into (no_dump_hook).
+- **No Jinja, and no leading `VAR=value`.** The greffer renders the compose file before deploying,
+  so CI reads the template and the runtime gets whatever it rendered to. And an environment
+  assignment is shell syntax: with no shell, `docker exec` looks for a program by that name. Put
+  the variable in the service's `environment:`, which `docker exec` inherits and which keeps it off
+  the command line.
+- **It must mount the `database` volume, and must not mount a `data` one.** The first loses data:
+  the hot path snapshots only `data` volumes, so a `database` volume on any other service is
+  captured by nothing at all. The second blocks recovery: the restore guard reads database volumes from
+  docker state, so any volume on the dump service counts as database state; if it is also classed
+  `data` it sits in both sets and the restore refuses with db_volume_misclassified. Both fail with
+  every backup still reporting success.
+
+The two halves live in different files and the platform reads them from different places, which is
+exactly why they drift, and why CI now checks they agree.
+
+**metadata.json** classifies every volume:
+
+```json
+{
+  "backup": { "volumes": { "postgres_data": "database" } }
+}
+```
+
+| Class | Meaning |
+|-------|---------|
+| `data` | live-snapshot the volume with restic |
+| `regenerable` | skip it; the app rebuilds it on start |
+| `database` | do NOT snapshot; capture it with the dump hook below |
+
+**docker-compose.yml** carries the hooks, as SERVICE labels on the database service, plus a
+`healthcheck` the greffer's restore waits on before streaming the dump back in:
+
+```yaml
+  postgresql:
+    labels:
+      com.greffon.backup.dump: "pg_dump -U app -d app -Fc"
+      com.greffon.backup.restore: "pg_restore -U app -d app --clean --if-exists --no-owner --single-transaction"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app"]
+```
+
+Hooks run as argv (never a shell), so DB credentials must come from the container's environment
+rather than the command line. See `umami/1.0` and `keycloak/1.0` for worked examples.
+
+**The two halves must agree, and CI now enforces it.** Declaring hooks without `backup.volumes` is
+the trap: the manager reads classes only from metadata, so the instance stays unclassified, the
+backup silently falls back to COLD, and the hooks are never invoked. That shipped once, review-ready
+and validator-green, before this check existed. The validator now rejects hooks without a block, a
+`database` class without both hooks, more than one `database` volume or hook (the greffer's hot path
+is single-DB), a classified volume that is not a top-level compose volume, and a hook service with
+no healthcheck.
+
 ### Custom Schema Formats
 
 The platform reads JSON Schema's `format` keyword to dispatch special handling for fields whose intent goes beyond plain validation. Custom formats use the `greffon-` prefix to avoid collision with standard JSON Schema formats (`email`, `uri`, `date-time`, …) and with vendor formats from other tools.

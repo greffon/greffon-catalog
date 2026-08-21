@@ -1332,5 +1332,613 @@ class SmokeRequiredConfigTitleTest(unittest.TestCase):
             )
 
 
+
+# ---------------------------------------------------------------------------
+# Hot-backup pairing. Every check below reproduces a way an entry can declare
+# backup and have it fail at RUNTIME while looking fine, which is exactly what
+# shipped on keycloak/1.0: hooks and a healthcheck in the compose, no
+# backup.volumes in the metadata, so the manager read the instance as
+# unclassified, took a COLD backup, and never invoked the hooks.
+# ---------------------------------------------------------------------------
+
+_BACKUP_COMPOSE = textwrap.dedent("""\
+    services:
+      app:
+        image: nginx
+        ports:
+          - "8080:8080"
+      db:
+        image: postgres:16-alpine
+        labels:
+          com.greffon.backup.dump: "pg_dump -U a -d a -Fc"
+          com.greffon.backup.restore: "pg_restore -U a -d a --clean"
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]
+        volumes:
+          - db_data:/var/lib/postgresql/data
+    volumes:
+      db_data:
+    """)
+
+
+def _backup_meta(**over):
+    meta = {
+        "name": "Test", "logo": "https://example.com/l.png", "description": "d",
+        "categories": [], "images": [], "configurations": [],
+        "backup": {"volumes": {"db_data": "database"}},
+    }
+    meta.update(over)
+    return meta
+
+
+class BackupPairingTest(unittest.TestCase):
+    def _run(self, *, metadata=None, compose=None):
+        """Backup-related errors only. The shared fixture writes no
+        smoke_test.spec.ts, so the linter always reports that separately and it
+        is not what these tests are about (matches the SMTP tests' convention)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=metadata or _backup_meta(),
+                                 compose_yaml=compose or _BACKUP_COMPOSE)
+            errs = validate_greffon_dir(tmp, rel)
+            terms = ("backup", "hook", "healthcheck", "regenerable", "volume")
+            return [e for e in errs if any(x in e.lower() for x in terms)]
+
+    def test_valid_declaration_passes(self):
+        self.assertEqual(self._run(), [], "a correct hot-backup declaration must lint clean")
+
+    def test_hooks_without_classification(self):
+        """The keycloak defect: hooks present, no backup.volumes -> silent COLD."""
+        meta = _backup_meta(); del meta["backup"]
+        errs = self._run(metadata=meta)
+        self.assertTrue(any("no 'backup.volumes'" in e for e in errs), errs)
+
+    def test_database_class_without_dump_hook(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '      com.greffon.backup.dump: "pg_dump -U a -d a -Fc"\n', "")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("backup.dump" in e or "dump" in e for e in errs), errs)
+
+    def test_split_dump_and_restore_services(self):
+        """Manifest is keyed by the dump service, so a split pair fails restore."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      com.greffon.backup.restore: "pg_restore -U a -d a --clean"\n', ""
+        ).replace("  db:\n", "  other:\n    image: busybox\n    labels:\n"
+                              "      com.greffon.backup.restore: \"pg_restore -U a -d a --clean\"\n"
+                              "  db:\n", 1)
+        errs = self._run(compose=compose)
+        self.assertTrue(any("restore hook is on" in e for e in errs), errs)
+
+    def test_all_regenerable_is_rejected(self):
+        """Non-empty map selects HOT, but nothing to snapshot -> no_data_volumes."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      com.greffon.backup.dump: "pg_dump -U a -d a -Fc"\n', ""
+        ).replace('      com.greffon.backup.restore: "pg_restore -U a -d a --clean"\n', "")
+        errs = self._run(metadata=_backup_meta(backup={"volumes": {"db_data": "regenerable"}}),
+                         compose=compose)
+        self.assertTrue(any("regenerable" in e for e in errs), errs)
+
+    def test_unclassified_compose_volume(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "volumes:\n  db_data:\n", "volumes:\n  db_data:\n  extra:\n")
+        errs = self._run(compose=compose)
+        # Assert the BACKUP message, not just the volume name: the pre-existing
+        # 'declared but never mounted' check also names 'extra', so a looser
+        # assertion passes with this rule deleted and pins nothing.
+        self.assertTrue(
+            any("backup.volumes does not classify it" in e for e in errs), errs)
+
+    def test_classified_volume_absent_from_compose(self):
+        errs = self._run(metadata=_backup_meta(backup={"volumes": {"nope": "database"}}))
+        self.assertTrue(any("'nope'" in e for e in errs), errs)
+
+    def test_invalid_class(self):
+        errs = self._run(metadata=_backup_meta(backup={"volumes": {"db_data": "bogus"}}))
+        self.assertTrue(any("must be one of" in e for e in errs), errs)
+
+    def test_non_string_class_does_not_crash(self):
+        """A list class is unhashable; membership must not raise and kill --all."""
+        errs = self._run(metadata=_backup_meta(backup={"volumes": {"db_data": []}}))
+        self.assertTrue(any("must be a string" in e for e in errs), errs)
+
+    def test_missing_healthcheck(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '    healthcheck:\n      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n', "")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("healthcheck" in e for e in errs), errs)
+
+    def test_disabled_healthcheck(self):
+        """`disable: true` is truthy but Docker then reports no health at all."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]',
+            "      disable: true")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("DISABLED" in e for e in errs), errs)
+
+    def test_whitespace_only_hook_command(self):
+        """shlex.split yields no argv, so the greffer has nothing to execute."""
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', '"   "')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("empty or only" in e for e in errs), errs)
+
+    def test_empty_hook_command(self):
+        """An empty value is skipped by the greffer as if the hook were absent."""
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', '""')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("empty or only" in e for e in errs), errs)
+
+    def test_unmatched_quote_hook_command(self):
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', "\"pg_dump -c 'oops\"")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not parse" in e for e in errs), errs)
+
+    # --- the command must be runnable without a shell -----------------------
+    # The greffer execs the argv directly, so shell syntax is inert. These pin
+    # the distinction between "uses metacharacters" and "invokes no shell",
+    # which matters because the MySQL entries legitimately use `sh -c`.
+
+    def test_shell_pipe_without_a_shell_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a | gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_variable_expansion_without_a_shell_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U $$PGUSER -d a -Fc"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_sh_dash_c_hook_is_accepted(self):
+        """Guards the rule against over-reach: this is the real shape the MySQL
+        and MariaDB entries use, and rejecting it would block them."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"',
+            "\"sh -c 'export MYSQL_PWD=$$MYSQL_ROOT_PASSWORD; exec mysqldump -u root a'\"")
+        self.assertEqual(self._run(compose=compose), [])
+
+    # --- the hook must resolve to exactly one running container -------------
+    # The greffer finds hooks by counting RUNNING CONTAINERS, so a check that
+    # counts services can pass while the runtime count is 0 or 2.
+
+    def test_hook_service_behind_a_profile_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    profiles: [\"donotstart\"]\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("never starts" in e for e in errs), errs)
+
+    def test_hook_service_scaled_to_zero_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    scale: 0\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no_dump_hook" in e for e in errs), errs)
+
+    def test_hook_service_with_replicas_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    deploy:\n      replicas: 2\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(
+            any("multiple_database_unsupported" in e for e in errs), errs)
+
+    def test_invalid_class_does_not_also_claim_all_regenerable(self):
+        """One true error, not a real one plus a false one."""
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "bogus"}}
+        errs = self._run(metadata=meta)
+        self.assertTrue(any("bogus" in e for e in errs), errs)
+        self.assertFalse([e for e in errs if "every volume as 'regenerable'" in e], errs)
+
+    def test_shell_operator_glued_to_a_word_is_rejected(self):
+        """`pg_dump|gzip` lexes as ONE token, so whole-token matching missed it."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a|gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_glued_redirect_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a 2>/tmp/e"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_quoted_operator_is_not_a_false_positive(self):
+        """A quoted & belongs to the argument, and docker exec passes it through
+        untouched. Substring matching would have flagged this."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'pg_dump -d "postgres://a?x=1&y=2"'""")
+        self.assertEqual(self._run(compose=compose), [])
+
+    def test_shell_basename_without_dash_c_is_not_a_shell(self):
+        """`busybox timeout 10 pg_dump -c db | gzip` once faked a shell invocation
+        by borrowing pg_dump's -c. Still rejected, now by the shape rule: naming a
+        shell anywhere obliges the hook to be exactly `sh -c <script>`."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"busybox timeout 10 pg_dump -c db | gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_replicas_as_a_numeric_string_is_rejected(self):
+        """compose coerces "0", so it really does mean zero containers."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    scale: "0"\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no_dump_hook" in e for e in errs), errs)
+
+    def test_healthcheck_with_no_test_is_rejected(self):
+        """A truthy mapping is not a healthcheck: docker reports no health state
+        without a command, so the restore waits for a healthy that never comes."""
+        compose = _BACKUP_COMPOSE.replace(
+            '    healthcheck:\n      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            "    healthcheck:\n      interval: 5s\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no usable 'test'" in e for e in errs), errs)
+
+    def test_healthcheck_with_empty_test_list_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            "      test: []\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no usable 'test'" in e for e in errs), errs)
+
+    def test_data_volume_on_the_hook_service_is_rejected(self):
+        """Backs up fine forever and can never be restored: the greffer's restore
+        guard reads DB volumes from docker state, so a data-classed volume on the
+        dump service is in both sets and aborts with db_volume_misclassified."""
+        compose = _BACKUP_COMPOSE.replace(
+            "      - db_data:/var/lib/postgresql/data\n",
+            "      - db_data:/var/lib/postgresql/data\n      - db_extra:/extra\n"
+        ).replace("volumes:\n  db_data:\n", "volumes:\n  db_data:\n  db_extra:\n")
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database", "db_extra": "data"}}
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(
+            any("db_volume_misclassified" in e for e in errs), errs)
+
+    def test_single_dollar_inside_a_shell_hook_is_rejected(self):
+        """compose eats it before the container exists, so the arg goes missing."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'sh -c "pg_dump -U $PGUSER"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("single-$" in e for e in errs), errs)
+
+    def test_words_after_the_shell_script_are_rejected(self):
+        """`sh -c pg_dump | gzip` puts the pipe outside the script, where the shell
+        takes it as $1 rather than running it. Caught by the shape rule now: only
+        `sh -c <script>` is accepted, so there is no 'outside' left to reason about."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"sh -c pg_dump | gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_compound_redirection_is_rejected(self):
+        """punctuation_chars lexes 2>&1 as ['2', '>&', '1'], so a bare '>' misses."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a 2>&1"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_shell_options_before_dash_c_are_rejected(self):
+        """A DELIBERATE reversal of the previous round, which added option-word
+        walking so `sh -eu -c` would pass. That parser was then wrong twice more
+        (`--norc` contains a c; `--` was walked past), so the option surface is
+        gone: `set -eu` goes inside the script, where it is clearer anyway."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'sh -eu -c "pg_dump -U a -d a -Fc"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_double_dash_before_dash_c_is_rejected(self):
+        """`sh -- -c '...'` makes sh open a FILE named -c and exit; the old walker
+        ran straight past the -- terminator and called it a shell invocation."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'sh -- -c "pg_dump -d a"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_long_option_containing_c_is_rejected(self):
+        """`bash --norc '...'` matched the old `"c" in word` test and was treated
+        as a -c invocation, which silently switched off every syntax check."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'bash --norc "pg_dump -d a"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_here_string_is_rejected(self):
+        """`<<<` lexes as one token and was absent from the operator allowlist.
+        Detection is now punctuation-only, so it needs no enumeration."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_restore -d a <<< dump"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_quoted_disable_true_is_rejected(self):
+        """compose reads "true" as true; an `is True` identity test did not."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            '      disable: "true"\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("DISABLED" in e for e in errs), errs)
+
+    def test_interpolated_replica_count_is_rejected(self):
+        """It resolves against the greffer's scrubbed env, so the default wins."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    scale: "${DB_REPLICAS:-2}"\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("interpolated" in e for e in errs), errs)
+
+    def test_shell_with_no_script_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', '"sh -c"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_shell_with_an_empty_script_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', """'sh -c ""'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("empty script" in e for e in errs), errs)
+
+    def test_one_shot_hook_service_is_rejected(self):
+        """It has exited by backup time, so there is no container to exec into."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    command: ["sh", "-c", "setup; exit 0"]\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("one-shot" in e for e in errs), errs)
+
+    def test_malformed_replica_string_does_not_crash(self):
+        """int("--1") raised and aborted --all for the entire catalog."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    scale: "--1"\n')
+        self._run(compose=compose)  # must return, not raise
+
+    def test_database_volume_not_on_the_hook_service_is_rejected(self):
+        """Loses data silently: the hot path snapshots only 'data' volumes, so a
+        'database' volume on some other service is captured by nothing at all."""
+        compose = _BACKUP_COMPOSE.replace(
+            "      - db_data:/var/lib/postgresql/data\n",
+            "      - db_cache:/var/lib/postgresql/data\n"
+        ).replace("  app:\n    image: nginx\n",
+                  "  app:\n    image: nginx\n    volumes:\n      - db_data:/app\n"
+        ).replace("volumes:\n  db_data:\n", "volumes:\n  db_data:\n  db_cache:\n")
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database", "db_cache": "regenerable"}}
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(any("mounts none of the volumes classed" in e for e in errs), errs)
+
+    def test_hash_comment_hides_no_syntax(self):
+        """shlex.shlex strips # comments by default; the greffer's shlex.split does
+        not, so those words really do reach docker exec."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a # dump | gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_leading_env_assignment_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"PGPASSWORD=x pg_dump -U a -d a -Fc"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("environment assignment" in e for e in errs), errs)
+
+    def test_float_replica_count_is_rejected(self):
+        """compose normalises 2.0 to 2; PyYAML hands us a float."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    scale: 2.0\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("multiple_database_unsupported" in e for e in errs), errs)
+
+    def test_jinja_in_a_hook_label_is_rejected(self):
+        """The greffer renders compose before deploying, so CI reads the template."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'{{ "" }}'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("Jinja expression" in e for e in errs), errs)
+
+    def test_jinja_in_a_replica_count_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    scale: "{{ 2 }}"\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("Jinja" in e for e in errs), errs)
+
+    def test_exotic_numeric_replica_spellings_are_rejected(self):
+        """PyYAML leaves 2e0 and 0o2 as strings and compose reads both as 2. The
+        rule no longer tries to parse them: anything but a literal 1 is refused."""
+        for spelling in ("2e0", "0o2", "2.0", '"2"'):
+            with self.subTest(spelling=spelling):
+                compose = _BACKUP_COMPOSE.replace(
+                    "    image: postgres:16-alpine\n",
+                    f"    image: postgres:16-alpine\n    scale: {spelling}\n")
+                errs = self._run(compose=compose)
+                self.assertTrue(
+                    any("exactly one container" in e for e in errs), errs)
+
+    def test_literal_one_replica_is_accepted(self):
+        """The rule refuses everything it cannot understand, so this pins that it
+        still understands the one value an entry is allowed to write."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    scale: 1\n")
+        self.assertEqual(self._run(compose=compose), [])
+
+    def test_jinja_comment_in_a_hook_is_rejected(self):
+        """`{# ... #}` renders to nothing, so a hook that looks present here is
+        absent at deploy. The regex matched {{ and {% but not {#."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_restore -U a -d a --clean"', '"{# disabled #}"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("Jinja" in e for e in errs), errs)
+
+    def test_jinja_in_the_healthcheck_test_is_rejected(self):
+        """test: ["{{ 'NONE' }}"] renders to a disabled healthcheck."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            '      test: ["{{ \'NONE\' }}"]\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("healthcheck.test" in e for e in errs), errs)
+
+    def test_busybox_with_a_non_applet_shell_is_rejected(self):
+        """busybox ships sh and ash; `busybox bash -c` fails at exec."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'busybox bash -c "pg_dump -d a"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_shell_behind_a_wrapper_is_rejected(self):
+        """`env sh -c pg_dump -U app` hid the shell from a first-word check, then
+        passed the plain-argv path having no operators and no $, while sh really
+        takes -U as $0."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"env sh -c pg_dump -U app"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_malformed_volumes_block_does_not_crash(self):
+        """`volumes: 1` raised TypeError, aborting --all for the whole catalog."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    volumes:\n      - db_data:/var/lib/postgresql/data\n",
+            "    volumes: 1\n")
+        self._run(compose=compose)  # must return, not raise
+
+    def test_backtick_substitution_is_rejected(self):
+        """Backticks are neither punctuation-only nor a $ expansion, so both scans
+        passed them; with no shell they reach the program as literal characters."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', "'pg_dump -d `hostname`'")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_jinja_in_a_classified_volume_name_is_rejected(self):
+        """The compose key is rendered and this one is not, so two files that look
+        consistent here name different volumes at deploy."""
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database",
+                                      "data_{{ instance_id }}": "data"}}
+        errs = self._run(metadata=meta)
+        # The Jinja message specifically. Asserting on "volume_unclassified" alone
+        # passed with this rule deleted, because the pre-existing "classified but
+        # absent from compose" check says it too.
+        self.assertTrue(
+            any("contains a Jinja expression" in e for e in errs), errs)
+
+    def test_reserved_nginx_suffix_is_rejected(self):
+        """The greffer skips its sidecar volume by SUFFIX, so a catalog volume
+        ending the same way is dropped with it, silently, on a green backup."""
+        compose = _BACKUP_COMPOSE.replace(
+            "      - db_data:/var/lib/postgresql/data\n",
+            "      - db_data:/var/lib/postgresql/data\n"
+        ).replace("  app:\n    image: nginx\n",
+                  "  app:\n    image: nginx\n    volumes:\n"
+                  "      - app_nginx_volume:/data\n"
+        ).replace("volumes:\n  db_data:\n",
+                  "volumes:\n  db_data:\n  app_nginx_volume:\n")
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database",
+                                      "app_nginx_volume": "data"}}
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(any("reserved suffix" in e for e in errs), errs)
+
+    def test_bare_nginx_volume_name_is_rejected(self):
+        """`nginx_volume` does not end with `_nginx_volume`, but namespacing makes
+        it <id>_nginx_volume, which is both excluded and a sidecar collision."""
+        compose = _BACKUP_COMPOSE.replace(
+            "  app:\n    image: nginx\n",
+            "  app:\n    image: nginx\n    volumes:\n      - nginx_volume:/data\n"
+        ).replace("volumes:\n  db_data:\n", "volumes:\n  db_data:\n  nginx_volume:\n")
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database", "nginx_volume": "data"}}
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(any("reserved suffix" in e for e in errs), errs)
+
+    def test_reserved_suffix_applies_without_a_backup_block(self):
+        """Cold backups use the same _data_volumes, so the rule cannot be scoped
+        to entries that classify their volumes."""
+        compose = _BACKUP_COMPOSE.replace(
+            "  app:\n    image: nginx\n",
+            "  app:\n    image: nginx\n    volumes:\n      - app_nginx_volume:/data\n"
+        ).replace("volumes:\n  db_data:\n",
+                  "volumes:\n  db_data:\n  app_nginx_volume:\n")
+        meta = _backup_meta()
+        meta.pop("backup", None)  # no classification at all
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(any("reserved suffix" in e for e in errs), errs)
+
+    def test_jinja_in_a_compose_volume_name_is_rejected(self):
+        """`app_{{ "nginx_volume" }}` does not end with the reserved suffix in
+        template form and does after rendering. Rejecting Jinja on every volume
+        name is what makes the other volume rules sound, rather than each of them
+        having to reason about template-vs-rendered separately."""
+        compose = _BACKUP_COMPOSE.replace(
+            "  app:\n    image: nginx\n",
+            '  app:\n    image: nginx\n    volumes:\n'
+            '      - \'app_{{ "nginx_volume" }}:/data\'\n'
+        ).replace("volumes:\n  db_data:\n",
+                  'volumes:\n  db_data:\n  \'app_{{ "nginx_volume" }}\':\n')
+        meta = _backup_meta()
+        meta.pop("backup", None)  # cold entry: the rule must not need a backup block
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(
+            any("cannot know the runtime name" in e for e in errs), errs)
+
+    def test_empty_program_name_is_rejected(self):
+        """shlex.split("''") is [''], non-empty, so the no-argv branch missed it."""
+        # Double-quoted YAML so the VALUE is the two characters '', which is what
+        # shlex.split turns into ['']. Single-quoting it yields a literal quote.
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"\'\'"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("empty program name" in e for e in errs), errs)
+
+    def test_none_prefixed_healthcheck_is_disabled(self):
+        """docker disables on a LEADING NONE, whatever follows it."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            '      test: ["NONE", "anything"]\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("DISABLED" in e for e in errs), errs)
+
+    def test_bare_shell_negation_is_rejected(self):
+        """`! pg_dump ...` asks docker exec to run a program named `!`."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"! pg_dump -U a -d a -Fc"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_custom_volume_name_is_rejected(self):
+        """`name:` opts out of project namespacing, so the docker volume has no
+        <instance_id>_ prefix and the greffer never collects it."""
+        compose = _BACKUP_COMPOSE.replace(
+            "volumes:\n  db_data:\n", "volumes:\n  db_data:\n    name: shared_data\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("project namespacing" in e for e in errs), errs)
+
+    def test_external_volume_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "volumes:\n  db_data:\n", "volumes:\n  db_data:\n    external: true\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("project namespacing" in e for e in errs), errs)
+
+    def test_quoted_operator_as_a_literal_argument_is_accepted(self):
+        """`--separator '|'` is a working hook: docker exec passes the literal
+        through. Matching lexed tokens rejected it, since shlex strips the quotes
+        and a real pipe lexes identically."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'pgtool --separator "|" -d a'""")
+        self.assertEqual(self._run(compose=compose), [])
+
+    def test_no_backup_block_is_fine(self):
+        """An entry that never opts in stays COLD and must not be nagged."""
+        compose = _BACKUP_COMPOSE.replace(
+            '    labels:\n      com.greffon.backup.dump: "pg_dump -U a -d a -Fc"\n'
+            '      com.greffon.backup.restore: "pg_restore -U a -d a --clean"\n', "")
+        meta = _backup_meta(); del meta["backup"]
+        self.assertEqual(self._run(metadata=meta, compose=compose), [],
+                         "an entry that never opts in must not be nagged")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

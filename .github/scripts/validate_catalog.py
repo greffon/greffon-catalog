@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 
 import yaml
@@ -322,6 +323,150 @@ def _looks_one_shot(svc_name, svc_def):
     return bool(_TERMINAL_EXIT0_RE.search(_command_text(svc_def)))
 
 
+# Any token made ENTIRELY of shell punctuation is an operator. An allowlist was
+# wrong three times running (`2>&1` lexes as '>&', a here-string as '<<<'), and
+# each miss looked like a passing check. Punctuation-only is the property that
+# actually matters, so it is tested directly instead of enumerated.
+# Always an operator wherever it appears unquoted. The backtick is command
+# substitution; `$(` is covered by the paren.
+_PUNCT = "();<>|&`"
+# Syntax only at the START of a word: `-d a#b` is a literal argument, while
+# `# comment` and `! pg_dump` are not.
+_WORD_INITIAL_SYNTAX = "#!"
+# $VAR, ${VAR} and compose's escaped $$VAR. Nothing expands them without a shell.
+_EXPANSION_RE = re.compile(r"\$\$?\{?[A-Za-z_]")
+# A lone $ before a name. `$$` is compose's escape for a literal $, so runs of
+# dollars are collapsed pairwise first and only an odd one left over counts.
+_UNESCAPED_DOLLAR_RE = re.compile(r"(?<!\$)(?:\$\$)*\$(?=\{?[A-Za-z_])")
+_SIGNED_INT_RE = re.compile(r"[+-]?\d+")
+# A leading NAME=value word. Shell syntax; docker exec has no idea.
+_ENV_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# The greffer renders compose through Jinja, so CI reads the TEMPLATE.
+# `{# ... #}` renders to the empty string, so a hook that looks non-empty
+# here becomes an absent one at deploy. All three openers, not just two.
+_JINJA_RE = re.compile(r"\{\{|\{%|\{#")
+_SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh"}
+_BUSYBOX_SHELLS = {"sh", "ash"}
+# The greffer excludes its regenerated sidecar volume by SUFFIX match, so this
+# ending is reserved for every entry, not just for the volume it generates.
+_NGINX_VOLUME_SUFFIX = "_nginx_volume"
+
+
+def _service_named_volumes(svc_def):
+    """Named volumes a service mounts, from both the short and long compose forms.
+
+    Bind mounts (a source containing a / ) are skipped: they are host paths, not
+    named volumes, and never appear in backup.volumes."""
+    out = set()
+    vols = svc_def.get("volumes")
+    if not isinstance(vols, list):
+        return out  # `volumes: 1` is malformed; crashing here would suppress
+                    # every diagnostic --all had accumulated for the catalog
+    for entry in vols:
+        src = None
+        if isinstance(entry, str) and ":" in entry:
+            src = entry.split(":", 1)[0]
+        elif isinstance(entry, dict) and entry.get("type") == "volume":
+            src = entry.get("source")
+        if isinstance(src, str) and src and "/" not in src:
+            out.add(src)
+    return out
+
+
+def _compose_bool(value):
+    """compose's boolean coercion: YAML gives us a bool, but a QUOTED "true" (or
+    an interpolated one) arrives as a string that compose still reads as true.
+    An `is True` identity test missed those and accepted a disabled healthcheck."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "on", "1"}
+    return False
+
+
+def _shell_script_of(argv):
+    """The script of a `sh -c <script>` hook, or None if this is not that shape.
+
+    EXACTLY two forms are accepted, and nothing may follow the script:
+
+        <shell> -c <script>
+        busybox <shell> -c <script>
+
+    This is deliberately narrower than what a shell would accept, because the
+    wider version kept being wrong. Walking option words to find the -c was
+    revised three times and broke three times: membership let
+    `busybox timeout 10 pg_dump -c db | gzip` borrow an unrelated -c; requiring
+    argv[1] == "-c" rejected the legitimate `sh -eu -c`; and walking the options
+    then matched `--norc` (it contains a c) and ran past a `--` terminator. Every
+    fix grew the parser and the next round found another hole in it.
+
+    So the parser is gone. A catalog entry has no need of shell options: `set -eu`
+    belongs INSIDE the script, where it is also more obvious. Refusing
+    `sh -c <script> <extra>` costs nothing either, and removes the whole question
+    of what the words after a script mean, which was the source of two more bugs.
+    """
+    if len(argv) == 4 and os.path.basename(argv[0]) == "busybox":
+        # busybox dispatches an APPLET, and it ships sh/ash, not bash or zsh, and
+        # not a path. `busybox bash -c ...` fails at exec however valid it looks.
+        if argv[1] not in _BUSYBOX_SHELLS:
+            return None
+        shell, rest = argv[1], argv[2:]
+    elif len(argv) == 3:
+        shell, rest = argv[0], argv[1:]
+    else:
+        return None
+    if os.path.basename(shell) not in _SHELL_BASENAMES or rest[0] != "-c":
+        return None
+    return rest[1]
+
+
+def _names_a_shell(argv):
+    """argv starts with a shell (or busybox+shell), whatever follows it."""
+    # ANY word, not just the first. `env sh -c pg_dump -U app` hides the shell
+    # behind a wrapper, falls through to the plain-argv path (it has no operators
+    # and no $), and validates, while sh actually takes -U as $0. Checking every
+    # word costs one membership test and needs no wrapper list, where recognising
+    # `env` specifically would just invite the next wrapper.
+    return any(os.path.basename(a) in _SHELL_BASENAMES | {"busybox"} for a in argv)
+
+
+def _shell_operators_in(cmd):
+    """Shell operator characters appearing OUTSIDE quotes in the raw command.
+
+    Scans the raw string rather than lexed tokens, because the tokens have already
+    lost the distinction that matters: shlex strips quotes, so a legitimate literal
+    argument (tool --separator '|') and a real pipe both arrive as the token "|",
+    and matching tokens rejected the working hook. I accepted that ambiguity
+    earlier on this branch, reasoning such an argument was unlikely. That was the
+    wrong call. A validator that rejects correct entries teaches people to work
+    around it, and quote state is cheap to track.
+
+    Deliberately not a shell parser: quoting and word starts, nothing else. `#`
+    and `!` are syntax only at the start of a word, so `-d a#b` stays a literal."""
+    found, quote, escaped, word_start = [], None, False, True
+    for ch in cmd:
+        if escaped:
+            escaped, word_start = False, False
+        elif quote:
+            if ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif ch == "\\":
+            escaped, word_start = True, False
+        elif ch in "\"'":
+            quote, word_start = ch, False
+        elif ch.isspace():
+            word_start = True
+        elif ch in _PUNCT:
+            found.append(ch)
+            word_start = True
+        elif ch in _WORD_INITIAL_SYNTAX and word_start:
+            found.append(ch)
+            word_start = False
+        else:
+            word_start = False
+    return found
 def validate_greffon_dir(catalog_root, rel_dir):
     """Validate a single greffon directory. Returns list of error strings."""
     errors = []
@@ -420,6 +565,441 @@ def validate_greffon_dir(catalog_root, rel_dir):
         val = meta.get(field)
         if val is not None and not isinstance(val, list):
             errors.append(f"{rel_dir}: metadata.json '{field}' must be a list")
+
+    # Hot-backup declarations (optional `backup.volumes`). Two halves have to
+    # agree and nothing checked that before: the compose-side dump/restore hooks,
+    # and the metadata-side volume classification the MANAGER reads. A real defect
+    # shipped review-ready because of it. The keycloak entry declared both hooks
+    # and a healthcheck, with comments saying the greffer read them, while
+    # metadata.json had no `backup` block. The manager takes classes only from
+    # there (`import_catalog.py`: `(meta.get("backup") or {}).get("volumes")`),
+    # empty means unclassified, unclassified means COLD, and the COLD path never
+    # invokes a dump hook. So every backup would have stopped the instance and
+    # snapshotted raw volumes while the hooks sat unused, and the validator was
+    # green. Mirrors the importer's shape checks, plus the pairing rules the
+    # importer cannot express because it never sees the compose.
+    _BACKUP_CLASSES = {"data", "regenerable", "database"}
+    backup_meta = meta.get("backup")
+    backup_vols = {}
+    if backup_meta is not None:
+        if not isinstance(backup_meta, dict):
+            errors.append(f"{rel_dir}: metadata.json 'backup' must be an object")
+        else:
+            raw_vols = backup_meta.get("volumes")
+            if raw_vols is not None and not isinstance(raw_vols, dict):
+                errors.append(
+                    f"{rel_dir}: 'backup.volumes' must be an object {{volume: class}}")
+            elif isinstance(raw_vols, dict):
+                backup_vols = raw_vols
+                for vol_name, vol_class in raw_vols.items():
+                    if not isinstance(vol_name, str) or not vol_name.strip():
+                        errors.append(
+                            f"{rel_dir}: 'backup.volumes' keys must be non-empty volume names")
+                        continue
+                    if not isinstance(vol_class, str):
+                        errors.append(
+                            f"{rel_dir}: backup.volumes[{vol_name!r}] must be a string, got "
+                            f"{type(vol_class).__name__}. A non-string is unhashable and would "
+                            f"raise rather than lint")
+                        continue
+                    if vol_class not in _BACKUP_CLASSES:
+                        errors.append(
+                            f"{rel_dir}: backup.volumes[{vol_name!r}] must be one of "
+                            f"{sorted(_BACKUP_CLASSES)}, got {vol_class!r}")
+                    if isinstance(compose, dict) and vol_name not in compose_volumes:
+                        errors.append(
+                            f"{rel_dir}: backup.volumes names {vol_name!r}, which is not a "
+                            f"top-level volume in docker-compose.yml. The greffer looks the "
+                            f"class up by compose name and would raise volume_unclassified")
+
+    # Dump/restore hooks are SERVICE labels the greffer reads at backup time.
+    dump_hooks, restore_hooks, hook_services = [], [], set()
+    if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
+        for svc_name, svc in compose["services"].items():
+            if not isinstance(svc, dict):
+                continue
+            labels = svc.get("labels") or {}
+            if isinstance(labels, list):  # list form: ["k=v", ...]
+                labels = dict(
+                    (item.split("=", 1) + [""])[:2] for item in labels if isinstance(item, str))
+            if not isinstance(labels, dict):
+                continue
+            for kind, bucket in (("dump", dump_hooks), ("restore", restore_hooks)):
+                val = labels.get(f"com.greffon.backup.{kind}")
+                if val is None:
+                    continue
+                hook_services.add(svc_name)
+                if isinstance(val, str) and _JINJA_RE.search(val):
+                    # The greffer renders the compose file through Jinja before
+                    # docker-compose ever sees it, so this validator is reading the
+                    # TEMPLATE. `{{ "" }}` is a non-empty string here and an absent
+                    # hook at deploy, which is precisely the silent degrade every
+                    # other check on this branch exists to prevent.
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label contains a Jinja "
+                        f"expression. The greffer renders the compose file before deploying, so "
+                        f"CI validates the template and the runtime gets something else. Write "
+                        f"the command literally")
+                    continue
+                if not isinstance(val, str):
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label must be a string, "
+                        f"got {type(val).__name__}")
+                    continue
+                try:
+                    argv = shlex.split(val)
+                except ValueError as exc:
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label does not parse as a "
+                        f"command ({exc}). The greffer runs it through shlex.split and would "
+                        f"raise at backup time, not here")
+                    continue
+                script = _shell_script_of(argv) if argv else None
+                # A single $ is eaten by COMPOSE, before any container exists, and
+                # it interpolates from the compose process's own environment. So
+                # `$PGUSER` resolves to empty and the hook silently loses the
+                # argument. True with or without a shell, so it is checked on the
+                # raw label ahead of everything else.
+                if argv and _UNESCAPED_DOLLAR_RE.search(val):
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label uses a single-$ "
+                        f"variable. compose interpolates that from its OWN environment at "
+                        f"deploy time, not the container's, so it resolves to empty and the "
+                        f"argument is lost. Write $$VAR to pass a literal $ through to the "
+                        f"container")
+                    continue
+                if argv and _names_a_shell(argv) and script is None:
+                    # Anything shell-shaped that is not exactly `<shell> -c <script>`:
+                    # a missing script, options around the -c, or trailing words after
+                    # it. Narrow on purpose (see _shell_script_of): the permissive
+                    # version of this was wrong three rounds running.
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label invokes a shell "
+                        f"but is not exactly \"sh -c '<script>'\" (or \"busybox sh -c "
+                        f"'<script>'\"). Only those two forms are accepted, so that what the "
+                        f"shell interprets is unambiguous: put any options such as `set -eu` "
+                        f"INSIDE the script, and fold trailing words into it rather than "
+                        f"passing them after it, where the shell treats them as $0 and $1 "
+                        f"instead of running them")
+                    continue
+                if script is not None and not script.strip():
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label passes an empty "
+                        f"script to the shell. It exits 0 having written nothing, so the backup "
+                        f"fails with dump_empty rather than reporting an error")
+                    continue
+                if argv and not argv[0].strip():
+                    # shlex.split("''") is [''], which is non-empty, so the
+                    # no-argv branch below never sees it. The greffer then builds
+                    # `timeout 3600 ''` and execs nothing.
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label has an empty "
+                        f"program name. The greffer builds a timeout argv around it and there "
+                        f"is nothing to execute, so every backup or restore fails")
+                    continue
+                if argv and script is None and _ENV_ASSIGN_RE.match(argv[0]):
+                    # `PGPASSWORD=x pg_dump ...` is shell syntax with no punctuation
+                    # and no $, so both scans below pass it. docker exec then looks
+                    # for a program literally named "PGPASSWORD=x".
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label starts with the "
+                        f"environment assignment {argv[0]!r}. Only a shell applies those; the "
+                        f"greffer execs argv[0] as a program name, so every backup fails. Set it "
+                        f"in the service's `environment:` (which docker exec inherits, and which "
+                        f"keeps it off the command line), or use \"sh -c '...'\"")
+                    continue
+                if argv and script is None:
+                    # No shell involved: the greffer runs `docker exec <container>
+                    # <argv>` (backup.py:272, :346), so a pipe, a redirect or a $VAR
+                    # is handed to the program as a literal argument. With the two
+                    # shell forms pinned above, the script is the ONLY interpreted
+                    # text in a hook, and nothing can sit outside it, so this branch
+                    # no longer has to reason about scope at all.
+                    stray = _shell_operators_in(val)
+                    expand = [tok for tok in argv if _EXPANSION_RE.search(tok)]
+                    if stray or expand:
+                        what = (f"shell operators {stray}" if stray
+                                else f"variable expansions {expand}")
+                        errors.append(
+                            f"{rel_dir}: service {svc_name!r} backup.{kind} label uses {what} "
+                            f"but does not invoke a shell. The greffer execs the argv directly, "
+                            f"so these are passed to the program as literal arguments and never "
+                            f"interpreted. Wrap the command in \"sh -c '...'\" if you need a "
+                            f"shell (note compose eats a single $, so write $$VAR)")
+                        continue
+                if not argv:
+                    # Two different failures, both silent, hence one check:
+                    # an EMPTY value never reaches shlex at all -- the greffer's
+                    # `if not cmd: continue` treats the hook as absent, so the
+                    # entry quietly degrades to a COLD backup (or fails the
+                    # restore with no_restore_hook). A WHITESPACE-ONLY value is
+                    # truthy, gets past that guard, and builds a bare
+                    # `timeout <secs>` argv with no command after it.
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label is empty or only "
+                        f"whitespace, so it yields no command. An empty value is skipped by the "
+                        f"greffer as if the hook were absent (silent COLD backup / "
+                        f"no_restore_hook); a whitespace-only value builds a 'timeout' argv with "
+                        f"nothing to run")
+                    continue
+                bucket.append(svc_name)
+
+    if backup_vols and isinstance(compose, dict):
+        for vol_name in sorted(compose_volumes - set(backup_vols), key=str):
+            errors.append(
+                f"{rel_dir}: compose declares volume {vol_name!r} but backup.volumes does not "
+                f"classify it. The greffer looks the class up by compose name and refuses the "
+                f"backup with volume_unclassified rather than guessing")
+
+    for vol_name in sorted(backup_vols, key=str):
+        if not isinstance(vol_name, str):
+            continue
+        if _JINJA_RE.search(vol_name):
+            # The compose key is RENDERED before deploy; this metadata key is not.
+            # Both files reading `data_{{ instance_id }}` looks consistent here and
+            # is two different names at runtime, so the greffer looks up the
+            # rendered one, finds no class, and refuses with volume_unclassified.
+            errors.append(
+                f"{rel_dir}: backup.volumes classifies {vol_name!r}, which contains a Jinja "
+                f"expression. The greffer renders the compose volume name but not this key, "
+                f"so the two stop matching at deploy and the backup fails with "
+                f"volume_unclassified. Use a literal name")
+    # Every declared volume, not only the classified ones, and tested against the
+    # RUNTIME name. Two ways to miss this, and the first version missed both:
+    #   - an entry with no backup.volumes never entered the loop above, yet COLD
+    #     backups go through the same _data_volumes (backup.py:476) and drop these
+    #     volumes just the same;
+    #   - a compose volume named exactly `nginx_volume` does not end with
+    #     `_nginx_volume`, but namespacing makes it `<instance_id>_nginx_volume`,
+    #     which does, and which additionally collides with the sidecar's own.
+    # Prefixing with "_" models the namespacing without inventing an instance id.
+    for vol_name in sorted(compose_volumes, key=str):
+        # Jinja is refused on EVERY volume name, not just on the classified ones.
+        # This is the structural half of the fix rather than another special case:
+        # three rounds running found this rule family applied to the wrong set of
+        # names, because each rule had to reason about template-vs-rendered on its
+        # own. With no name containing Jinja, every rule below is comparing literal
+        # strings and the whole question stops arising. `app_{{ "nginx_volume" }}`
+        # was the case in hand: it does not end with the reserved suffix here and
+        # renders to a name that does.
+        if isinstance(vol_name, str) and _JINJA_RE.search(vol_name):
+            errors.append(
+                f"{rel_dir}: compose declares volume {vol_name!r}, which contains a Jinja "
+                f"expression. The greffer renders it before deploying, so CI cannot know the "
+                f"runtime name and cannot tell whether it is classified, reserved, or mounted "
+                f"by the right service. Use a literal name")
+            continue
+        vol_def = ((compose.get("volumes") or {}).get(vol_name)
+                   if isinstance(compose, dict) else None)
+        if isinstance(vol_def, dict) and (vol_def.get("name") or vol_def.get("external")):
+            # The greffer collects an instance's volumes by the `<instance_id>_`
+            # PREFIX that compose's project namespacing produces (backup.py:190).
+            # Both `name:` and `external: true` opt out of that namespacing, so the
+            # docker volume does not carry the prefix, is never collected, and is
+            # absent from hot backups, cold backups and the restore safety snapshot
+            # alike. The backup still succeeds whenever another artifact exists.
+            why = "name:" if vol_def.get("name") else "external: true"
+            errors.append(
+                f"{rel_dir}: compose volume {vol_name!r} sets {why}, which opts out of "
+                f"compose's project namespacing. The greffer collects an instance's volumes "
+                f"by their '<instance_id>_' prefix, so this one is invisible to it and is "
+                f"silently left out of every backup and of the restore safety snapshot while "
+                f"the backup reports success. Use a plain volume key")
+            continue
+        if isinstance(vol_name, str) and f"_{vol_name}".endswith(_NGINX_VOLUME_SUFFIX):
+            errors.append(
+                f"{rel_dir}: compose declares volume {vol_name!r}, whose runtime name ends "
+                f"with the reserved suffix {_NGINX_VOLUME_SUFFIX!r}. That is how the greffer "
+                f"skips its own regenerated sidecar volume, so this one is dropped with it "
+                f"and left out of the snapshot while the backup still reports success. "
+                f"Applies to cold backups too, so it holds whether or not the entry "
+                f"classifies its volumes. Rename it")
+
+    db_vols = [v for v, c in backup_vols.items() if c == "database"]
+    # `all(... == "regenerable")` and not merely "no data and no database": a map
+    # holding only an invalid class ({"x": "bogus"}) satisfies the weaker form and
+    # would draw a second, false error saying every volume is regenerable, next to
+    # the real schema complaint. Say one true thing rather than two things.
+    if backup_vols and all(c == "regenerable" for c in backup_vols.values()):
+        errors.append(
+            f"{rel_dir}: backup.volumes classifies every volume as 'regenerable', which the "
+            f"manager still reads as opted-in and runs HOT. The greffer then has nothing to "
+            f"snapshot and nothing to dump, and fails every backup with no_data_volumes. "
+            f"Classify at least one volume 'data' or 'database', or drop the block entirely "
+            f"to take COLD backups")
+
+    if (dump_hooks or restore_hooks) and not backup_vols:
+        errors.append(
+            f"{rel_dir}: declares backup hooks on {sorted(hook_services, key=str)} but metadata.json has "
+            f"no 'backup.volumes'. The manager reads classes only from there, so the instance is "
+            f"unclassified, the backup falls back to COLD (stop the instance, snapshot volumes) "
+            f"and these hooks are never invoked. Add the block, or drop the hooks")
+    if (dump_hooks or restore_hooks) and backup_vols and not db_vols:
+        errors.append(
+            f"{rel_dir}: declares backup hooks on {sorted(hook_services, key=str)} but no volume is "
+            # str() every value and dedupe on that: a malformed class may be a list
+            # or dict, and set() over raw values raises TypeError on the unhashable
+            # ones, which is the crash the type check above exists to prevent.
+            f"classed 'database' (classes present: "
+            f"{sorted({str(v) for v in backup_vols.values()})}). The "
+            f"manager selects the dump path from the volume class, so these hooks are never "
+            f"invoked and the database is snapshotted raw instead of dumped")
+    if db_vols and not dump_hooks:
+        errors.append(
+            f"{rel_dir}: backup.volumes classes {db_vols[0]!r} as 'database' but no service "
+            f"declares a 'com.greffon.backup.dump' label. The greffer refuses the backup with "
+            f"no_dump_hook rather than snapshotting a database volume it was told not to")
+    if db_vols and not restore_hooks:
+        errors.append(
+            f"{rel_dir}: backup.volumes classes {db_vols[0]!r} as 'database' but no service "
+            f"declares a 'com.greffon.backup.restore' label, so a backup could be taken and "
+            f"never restored")
+    if len(db_vols) > 1:
+        errors.append(
+            f"{rel_dir}: {len(db_vols)} volumes classed 'database' ({sorted(db_vols, key=str)}). The "
+            f"greffer's hot path is single-DB; the manager silently downgrades this entry to "
+            f"COLD backups, so the hooks would never run")
+    if dump_hooks and restore_hooks and set(dump_hooks) != set(restore_hooks):
+        errors.append(
+            f"{rel_dir}: the dump hook is on {sorted(dump_hooks, key=str)} but the restore hook is on "
+            f"{sorted(restore_hooks, key=str)}. The greffer keys its manifest by the DUMP service and "
+            f"then looks the restore hook up on that same service, so a split pair backs up "
+            f"fine and fails the restore with no_restore_hook. Put both labels on one service")
+    for kind, hooks in (("dump", dump_hooks), ("restore", restore_hooks)):
+        if len(hooks) > 1:
+            errors.append(
+                f"{rel_dir}: {len(hooks)} services declare a backup.{kind} hook ({sorted(hooks, key=str)}). "
+                f"The greffer refuses with multiple_database_unsupported")
+    # The greffer's hot restore waits on the DB service's compose healthcheck
+    # before streaming pg_restore in; without one it cannot know when to start.
+    if isinstance(compose, dict):
+        for svc_name in sorted(hook_services, key=str):
+            svc = (compose.get("services") or {}).get(svc_name)
+            if not isinstance(svc, dict):
+                continue
+            # The hook is found by COUNTING RUNNING CONTAINERS, not by reading the
+            # compose file: _dump_hooks() walks the instance's running containers
+            # and reads the label off each (backup.py:541-549). So the checks above,
+            # which count SERVICES, can pass while the runtime count is 0 or 2.
+            # The greffer enumerates RUNNING containers, so a service that runs to
+            # completion has no container to exec into by the time the backup
+            # starts. Same no_dump_hook as the profiles case, different reason.
+            if _looks_one_shot(svc_name, svc):
+                errors.append(
+                    f"{rel_dir}: hook service {svc_name!r} looks like a one-shot (it runs to "
+                    f"completion rather than staying up). The greffer looks for the hook on a "
+                    f"RUNNING container, so there is nothing to exec into and the backup fails "
+                    f"with no_dump_hook. Put the hook on the long-running database service")
+            # P0-adjacent: the greffer's restore guard reads DB volumes from DOCKER
+            # STATE, treating every volume mounted by the dump service as database
+            # state (backup.py _db_volumes_from_containers). If one of those is
+            # classed 'data' it is also in the data-restore set, the guard sees the
+            # overlap and aborts with db_volume_misclassified. The backup succeeds
+            # every time and the restore can never run, which is the worst shape a
+            # backup defect can take.
+            # The other half of the same binding, and the one that loses data
+            # rather than blocking a restore: nothing tied the 'database' volume to
+            # the service that dumps it. Class the DB service's volume
+            # 'regenerable' and an APP volume 'database' and every check here
+            # passed, while the hot path skips both classes (only 'data' is
+            # snapshotted) and captures only the hook's dump. The app volume is
+            # then in no artifact at all, and the backup still reports success.
+            if db_vols and not any(backup_vols.get(v) == "database"
+                                   for v in _service_named_volumes(svc)):
+                errors.append(
+                    f"{rel_dir}: hook service {svc_name!r} mounts none of the volumes classed "
+                    f"'database' ({sorted(db_vols, key=str)}). The greffer captures a database "
+                    f"through the dump hook on the service that HOLDS it, and the hot path "
+                    f"snapshots only 'data' volumes, so a 'database' volume on any other "
+                    f"service lands in no artifact at all while the backup reports success. "
+                    f"Put the hook on the service that mounts it")
+            for vol_name in _service_named_volumes(svc):
+                if backup_vols.get(vol_name) == "data":
+                    errors.append(
+                        f"{rel_dir}: hook service {svc_name!r} mounts volume {vol_name!r}, which "
+                        f"backup.volumes classes 'data'. The greffer reads DB volumes from "
+                        f"docker state, so this volume counts as database state AND is in the "
+                        f"data-restore set; the restore refuses with db_volume_misclassified "
+                        f"while every backup reports success. Move it off the database service, "
+                        f"or class it 'database'")
+            if svc.get("profiles"):
+                errors.append(
+                    f"{rel_dir}: hook service {svc_name!r} declares profiles "
+                    f"{svc['profiles']!r}. The greffer starts the stack with a plain "
+                    f"`docker-compose up -d` and passes no --profile (backup.py:628), so this "
+                    f"service never starts and the backup fails with no_dump_hook")
+            for field, probe in (("scale", svc.get("scale")),
+                                 ("deploy.replicas", (svc.get("deploy") or {}).get("replicas")
+                                  if isinstance(svc.get("deploy"), dict) else None),
+                                 ("healthcheck.disable", (svc.get("healthcheck") or {}).get("disable")
+                                  if isinstance(svc.get("healthcheck"), dict) else None),
+                                 ("healthcheck.test", (svc.get("healthcheck") or {}).get("test")
+                                  if isinstance(svc.get("healthcheck"), dict) else None)):
+                # A list too: `test: ["{{ 'NONE' }}"]` renders to a disabled check.
+                if isinstance(probe, list):
+                    probe = " ".join(str(x) for x in probe)
+                if isinstance(probe, str) and (_JINJA_RE.search(probe)
+                                               or _UNESCAPED_DOLLAR_RE.search(probe)):
+                    errors.append(
+                        f"{rel_dir}: hook service {svc_name!r} sets {field} from a Jinja or "
+                        f"interpolated expression ({probe!r}). The greffer renders the compose file before "
+                        f"deploying, so this validates as a harmless string and becomes a "
+                        f"container count or a disabled healthcheck at runtime")
+            for field, count in (("scale", svc.get("scale")),
+                                 ("deploy.replicas",
+                                  (svc.get("deploy") or {}).get("replicas")
+                                  if isinstance(svc.get("deploy"), dict) else None)):
+                # No coercion ladder any more. Every round found another spelling
+                # compose accepts and this did not: "2", 2.0, "${N:-2}", 2e0, 0o2.
+                # Chasing them meant reimplementing compose's number parsing, and
+                # losing that race silently accepted the entry. A hook service runs
+                # exactly one container, so the only value worth accepting is a
+                # literal 1, and anything else is refused WITHOUT being understood.
+                if count is None:
+                    continue
+                if isinstance(count, bool) or not (
+                        isinstance(count, (int, float)) and count == 1):
+                    errors.append(
+                        f"{rel_dir}: hook service {svc_name!r} sets {field} to {count!r}. A "
+                        f"hook service must run exactly one container: the greffer finds the "
+                        f"hook by enumerating running containers, so zero gives no_dump_hook "
+                        f"and more than one gives multiple_database_unsupported. Write the "
+                        f"literal 1, or leave it unset")
+            hc = svc.get("healthcheck")
+            hc_test = hc.get("test") if isinstance(hc, dict) else None
+            disabled = (
+                isinstance(hc, dict) and (
+                    _compose_bool(hc.get("disable")) is True
+                    # docker disables on a LEADING NONE, whatever follows it,
+                    # so an exact comparison against ["NONE"] was too narrow.
+                    or hc_test == "NONE"
+                    or (isinstance(hc_test, list) and hc_test[:1] == ["NONE"])
+                )
+            )
+            # A truthy mapping is not a healthcheck. `healthcheck: {interval: 5s}`
+            # and `test: []` both pass a presence test while supplying no command,
+            # so docker reports no health state and _wait_db_healthy waits for a
+            # 'healthy' that cannot arrive. Same outcome as `disable: true`, so it
+            # is the same error, reached by a different route.
+            no_command = isinstance(hc, dict) and not disabled and not hc_test
+            if not hc:
+                errors.append(
+                    f"{rel_dir}: service {svc_name!r} declares a backup hook but has no "
+                    f"'healthcheck'. The greffer's hot restore waits for that healthcheck "
+                    f"before streaming the dump back in")
+            elif no_command:
+                errors.append(
+                    f"{rel_dir}: service {svc_name!r} declares a backup hook and a "
+                    f"'healthcheck' with no usable 'test' ({hc_test!r}). Docker reports no "
+                    f"health state without a command to run, so the hot restore waits for a "
+                    f"'healthy' that never arrives and times out, exactly as if the "
+                    f"healthcheck were disabled")
+            elif disabled:
+                errors.append(
+                    f"{rel_dir}: service {svc_name!r} declares a backup hook but its "
+                    f"healthcheck is DISABLED ({'disable: true' if _compose_bool(hc.get('disable')) else 'test: NONE'}). "
+                    f"Docker then reports no health state at all, so the hot restore waits for "
+                    f"a 'healthy' that never arrives and times out")
 
     # L4 per-port declarations (optional `ports` list). Mirrors the structural
     # checks in the manager's import_catalog._validate_meta (the importer is
@@ -526,7 +1106,14 @@ def validate_greffon_dir(catalog_root, rel_dir):
         for svc_def in compose["services"].values():
             if not isinstance(svc_def, dict):
                 continue
-            for vol_entry in svc_def.get("volumes") or []:
+            # `volumes: 1` is malformed compose, and iterating it raised TypeError,
+            # which aborted `--all` and discarded every diagnostic collected so far
+            # for every entry. Left alone earlier in this branch because I could not
+            # make it crash; the regression test for the sibling helper reaches it.
+            svc_vols = svc_def.get("volumes")
+            if not isinstance(svc_vols, list):
+                continue
+            for vol_entry in svc_vols:
                 if isinstance(vol_entry, str) and ":" in vol_entry:
                     used_volumes.add(vol_entry.split(":", 1)[0])
         for vol_name in compose_volumes - used_volumes:
