@@ -360,9 +360,15 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
     while time.time() < deadline:
         responses = []
         try:
+            # ONE session for the whole chain. A per-hop requests.get() carries no
+            # cookie jar, so a state or nonce cookie set by the first hop is never
+            # sent to the second, and the probe can walk an unauthenticated or
+            # error path that a browser would never see, missing the very cookie it
+            # is looking for.
+            sess = requests.Session()
             nxt, hops = url, 0
             while nxt and hops < 10:
-                r = requests.get(nxt, verify=ca_path, timeout=10, allow_redirects=False)
+                r = sess.get(nxt, verify=ca_path, timeout=10, allow_redirects=False)
                 responses.append(r)
                 loc = r.headers.get("Location") if r.is_redirect else None
                 if not loc:
