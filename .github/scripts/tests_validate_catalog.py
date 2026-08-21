@@ -1551,12 +1551,13 @@ class BackupPairingTest(unittest.TestCase):
         self.assertEqual(self._run(compose=compose), [])
 
     def test_shell_basename_without_dash_c_is_not_a_shell(self):
-        """`busybox timeout 10 pg_dump -c db | gzip` put a shell basename in the
-        first two words and borrowed pg_dump's -c, faking a shell invocation."""
+        """`busybox timeout 10 pg_dump -c db | gzip` once faked a shell invocation
+        by borrowing pg_dump's -c. Still rejected, now by the shape rule: naming a
+        shell anywhere obliges the hook to be exactly `sh -c <script>`."""
         compose = _BACKUP_COMPOSE.replace(
             '"pg_dump -U a -d a -Fc"', '"busybox timeout 10 pg_dump -c db | gzip"')
         errs = self._run(compose=compose)
-        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
 
     def test_replicas_as_a_numeric_string_is_rejected(self):
         """compose coerces "0", so it really does mean zero containers."""
@@ -1667,7 +1668,7 @@ class BackupPairingTest(unittest.TestCase):
             "    image: postgres:16-alpine\n",
             '    image: postgres:16-alpine\n    scale: "${DB_REPLICAS:-2}"\n')
         errs = self._run(compose=compose)
-        self.assertTrue(any("interpolation" in e for e in errs), errs)
+        self.assertTrue(any("interpolated" in e for e in errs), errs)
 
     def test_shell_with_no_script_is_rejected(self):
         compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', '"sh -c"')
@@ -1743,6 +1744,65 @@ class BackupPairingTest(unittest.TestCase):
             '    image: postgres:16-alpine\n    scale: "{{ 2 }}"\n')
         errs = self._run(compose=compose)
         self.assertTrue(any("Jinja" in e for e in errs), errs)
+
+    def test_exotic_numeric_replica_spellings_are_rejected(self):
+        """PyYAML leaves 2e0 and 0o2 as strings and compose reads both as 2. The
+        rule no longer tries to parse them: anything but a literal 1 is refused."""
+        for spelling in ("2e0", "0o2", "2.0", '"2"'):
+            with self.subTest(spelling=spelling):
+                compose = _BACKUP_COMPOSE.replace(
+                    "    image: postgres:16-alpine\n",
+                    f"    image: postgres:16-alpine\n    scale: {spelling}\n")
+                errs = self._run(compose=compose)
+                self.assertTrue(
+                    any("exactly one container" in e for e in errs), errs)
+
+    def test_literal_one_replica_is_accepted(self):
+        """The rule refuses everything it cannot understand, so this pins that it
+        still understands the one value an entry is allowed to write."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    scale: 1\n")
+        self.assertEqual(self._run(compose=compose), [])
+
+    def test_jinja_comment_in_a_hook_is_rejected(self):
+        """`{# ... #}` renders to nothing, so a hook that looks present here is
+        absent at deploy. The regex matched {{ and {% but not {#."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_restore -U a -d a --clean"', '"{# disabled #}"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("Jinja" in e for e in errs), errs)
+
+    def test_jinja_in_the_healthcheck_test_is_rejected(self):
+        """test: ["{{ 'NONE' }}"] renders to a disabled healthcheck."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            '      test: ["{{ \'NONE\' }}"]\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("healthcheck.test" in e for e in errs), errs)
+
+    def test_busybox_with_a_non_applet_shell_is_rejected(self):
+        """busybox ships sh and ash; `busybox bash -c` fails at exec."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'busybox bash -c "pg_dump -d a"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_shell_behind_a_wrapper_is_rejected(self):
+        """`env sh -c pg_dump -U app` hid the shell from a first-word check, then
+        passed the plain-argv path having no operators and no $, while sh really
+        takes -U as $0."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"env sh -c pg_dump -U app"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_malformed_volumes_block_does_not_crash(self):
+        """`volumes: 1` raised TypeError, aborting --all for the whole catalog."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    volumes:\n      - db_data:/var/lib/postgresql/data\n",
+            "    volumes: 1\n")
+        self._run(compose=compose)  # must return, not raise
 
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""

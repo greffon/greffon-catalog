@@ -337,8 +337,11 @@ _SIGNED_INT_RE = re.compile(r"[+-]?\d+")
 # A leading NAME=value word. Shell syntax; docker exec has no idea.
 _ENV_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 # The greffer renders compose through Jinja, so CI reads the TEMPLATE.
-_JINJA_RE = re.compile(r"\{\{|\{%")
+# `{# ... #}` renders to the empty string, so a hook that looks non-empty
+# here becomes an absent one at deploy. All three openers, not just two.
+_JINJA_RE = re.compile(r"\{\{|\{%|\{#")
 _SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh"}
+_BUSYBOX_SHELLS = {"sh", "ash"}
 
 
 def _service_named_volumes(svc_def):
@@ -347,7 +350,11 @@ def _service_named_volumes(svc_def):
     Bind mounts (a source containing a / ) are skipped: they are host paths, not
     named volumes, and never appear in backup.volumes."""
     out = set()
-    for entry in svc_def.get("volumes") or []:
+    vols = svc_def.get("volumes")
+    if not isinstance(vols, list):
+        return out  # `volumes: 1` is malformed; crashing here would suppress
+                    # every diagnostic --all had accumulated for the catalog
+    for entry in vols:
         src = None
         if isinstance(entry, str) and ":" in entry:
             src = entry.split(":", 1)[0]
@@ -391,6 +398,10 @@ def _shell_script_of(argv):
     of what the words after a script mean, which was the source of two more bugs.
     """
     if len(argv) == 4 and os.path.basename(argv[0]) == "busybox":
+        # busybox dispatches an APPLET, and it ships sh/ash, not bash or zsh, and
+        # not a path. `busybox bash -c ...` fails at exec however valid it looks.
+        if argv[1] not in _BUSYBOX_SHELLS:
+            return None
         shell, rest = argv[1], argv[2:]
     elif len(argv) == 3:
         shell, rest = argv[0], argv[1:]
@@ -403,10 +414,12 @@ def _shell_script_of(argv):
 
 def _names_a_shell(argv):
     """argv starts with a shell (or busybox+shell), whatever follows it."""
-    if argv and os.path.basename(argv[0]) in _SHELL_BASENAMES:
-        return True
-    return (len(argv) >= 2 and os.path.basename(argv[0]) == "busybox"
-            and os.path.basename(argv[1]) in _SHELL_BASENAMES)
+    # ANY word, not just the first. `env sh -c pg_dump -U app` hides the shell
+    # behind a wrapper, falls through to the plain-argv path (it has no operators
+    # and no $), and validates, while sh actually takes -U as $0. Checking every
+    # word costs one membership test and needs no wrapper list, where recognising
+    # `env` specifically would just invite the next wrapper.
+    return any(os.path.basename(a) in _SHELL_BASENAMES | {"busybox"} for a in argv)
 
 
 def _shell_operators_in(cmd):
@@ -825,56 +838,39 @@ def validate_greffon_dir(catalog_root, rel_dir):
                                  ("deploy.replicas", (svc.get("deploy") or {}).get("replicas")
                                   if isinstance(svc.get("deploy"), dict) else None),
                                  ("healthcheck.disable", (svc.get("healthcheck") or {}).get("disable")
+                                  if isinstance(svc.get("healthcheck"), dict) else None),
+                                 ("healthcheck.test", (svc.get("healthcheck") or {}).get("test")
                                   if isinstance(svc.get("healthcheck"), dict) else None)):
-                if isinstance(probe, str) and _JINJA_RE.search(probe):
+                # A list too: `test: ["{{ 'NONE' }}"]` renders to a disabled check.
+                if isinstance(probe, list):
+                    probe = " ".join(str(x) for x in probe)
+                if isinstance(probe, str) and (_JINJA_RE.search(probe)
+                                               or _UNESCAPED_DOLLAR_RE.search(probe)):
                     errors.append(
-                        f"{rel_dir}: hook service {svc_name!r} sets {field} from a Jinja "
-                        f"expression ({probe!r}). The greffer renders the compose file before "
+                        f"{rel_dir}: hook service {svc_name!r} sets {field} from a Jinja or "
+                        f"interpolated expression ({probe!r}). The greffer renders the compose file before "
                         f"deploying, so this validates as a harmless string and becomes a "
                         f"container count or a disabled healthcheck at runtime")
-            replicas = svc.get("scale")
-            deploy = svc.get("deploy")
-            if replicas is None and isinstance(deploy, dict):
-                replicas = deploy.get("replicas")
-            # compose coerces a numeric STRING, so `scale: "0"` really does mean
-            # zero containers; isinstance(int) alone let it through. bool is
-            # excluded explicitly because it is an int subclass in Python, so
-            # `scale: true` (a real YAML footgun) otherwise compares equal to 1
-            # and validates silently.
-            if isinstance(replicas, bool):
-                replicas = None
-            elif isinstance(replicas, str) and _SIGNED_INT_RE.fullmatch(replicas.strip()):
-                # fullmatch, not lstrip("+-")+isdigit: that accepted "--1", whose
-                # int() then raised and aborted `--all` for the whole catalog. A
-                # validator that dies reports nothing, which is worse than the
-                # error it was going to print. A value compose itself rejects is
-                # left to compose.
-                replicas = int(replicas.strip())
-            elif isinstance(replicas, str) and "$" in replicas:
-                # `${DB_REPLICAS:-2}` resolves against the greffer's scrubbed
-                # environment, so the default wins and the count is whatever the
-                # entry author put there. Rather than reimplement compose's
-                # interpolation to find out, refuse the indirection: a hook service
-                # runs exactly one container, and that is not a per-deploy choice.
-                errors.append(
-                    f"{rel_dir}: hook service {svc_name!r} sets its replica count by "
-                    f"interpolation ({replicas!r}). The greffer deploys with a scrubbed "
-                    f"environment, so this resolves to the default rather than to whatever "
-                    f"the operator intended, and a hook service must run exactly one "
-                    f"container. Write the literal 1, or leave it unset")
-                replicas = None
-            elif isinstance(replicas, float) and replicas.is_integer():
-                replicas = int(replicas)  # compose normalises 2.0 to 2
-            elif not isinstance(replicas, int):
-                replicas = None
-            if isinstance(replicas, int) and replicas != 1:
-                detail = ("never starts, and the backup fails with no_dump_hook"
-                          if replicas == 0 else
-                          f"starts {replicas} containers, each carrying the hook label, and the "
-                          f"greffer refuses with multiple_database_unsupported")
-                errors.append(
-                    f"{rel_dir}: hook service {svc_name!r} asks for {replicas} replicas, so it "
-                    f"{detail}. A hook service must run exactly one container")
+            for field, count in (("scale", svc.get("scale")),
+                                 ("deploy.replicas",
+                                  (svc.get("deploy") or {}).get("replicas")
+                                  if isinstance(svc.get("deploy"), dict) else None)):
+                # No coercion ladder any more. Every round found another spelling
+                # compose accepts and this did not: "2", 2.0, "${N:-2}", 2e0, 0o2.
+                # Chasing them meant reimplementing compose's number parsing, and
+                # losing that race silently accepted the entry. A hook service runs
+                # exactly one container, so the only value worth accepting is a
+                # literal 1, and anything else is refused WITHOUT being understood.
+                if count is None:
+                    continue
+                if isinstance(count, bool) or not (
+                        isinstance(count, (int, float)) and count == 1):
+                    errors.append(
+                        f"{rel_dir}: hook service {svc_name!r} sets {field} to {count!r}. A "
+                        f"hook service must run exactly one container: the greffer finds the "
+                        f"hook by enumerating running containers, so zero gives no_dump_hook "
+                        f"and more than one gives multiple_database_unsupported. Write the "
+                        f"literal 1, or leave it unset")
             hc = svc.get("healthcheck")
             hc_test = hc.get("test") if isinstance(hc, dict) else None
             disabled = (
@@ -1013,7 +1009,14 @@ def validate_greffon_dir(catalog_root, rel_dir):
         for svc_def in compose["services"].values():
             if not isinstance(svc_def, dict):
                 continue
-            for vol_entry in svc_def.get("volumes") or []:
+            # `volumes: 1` is malformed compose, and iterating it raised TypeError,
+            # which aborted `--all` and discarded every diagnostic collected so far
+            # for every entry. Left alone earlier in this branch because I could not
+            # make it crash; the regression test for the sibling helper reaches it.
+            svc_vols = svc_def.get("volumes")
+            if not isinstance(svc_vols, list):
+                continue
+            for vol_entry in svc_vols:
                 if isinstance(vol_entry, str) and ":" in vol_entry:
                     used_volumes.add(vol_entry.split(":", 1)[0])
         for vol_name in compose_volumes - used_volumes:
