@@ -492,6 +492,13 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 f"backup with volume_unclassified rather than guessing")
 
     db_vols = [v for v, c in backup_vols.items() if c == "database"]
+    if backup_vols and not db_vols and not [v for v, c in backup_vols.items() if c == "data"]:
+        errors.append(
+            f"{rel_dir}: backup.volumes classifies every volume as 'regenerable', which the "
+            f"manager still reads as opted-in and runs HOT. The greffer then has nothing to "
+            f"snapshot and nothing to dump, and fails every backup with no_data_volumes. "
+            f"Classify at least one volume 'data' or 'database', or drop the block entirely "
+            f"to take COLD backups")
 
     if (dump_hooks or restore_hooks) and not backup_vols:
         errors.append(
@@ -524,6 +531,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
             f"{rel_dir}: {len(db_vols)} volumes classed 'database' ({sorted(db_vols)}). The "
             f"greffer's hot path is single-DB; the manager silently downgrades this entry to "
             f"COLD backups, so the hooks would never run")
+    if dump_hooks and restore_hooks and set(dump_hooks) != set(restore_hooks):
+        errors.append(
+            f"{rel_dir}: the dump hook is on {sorted(dump_hooks)} but the restore hook is on "
+            f"{sorted(restore_hooks)}. The greffer keys its manifest by the DUMP service and "
+            f"then looks the restore hook up on that same service, so a split pair backs up "
+            f"fine and fails the restore with no_restore_hook. Put both labels on one service")
     for kind, hooks in (("dump", dump_hooks), ("restore", restore_hooks)):
         if len(hooks) > 1:
             errors.append(
@@ -534,11 +547,27 @@ def validate_greffon_dir(catalog_root, rel_dir):
     if isinstance(compose, dict):
         for svc_name in sorted(hook_services):
             svc = (compose.get("services") or {}).get(svc_name)
-            if isinstance(svc, dict) and not svc.get("healthcheck"):
+            if not isinstance(svc, dict):
+                continue
+            hc = svc.get("healthcheck")
+            hc_test = hc.get("test") if isinstance(hc, dict) else None
+            disabled = (
+                isinstance(hc, dict) and (
+                    hc.get("disable") is True
+                    or hc_test in ("NONE", ["NONE"])
+                )
+            )
+            if not hc:
                 errors.append(
                     f"{rel_dir}: service {svc_name!r} declares a backup hook but has no "
                     f"'healthcheck'. The greffer's hot restore waits for that healthcheck "
                     f"before streaming the dump back in")
+            elif disabled:
+                errors.append(
+                    f"{rel_dir}: service {svc_name!r} declares a backup hook but its "
+                    f"healthcheck is DISABLED ({'disable: true' if hc.get('disable') is True else 'test: NONE'}). "
+                    f"Docker then reports no health state at all, so the hot restore waits for "
+                    f"a 'healthy' that never arrives and times out")
 
     # L4 per-port declarations (optional `ports` list). Mirrors the structural
     # checks in the manager's import_catalog._validate_meta (the importer is
