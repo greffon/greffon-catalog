@@ -366,7 +366,7 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
             # error path that a browser would never see, missing the very cookie it
             # is looking for.
             sess = requests.Session()
-            nxt, hops = url, 0
+            nxt, hops, exhausted = url, 0, False
             while nxt and hops < 10:
                 r = sess.get(nxt, verify=ca_path, timeout=10, allow_redirects=False)
                 responses.append(r)
@@ -379,12 +379,26 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
                         f"({urlsplit(nxt).hostname}); not following")
                     break
                 hops += 1
+                if hops >= 10:
+                    # Ran out of budget while still on-host and still redirecting.
+                    # `r` holds a 3xx, which would sail through the <500 check below
+                    # and report success without ever inspecting the destination.
+                    # Stopping deliberately at an OFF-host hop is different: there we
+                    # have seen everything we are entitled to see.
+                    exhausted = True
         except requests.RequestException:
             r = None
         else:
+            if exhausted:
+                break
             if r is not None and r.status_code < 500:
                 break
         time.sleep(3)
+    if exhausted:
+        log(f"{entry_dir}: cookie check INCONCLUSIVE, still redirecting on the same host "
+            f"after 10 hops. Failing rather than reporting success on a chain whose "
+            f"destination was never reached (a redirect loop is itself worth knowing about).")
+        return False
     if r is None or r.status_code >= 500:
         log(f"{entry_dir}: cookie check INCONCLUSIVE, instance never returned a non-5xx "
             f"response within 180s (last: {getattr(r, 'status_code', 'no response')}). "
