@@ -44,7 +44,7 @@ import subprocess
 import sys
 import time
 import uuid
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -346,15 +346,37 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
     Scope, stated so nobody over-trusts it: it only sees cookies set on the ROOT.
     An app that sets its session cookie on a login or authorization endpoint (Keycloak
     does) needs the assertion in its own spec. This is a floor, not coverage."""
+    # Follow the chain MANUALLY, stopping before the first hop that leaves the
+    # instance host. `allow_redirects=True` would fetch the external destination
+    # first and filter afterwards, which is too late: `verify=ca_path` trusts only
+    # this instance's self-signed certificate, so any real external HTTPS host
+    # raises SSLError, the retry loop below burns its full 180s, and a healthy
+    # entry fails. An app that redirects to an external identity provider is a
+    # normal thing to do.
+    want_host = urlsplit(url).hostname
     deadline = time.time() + 180
     r = None
+    responses = []
     while time.time() < deadline:
+        responses = []
         try:
-            r = requests.get(url, verify=ca_path, timeout=10, allow_redirects=True)
+            nxt, hops = url, 0
+            while nxt and hops < 10:
+                r = requests.get(nxt, verify=ca_path, timeout=10, allow_redirects=False)
+                responses.append(r)
+                loc = r.headers.get("Location") if r.is_redirect else None
+                if not loc:
+                    break
+                nxt = urljoin(nxt, loc)
+                if urlsplit(nxt).hostname != want_host:
+                    log(f"{entry_dir}: redirect leaves the instance host "
+                        f"({urlsplit(nxt).hostname}); not following")
+                    break
+                hops += 1
         except requests.RequestException:
             r = None
         else:
-            if r.status_code < 500:
+            if r is not None and r.status_code < 500:
                 break
         time.sleep(3)
     if r is None or r.status_code >= 500:
@@ -362,34 +384,16 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
             f"response within 180s (last: {getattr(r, 'status_code', 'no response')}). "
             f"Failing rather than passing silently: an unreachable instance proves nothing.")
         return False
-    # Inspect the WHOLE redirect chain, and follow it. Measured across the
-    # catalog, most roots set no cookie at all: stirling-pdf, memos and vscode
-    # answer 200 with none, and freshrss and uptime-kuma answer 302. Stopping at
-    # the first response therefore saw nothing for any of them. Following to the
-    # destination found freshrss's session cookie (HttpOnly, Secure, SameSite),
-    # turning that entry from unmeasured into genuinely verified.
-    #
-    # The chain rather than only the final response, because the original
-    # no-follow behaviour existed to catch a cookie set ON a 302, and that case is
-    # real. Looking at history plus the final response keeps both.
-    #
-    # Same-host only: an app redirecting to an external identity provider would
-    # otherwise have us inspecting someone else's Set-Cookie, and reporting a
-    # third party's cookie hygiene as this entry's is worse than reporting nothing.
-    want_host = urlsplit(url).hostname
-    raw = []
-    for resp in list(r.history) + [r]:
-        if urlsplit(resp.url).hostname != want_host:
-            continue
-        if hasattr(resp.raw, "headers"):
-            raw.extend(resp.raw.headers.get_all("Set-Cookie") or [])
-
     def _attrs(header: str) -> set:
-        # Attributes only: everything after the first ';'. Matching the whole header
-        # would flag a cookie whose VALUE merely contains "httponly", and would
-        # accept a Secure belonging to a different cookie.
+        # Attributes only: everything after the first ';'. Matching the whole
+        # header would flag a cookie whose VALUE merely contains "httponly", and
+        # would accept a Secure belonging to a different cookie.
         return {a.strip().split("=", 1)[0].lower() for a in header.split(";")[1:]}
 
+    raw = []
+    for resp in responses:
+        if hasattr(resp.raw, "headers"):
+            raw.extend(resp.raw.headers.get_all("Set-Cookie") or [])
     bad = []
     for c in raw or []:
         attrs = _attrs(c)
