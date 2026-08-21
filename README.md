@@ -122,10 +122,19 @@ By default every compose-exposed port is **Tier A**: the greffer strips it from 
 ### Hot Backup (`backup.volumes` + dump/restore hooks)
 
 By default an instance is **unclassified**, and a backup is COLD: the greffer stops the instance,
-snapshots its volumes, and starts it again. To get a HOT backup (no downtime, and databases
-captured by an app-aware dump rather than a raw volume snapshot) an entry must declare **both**
-halves. They live in different files and the platform reads them from different places, which is
-exactly why they drift.
+snapshots its volumes, and starts it again. Classifying volumes opts the entry into HOT backup (no
+downtime), and what that requires depends on the classes you use:
+
+| Entry shape | Needs | Greffer floor | Below the floor |
+|---|---|---|---|
+| only `data` / `regenerable` volumes | just `backup.volumes`, **no hooks** | >= 0.8.0 | falls back to COLD |
+| any `database` volume | `backup.volumes` **and** a dump + restore hook on that service | >= 0.9.0 | falls back to COLD |
+
+The fallback is deliberate: an older worker takes a COLD backup rather than failing, so an entry
+declaring hooks still works everywhere, just without the no-downtime path.
+
+The two halves live in different files and the platform reads them from different places, which is
+exactly why they drift, and why CI now checks they agree.
 
 **metadata.json** classifies every volume:
 

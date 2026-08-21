@@ -1332,5 +1332,154 @@ class SmokeRequiredConfigTitleTest(unittest.TestCase):
             )
 
 
+
+# ---------------------------------------------------------------------------
+# Hot-backup pairing. Every check below reproduces a way an entry can declare
+# backup and have it fail at RUNTIME while looking fine, which is exactly what
+# shipped on keycloak/1.0: hooks and a healthcheck in the compose, no
+# backup.volumes in the metadata, so the manager read the instance as
+# unclassified, took a COLD backup, and never invoked the hooks.
+# ---------------------------------------------------------------------------
+
+_BACKUP_COMPOSE = textwrap.dedent("""\
+    services:
+      app:
+        image: nginx
+        ports:
+          - "8080:8080"
+      db:
+        image: postgres:16-alpine
+        labels:
+          com.greffon.backup.dump: "pg_dump -U a -d a -Fc"
+          com.greffon.backup.restore: "pg_restore -U a -d a --clean"
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]
+        volumes:
+          - db_data:/var/lib/postgresql/data
+    volumes:
+      db_data:
+    """)
+
+
+def _backup_meta(**over):
+    meta = {
+        "name": "Test", "logo": "https://example.com/l.png", "description": "d",
+        "categories": [], "images": [], "configurations": [],
+        "backup": {"volumes": {"db_data": "database"}},
+    }
+    meta.update(over)
+    return meta
+
+
+class BackupPairingTest(unittest.TestCase):
+    def _run(self, *, metadata=None, compose=None):
+        """Backup-related errors only. The shared fixture writes no
+        smoke_test.spec.ts, so the linter always reports that separately and it
+        is not what these tests are about (matches the SMTP tests' convention)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=metadata or _backup_meta(),
+                                 compose_yaml=compose or _BACKUP_COMPOSE)
+            errs = validate_greffon_dir(tmp, rel)
+            terms = ("backup", "hook", "healthcheck", "regenerable", "volume")
+            return [e for e in errs if any(x in e.lower() for x in terms)]
+
+    def test_valid_declaration_passes(self):
+        self.assertEqual(self._run(), [], "a correct hot-backup declaration must lint clean")
+
+    def test_hooks_without_classification(self):
+        """The keycloak defect: hooks present, no backup.volumes -> silent COLD."""
+        meta = _backup_meta(); del meta["backup"]
+        errs = self._run(metadata=meta)
+        self.assertTrue(any("no 'backup.volumes'" in e for e in errs), errs)
+
+    def test_database_class_without_dump_hook(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '      com.greffon.backup.dump: "pg_dump -U a -d a -Fc"\n', "")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("backup.dump" in e or "dump" in e for e in errs), errs)
+
+    def test_split_dump_and_restore_services(self):
+        """Manifest is keyed by the dump service, so a split pair fails restore."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      com.greffon.backup.restore: "pg_restore -U a -d a --clean"\n', ""
+        ).replace("  db:\n", "  other:\n    image: busybox\n    labels:\n"
+                              "      com.greffon.backup.restore: \"pg_restore -U a -d a --clean\"\n"
+                              "  db:\n", 1)
+        errs = self._run(compose=compose)
+        self.assertTrue(any("restore hook is on" in e for e in errs), errs)
+
+    def test_all_regenerable_is_rejected(self):
+        """Non-empty map selects HOT, but nothing to snapshot -> no_data_volumes."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      com.greffon.backup.dump: "pg_dump -U a -d a -Fc"\n', ""
+        ).replace('      com.greffon.backup.restore: "pg_restore -U a -d a --clean"\n', "")
+        errs = self._run(metadata=_backup_meta(backup={"volumes": {"db_data": "regenerable"}}),
+                         compose=compose)
+        self.assertTrue(any("regenerable" in e for e in errs), errs)
+
+    def test_unclassified_compose_volume(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "volumes:\n  db_data:\n", "volumes:\n  db_data:\n  extra:\n")
+        errs = self._run(compose=compose)
+        # Assert the BACKUP message, not just the volume name: the pre-existing
+        # 'declared but never mounted' check also names 'extra', so a looser
+        # assertion passes with this rule deleted and pins nothing.
+        self.assertTrue(
+            any("backup.volumes does not classify it" in e for e in errs), errs)
+
+    def test_classified_volume_absent_from_compose(self):
+        errs = self._run(metadata=_backup_meta(backup={"volumes": {"nope": "database"}}))
+        self.assertTrue(any("'nope'" in e for e in errs), errs)
+
+    def test_invalid_class(self):
+        errs = self._run(metadata=_backup_meta(backup={"volumes": {"db_data": "bogus"}}))
+        self.assertTrue(any("must be one of" in e for e in errs), errs)
+
+    def test_non_string_class_does_not_crash(self):
+        """A list class is unhashable; membership must not raise and kill --all."""
+        errs = self._run(metadata=_backup_meta(backup={"volumes": {"db_data": []}}))
+        self.assertTrue(any("must be a string" in e for e in errs), errs)
+
+    def test_missing_healthcheck(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '    healthcheck:\n      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n', "")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("healthcheck" in e for e in errs), errs)
+
+    def test_disabled_healthcheck(self):
+        """`disable: true` is truthy but Docker then reports no health at all."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]',
+            "      disable: true")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("DISABLED" in e for e in errs), errs)
+
+    def test_whitespace_only_hook_command(self):
+        """shlex.split yields no argv, so the greffer has nothing to execute."""
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', '"   "')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("empty or only" in e for e in errs), errs)
+
+    def test_empty_hook_command(self):
+        """An empty value is skipped by the greffer as if the hook were absent."""
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', '""')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("empty or only" in e for e in errs), errs)
+
+    def test_unmatched_quote_hook_command(self):
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', "\"pg_dump -c 'oops\"")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not parse" in e for e in errs), errs)
+
+    def test_no_backup_block_is_fine(self):
+        """An entry that never opts in stays COLD and must not be nagged."""
+        compose = _BACKUP_COMPOSE.replace(
+            '    labels:\n      com.greffon.backup.dump: "pg_dump -U a -d a -Fc"\n'
+            '      com.greffon.backup.restore: "pg_restore -U a -d a --clean"\n', "")
+        meta = _backup_meta(); del meta["backup"]
+        self.assertEqual(self._run(metadata=meta, compose=compose), [],
+                         "an entry that never opts in must not be nagged")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

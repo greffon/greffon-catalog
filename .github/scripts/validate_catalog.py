@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 
 import yaml
@@ -479,13 +480,43 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     (item.split("=", 1) + [""])[:2] for item in labels if isinstance(item, str))
             if not isinstance(labels, dict):
                 continue
-            if labels.get("com.greffon.backup.dump"):
-                dump_hooks.append(svc_name); hook_services.add(svc_name)
-            if labels.get("com.greffon.backup.restore"):
-                restore_hooks.append(svc_name); hook_services.add(svc_name)
+            for kind, bucket in (("dump", dump_hooks), ("restore", restore_hooks)):
+                val = labels.get(f"com.greffon.backup.{kind}")
+                if val is None:
+                    continue
+                hook_services.add(svc_name)
+                if not isinstance(val, str):
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label must be a string, "
+                        f"got {type(val).__name__}")
+                    continue
+                try:
+                    argv = shlex.split(val)
+                except ValueError as exc:
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label does not parse as a "
+                        f"command ({exc}). The greffer runs it through shlex.split and would "
+                        f"raise at backup time, not here")
+                    continue
+                if not argv:
+                    # Two different failures, both silent, hence one check:
+                    # an EMPTY value never reaches shlex at all -- the greffer's
+                    # `if not cmd: continue` treats the hook as absent, so the
+                    # entry quietly degrades to a COLD backup (or fails the
+                    # restore with no_restore_hook). A WHITESPACE-ONLY value is
+                    # truthy, gets past that guard, and builds a bare
+                    # `timeout <secs>` argv with no command after it.
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label is empty or only "
+                        f"whitespace, so it yields no command. An empty value is skipped by the "
+                        f"greffer as if the hook were absent (silent COLD backup / "
+                        f"no_restore_hook); a whitespace-only value builds a 'timeout' argv with "
+                        f"nothing to run")
+                    continue
+                bucket.append(svc_name)
 
     if backup_vols and isinstance(compose, dict):
-        for vol_name in sorted(compose_volumes - set(backup_vols)):
+        for vol_name in sorted(compose_volumes - set(backup_vols), key=str):
             errors.append(
                 f"{rel_dir}: compose declares volume {vol_name!r} but backup.volumes does not "
                 f"classify it. The greffer looks the class up by compose name and refuses the "
@@ -502,13 +533,13 @@ def validate_greffon_dir(catalog_root, rel_dir):
 
     if (dump_hooks or restore_hooks) and not backup_vols:
         errors.append(
-            f"{rel_dir}: declares backup hooks on {sorted(hook_services)} but metadata.json has "
+            f"{rel_dir}: declares backup hooks on {sorted(hook_services, key=str)} but metadata.json has "
             f"no 'backup.volumes'. The manager reads classes only from there, so the instance is "
             f"unclassified, the backup falls back to COLD (stop the instance, snapshot volumes) "
             f"and these hooks are never invoked. Add the block, or drop the hooks")
     if (dump_hooks or restore_hooks) and backup_vols and not db_vols:
         errors.append(
-            f"{rel_dir}: declares backup hooks on {sorted(hook_services)} but no volume is "
+            f"{rel_dir}: declares backup hooks on {sorted(hook_services, key=str)} but no volume is "
             # str() every value and dedupe on that: a malformed class may be a list
             # or dict, and set() over raw values raises TypeError on the unhashable
             # ones, which is the crash the type check above exists to prevent.
@@ -528,24 +559,24 @@ def validate_greffon_dir(catalog_root, rel_dir):
             f"never restored")
     if len(db_vols) > 1:
         errors.append(
-            f"{rel_dir}: {len(db_vols)} volumes classed 'database' ({sorted(db_vols)}). The "
+            f"{rel_dir}: {len(db_vols)} volumes classed 'database' ({sorted(db_vols, key=str)}). The "
             f"greffer's hot path is single-DB; the manager silently downgrades this entry to "
             f"COLD backups, so the hooks would never run")
     if dump_hooks and restore_hooks and set(dump_hooks) != set(restore_hooks):
         errors.append(
-            f"{rel_dir}: the dump hook is on {sorted(dump_hooks)} but the restore hook is on "
-            f"{sorted(restore_hooks)}. The greffer keys its manifest by the DUMP service and "
+            f"{rel_dir}: the dump hook is on {sorted(dump_hooks, key=str)} but the restore hook is on "
+            f"{sorted(restore_hooks, key=str)}. The greffer keys its manifest by the DUMP service and "
             f"then looks the restore hook up on that same service, so a split pair backs up "
             f"fine and fails the restore with no_restore_hook. Put both labels on one service")
     for kind, hooks in (("dump", dump_hooks), ("restore", restore_hooks)):
         if len(hooks) > 1:
             errors.append(
-                f"{rel_dir}: {len(hooks)} services declare a backup.{kind} hook ({sorted(hooks)}). "
+                f"{rel_dir}: {len(hooks)} services declare a backup.{kind} hook ({sorted(hooks, key=str)}). "
                 f"The greffer refuses with multiple_database_unsupported")
     # The greffer's hot restore waits on the DB service's compose healthcheck
     # before streaming pg_restore in; without one it cannot know when to start.
     if isinstance(compose, dict):
-        for svc_name in sorted(hook_services):
+        for svc_name in sorted(hook_services, key=str):
             svc = (compose.get("services") or {}).get(svc_name)
             if not isinstance(svc, dict):
                 continue
