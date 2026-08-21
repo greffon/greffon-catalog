@@ -1867,6 +1867,47 @@ class BackupPairingTest(unittest.TestCase):
         errs = self._run(metadata=meta, compose=compose)
         self.assertTrue(any("reserved suffix" in e for e in errs), errs)
 
+    def test_jinja_in_a_compose_volume_name_is_rejected(self):
+        """`app_{{ "nginx_volume" }}` does not end with the reserved suffix in
+        template form and does after rendering. Rejecting Jinja on every volume
+        name is what makes the other volume rules sound, rather than each of them
+        having to reason about template-vs-rendered separately."""
+        compose = _BACKUP_COMPOSE.replace(
+            "  app:\n    image: nginx\n",
+            '  app:\n    image: nginx\n    volumes:\n'
+            '      - \'app_{{ "nginx_volume" }}:/data\'\n'
+        ).replace("volumes:\n  db_data:\n",
+                  'volumes:\n  db_data:\n  \'app_{{ "nginx_volume" }}\':\n')
+        meta = _backup_meta()
+        meta.pop("backup", None)  # cold entry: the rule must not need a backup block
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(
+            any("cannot know the runtime name" in e for e in errs), errs)
+
+    def test_empty_program_name_is_rejected(self):
+        """shlex.split("''") is [''], non-empty, so the no-argv branch missed it."""
+        # Double-quoted YAML so the VALUE is the two characters '', which is what
+        # shlex.split turns into ['']. Single-quoting it yields a literal quote.
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"\'\'"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("empty program name" in e for e in errs), errs)
+
+    def test_none_prefixed_healthcheck_is_disabled(self):
+        """docker disables on a LEADING NONE, whatever follows it."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            '      test: ["NONE", "anything"]\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("DISABLED" in e for e in errs), errs)
+
+    def test_bare_shell_negation_is_rejected(self):
+        """`! pg_dump ...` asks docker exec to run a program named `!`."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"! pg_dump -U a -d a -Fc"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""
         compose = _BACKUP_COMPOSE.replace(

@@ -327,7 +327,7 @@ def _looks_one_shot(svc_name, svc_def):
 # wrong three times running (`2>&1` lexes as '>&', a here-string as '<<<'), and
 # each miss looked like a passing check. Punctuation-only is the property that
 # actually matters, so it is tested directly instead of enumerated.
-_PUNCT = "();<>|&"
+_PUNCT = "();<>|&!"
 # $VAR, ${VAR} and compose's escaped $$VAR. Nothing expands them without a shell.
 _EXPANSION_RE = re.compile(r"\$\$?\{?[A-Za-z_]")
 # A lone $ before a name. `$$` is compose's escape for a literal $, so runs of
@@ -671,6 +671,15 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"script to the shell. It exits 0 having written nothing, so the backup "
                         f"fails with dump_empty rather than reporting an error")
                     continue
+                if argv and not argv[0].strip():
+                    # shlex.split("''") is [''], which is non-empty, so the
+                    # no-argv branch below never sees it. The greffer then builds
+                    # `timeout 3600 ''` and execs nothing.
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label has an empty "
+                        f"program name. The greffer builds a timeout argv around it and there "
+                        f"is nothing to execute, so every backup or restore fails")
+                    continue
                 if argv and script is None and _ENV_ASSIGN_RE.match(argv[0]):
                     # `PGPASSWORD=x pg_dump ...` is shell syntax with no punctuation
                     # and no $, so both scans below pass it. docker exec then looks
@@ -748,6 +757,21 @@ def validate_greffon_dir(catalog_root, rel_dir):
     #     which does, and which additionally collides with the sidecar's own.
     # Prefixing with "_" models the namespacing without inventing an instance id.
     for vol_name in sorted(compose_volumes, key=str):
+        # Jinja is refused on EVERY volume name, not just on the classified ones.
+        # This is the structural half of the fix rather than another special case:
+        # three rounds running found this rule family applied to the wrong set of
+        # names, because each rule had to reason about template-vs-rendered on its
+        # own. With no name containing Jinja, every rule below is comparing literal
+        # strings and the whole question stops arising. `app_{{ "nginx_volume" }}`
+        # was the case in hand: it does not end with the reserved suffix here and
+        # renders to a name that does.
+        if isinstance(vol_name, str) and _JINJA_RE.search(vol_name):
+            errors.append(
+                f"{rel_dir}: compose declares volume {vol_name!r}, which contains a Jinja "
+                f"expression. The greffer renders it before deploying, so CI cannot know the "
+                f"runtime name and cannot tell whether it is classified, reserved, or mounted "
+                f"by the right service. Use a literal name")
+            continue
         if isinstance(vol_name, str) and f"_{vol_name}".endswith(_NGINX_VOLUME_SUFFIX):
             errors.append(
                 f"{rel_dir}: compose declares volume {vol_name!r}, whose runtime name ends "
@@ -912,7 +936,10 @@ def validate_greffon_dir(catalog_root, rel_dir):
             disabled = (
                 isinstance(hc, dict) and (
                     _compose_bool(hc.get("disable")) is True
-                    or hc_test in ("NONE", ["NONE"])
+                    # docker disables on a LEADING NONE, whatever follows it,
+                    # so an exact comparison against ["NONE"] was too narrow.
+                    or hc_test == "NONE"
+                    or (isinstance(hc_test, list) and hc_test[:1] == ["NONE"])
                 )
             )
             # A truthy mapping is not a healthcheck. `healthcheck: {interval: 5s}`
