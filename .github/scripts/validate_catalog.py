@@ -326,29 +326,82 @@ def _looks_one_shot(svc_name, svc_def):
 # Tokens shlex hands back as their own argv entry when a hook is written as if a
 # shell were going to run it. `docker exec` gets the argv directly, so they are not.
 _SHELL_OPERATORS = {"|", "||", "&", "&&", ";", ";;", ">", ">>", "<", "<<",
-                    ">|", "<>", "|&", "(", ")"}
+                    ">|", "<>", "|&", "(", ")",
+                    # punctuation_chars emits compound redirections as one token:
+                    # `2>&1` lexes as ['2', '>&', '1'], so the bare '>' above never
+                    # matches and the whole form slipped through.
+                    ">&", "&>", "<&", "&>>", ">>&"}
 # $VAR, ${VAR} and compose's escaped $$VAR. Nothing expands them without a shell.
 _EXPANSION_RE = re.compile(r"\$\$?\{?[A-Za-z_]")
+# A lone $ before a name. `$$` is compose's escape for a literal $, so runs of
+# dollars are collapsed pairwise first and only an odd one left over counts.
+_UNESCAPED_DOLLAR_RE = re.compile(r"(?<!\$)(?:\$\$)*\$(?=\{?[A-Za-z_])")
+_SIGNED_INT_RE = re.compile(r"[+-]?\d+")
 _SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh", "busybox"}
 
 
-def _invokes_a_shell(argv):
-    """True only for `sh -c ...` / `/bin/bash -c ...` / `busybox sh -c ...`.
+def _shell_script_index(argv):
+    """Index of the script argument of a `sh -c` style invocation, else None.
 
-    POSITION matters, and an earlier version of this got it wrong by testing
-    membership: `busybox timeout 10 pg_dump -c db | gzip` put a shell basename in
-    the first two words and borrowed pg_dump's `-c` from the far end of the argv,
-    so it claimed a shell and waved the pipe through. The -c must belong to the
-    shell, so it is matched at the position that follows it.
+    Returns an index rather than a bool because every caller needs to know WHERE
+    the script is: what precedes it belongs to the shell, what follows it is
+    passed to the script as positional parameters, and only the script itself is
+    actually interpreted.
+
+    Two earlier versions of this were wrong in opposite directions. Testing
+    membership ("a shell basename in the first two words and a -c anywhere") let
+    `busybox timeout 10 pg_dump -c db | gzip` borrow pg_dump's -c and pass. Then
+    requiring argv[1] to be exactly "-c" rejected `sh -eu -c '...'` and
+    `bash -lc '...'`, which are legitimate and do run the script. So the option
+    words are walked properly: a leading `-` word CONTAINING a c carries the -c,
+    and the script is the word after it.
 
     `sh` with no -c is deliberately not a shell here: an interactive shell would
     hang the backup rather than run it."""
-    if len(argv) >= 2 and os.path.basename(argv[0]) in _SHELL_BASENAMES - {"busybox"}:
-        return argv[1] == "-c"
-    if (len(argv) >= 3 and os.path.basename(argv[0]) == "busybox"
+    start = None
+    if argv and os.path.basename(argv[0]) in _SHELL_BASENAMES - {"busybox"}:
+        start = 0
+    elif (len(argv) >= 2 and os.path.basename(argv[0]) == "busybox"
             and os.path.basename(argv[1]) in _SHELL_BASENAMES - {"busybox"}):
-        return argv[2] == "-c"
-    return False
+        start = 1
+    if start is None:
+        return None
+    for i in range(start + 1, len(argv)):
+        word = argv[i]
+        if not word.startswith("-") or word == "-":
+            return None  # a non-option word before any -c: not `sh -c`
+        if "c" in word[1:]:
+            return i + 1 if i + 1 < len(argv) else None
+    return None
+
+
+def _service_named_volumes(svc_def):
+    """Named volumes a service mounts, from both the short and long compose forms.
+
+    Bind mounts (a source containing a / ) are skipped: they are host paths, not
+    named volumes, and never appear in backup.volumes."""
+    out = set()
+    for entry in svc_def.get("volumes") or []:
+        src = None
+        if isinstance(entry, str) and ":" in entry:
+            src = entry.split(":", 1)[0]
+        elif isinstance(entry, dict) and entry.get("type") == "volume":
+            src = entry.get("source")
+        if isinstance(src, str) and src and "/" not in src:
+            out.add(src)
+    return out
+
+
+def _looks_like_a_shell(argv):
+    """argv[0] (or busybox's argv[1]) names a shell, regardless of its options."""
+    if argv and os.path.basename(argv[0]) in _SHELL_BASENAMES - {"busybox"}:
+        return True
+    return (len(argv) >= 2 and os.path.basename(argv[0]) == "busybox"
+            and os.path.basename(argv[1]) in _SHELL_BASENAMES - {"busybox"})
+
+
+def _invokes_a_shell(argv):
+    return _shell_script_index(argv) is not None
 
 
 def _shell_operators_in(cmd):
@@ -542,25 +595,62 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"command ({exc}). The greffer runs it through shlex.split and would "
                         f"raise at backup time, not here")
                     continue
-                if argv and not _invokes_a_shell(argv):
+                script_at = _shell_script_index(argv) if argv else None
+                # A single $ is eaten by COMPOSE, before any container sees it, and
+                # it interpolates from the compose process's own environment. So
+                # `$PGUSER` resolves to empty and the hook silently loses the
+                # argument. This is true whether or not a shell is invoked, so it
+                # is checked on the raw label ahead of everything else.
+                if argv and _UNESCAPED_DOLLAR_RE.search(val):
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label uses a single-$ "
+                        f"variable. compose interpolates that from its OWN environment at "
+                        f"deploy time, not the container's, so it resolves to empty and the "
+                        f"argument is lost. Write $$VAR to pass a literal $ through to the "
+                        f"container")
+                    continue
+                if argv and _looks_like_a_shell(argv) and script_at is None:
+                    # `sh -c` with nothing after it, i.e. -c present but no script.
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label invokes a shell "
+                        f"with no script to run. The greffer execs it as-is, so the dump "
+                        f"produces nothing and the backup fails with dump_empty")
+                    continue
+                if script_at is not None and not argv[script_at].strip():
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label passes an empty "
+                        f"script to the shell. It exits 0 having written nothing, so the backup "
+                        f"fails with dump_empty rather than reporting an error")
+                    continue
+                if argv:
                     # The greffer runs `docker exec <container> <argv>` with no
-                    # shell (backup.py:272, :346), so a pipe, a redirect or a
-                    # $VAR is passed to the program as a literal argument and the
-                    # backup fails at runtime. Note this is about whether a shell
-                    # is INVOKED, not about the characters: the MySQL entries
-                    # legitimately use `sh -c '...; exec mysqldump ...'`, where
-                    # the metacharacters belong to a shell that really is there.
-                    stray = _shell_operators_in(val)
-                    expand = [tok for tok in argv if _EXPANSION_RE.search(tok)]
+                    # shell (backup.py:272, :346), so a pipe or a redirect is passed
+                    # to the program as a literal argument. This is about whether a
+                    # shell is INVOKED, not about which characters appear: the MySQL
+                    # entries legitimately use `sh -c '...; exec mysqldump ...'`.
+                    #
+                    # When a shell IS invoked only the SCRIPT is interpreted by it.
+                    # Operators after the script are argv the shell hands to that
+                    # script as positional parameters, so `sh -c pg_dump | gzip` is
+                    # just as broken as the bare form and has to be checked too.
+                    scope = val if script_at is None else " ".join(
+                        shlex.quote(a) for a in argv[script_at + 1:])
+                    stray = _shell_operators_in(scope)
+                    expand = ([tok for tok in argv if _EXPANSION_RE.search(tok)]
+                              if script_at is None else [])
                     if stray or expand:
                         what = (f"shell operators {stray}" if stray
                                 else f"variable expansions {expand}")
+                        where = ("but does not invoke a shell"
+                                 if script_at is None else
+                                 "OUTSIDE the -c script, where the shell does not "
+                                 "interpret them")
                         errors.append(
                             f"{rel_dir}: service {svc_name!r} backup.{kind} label uses {what} "
-                            f"but does not invoke a shell. The greffer execs the argv directly, "
-                            f"so these are passed to the program as literal arguments and never "
-                            f"interpreted. Wrap the command in \"sh -c '...'\" if you need a "
-                            f"shell (note compose eats a single $, so write $$VAR)")
+                            f"{where}. The greffer execs the argv directly, so these are passed "
+                            f"to the program as literal arguments and never interpreted. Wrap "
+                            f"the command in \"sh -c '...'\" if you need a shell (note compose "
+                            f"eats a single $, so write $$VAR)")
                         continue
                 if not argv:
                     # Two different failures, both silent, hence one check:
@@ -652,6 +742,31 @@ def validate_greffon_dir(catalog_root, rel_dir):
             # compose file: _dump_hooks() walks the instance's running containers
             # and reads the label off each (backup.py:541-549). So the checks above,
             # which count SERVICES, can pass while the runtime count is 0 or 2.
+            # The greffer enumerates RUNNING containers, so a service that runs to
+            # completion has no container to exec into by the time the backup
+            # starts. Same no_dump_hook as the profiles case, different reason.
+            if _looks_one_shot(svc_name, svc):
+                errors.append(
+                    f"{rel_dir}: hook service {svc_name!r} looks like a one-shot (it runs to "
+                    f"completion rather than staying up). The greffer looks for the hook on a "
+                    f"RUNNING container, so there is nothing to exec into and the backup fails "
+                    f"with no_dump_hook. Put the hook on the long-running database service")
+            # P0-adjacent: the greffer's restore guard reads DB volumes from DOCKER
+            # STATE, treating every volume mounted by the dump service as database
+            # state (backup.py _db_volumes_from_containers). If one of those is
+            # classed 'data' it is also in the data-restore set, the guard sees the
+            # overlap and aborts with db_volume_misclassified. The backup succeeds
+            # every time and the restore can never run, which is the worst shape a
+            # backup defect can take.
+            for vol_name in _service_named_volumes(svc):
+                if backup_vols.get(vol_name) == "data":
+                    errors.append(
+                        f"{rel_dir}: hook service {svc_name!r} mounts volume {vol_name!r}, which "
+                        f"backup.volumes classes 'data'. The greffer reads DB volumes from "
+                        f"docker state, so this volume counts as database state AND is in the "
+                        f"data-restore set; the restore refuses with db_volume_misclassified "
+                        f"while every backup reports success. Move it off the database service, "
+                        f"or class it 'database'")
             if svc.get("profiles"):
                 errors.append(
                     f"{rel_dir}: hook service {svc_name!r} declares profiles "
@@ -669,7 +784,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
             # and validates silently.
             if isinstance(replicas, bool):
                 replicas = None
-            elif isinstance(replicas, str) and replicas.strip().lstrip("+-").isdigit():
+            elif isinstance(replicas, str) and _SIGNED_INT_RE.fullmatch(replicas.strip()):
+                # fullmatch, not lstrip("+-")+isdigit: that accepted "--1", whose
+                # int() then raised and aborted `--all` for the whole catalog. A
+                # validator that dies reports nothing, which is worse than the
+                # error it was going to print. A value compose itself rejects is
+                # left to compose.
                 replicas = int(replicas.strip())
             elif not isinstance(replicas, int):
                 replicas = None

@@ -1582,6 +1582,73 @@ class BackupPairingTest(unittest.TestCase):
         errs = self._run(compose=compose)
         self.assertTrue(any("no usable 'test'" in e for e in errs), errs)
 
+    def test_data_volume_on_the_hook_service_is_rejected(self):
+        """Backs up fine forever and can never be restored: the greffer's restore
+        guard reads DB volumes from docker state, so a data-classed volume on the
+        dump service is in both sets and aborts with db_volume_misclassified."""
+        compose = _BACKUP_COMPOSE.replace(
+            "      - db_data:/var/lib/postgresql/data\n",
+            "      - db_data:/var/lib/postgresql/data\n      - db_extra:/extra\n"
+        ).replace("volumes:\n  db_data:\n", "volumes:\n  db_data:\n  db_extra:\n")
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database", "db_extra": "data"}}
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(
+            any("db_volume_misclassified" in e for e in errs), errs)
+
+    def test_single_dollar_inside_a_shell_hook_is_rejected(self):
+        """compose eats it before the container exists, so the arg goes missing."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'sh -c "pg_dump -U $PGUSER"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("single-$" in e for e in errs), errs)
+
+    def test_operator_outside_the_shell_script_is_rejected(self):
+        """`sh -c pg_dump | gzip` puts the pipe OUTSIDE the -c script, where it is
+        an inert argv word rather than something the shell interprets."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"sh -c pg_dump | gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("OUTSIDE the -c script" in e for e in errs), errs)
+
+    def test_compound_redirection_is_rejected(self):
+        """punctuation_chars lexes 2>&1 as ['2', '>&', '1'], so a bare '>' misses."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a 2>&1"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_shell_options_before_dash_c_are_accepted(self):
+        """Guards against over-rejection: `sh -eu -c` really does run the script."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'sh -eu -c "pg_dump -U a -d a -Fc"'""")
+        self.assertEqual(self._run(compose=compose), [])
+
+    def test_shell_with_no_script_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', '"sh -c"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no script to run" in e for e in errs), errs)
+
+    def test_shell_with_an_empty_script_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', """'sh -c ""'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("empty script" in e for e in errs), errs)
+
+    def test_one_shot_hook_service_is_rejected(self):
+        """It has exited by backup time, so there is no container to exec into."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    command: ["sh", "-c", "setup; exit 0"]\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("one-shot" in e for e in errs), errs)
+
+    def test_malformed_replica_string_does_not_crash(self):
+        """int("--1") raised and aborted --all for the entire catalog."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    scale: "--1"\n')
+        self._run(compose=compose)  # must return, not raise
+
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""
         compose = _BACKUP_COMPOSE.replace(

@@ -138,9 +138,14 @@ Two constraints on the hook command itself, both enforced by CI:
 - **It is exec'd with no shell.** A pipe, a redirect or a `$VAR` is handed to the program as a
   literal argument. Wrap it in `sh -c '...'` when you need one, and write `$$VAR` so compose passes
   the `$` through rather than interpolating it away.
-- **Its service must run exactly one container.** The greffer finds the hook by looking at running
-  containers, so a service behind a `profiles:` never starts (no_dump_hook) and one with
-  `replicas: 2` presents the label twice (multiple_database_unsupported).
+- **Its service must run exactly one container, and keep running.** The greffer finds the hook by
+  looking at running containers, so a service behind a `profiles:` never starts (no_dump_hook), one
+  with `replicas: 2` presents the label twice (multiple_database_unsupported), and a one-shot that
+  exits after deploy has nothing left to exec into (no_dump_hook).
+- **Its service must not mount a `data` volume.** The restore guard reads database volumes from
+  docker state, so any volume on the dump service counts as database state. If it is also classed
+  `data` it sits in both sets and the restore refuses with db_volume_misclassified, while every
+  backup keeps reporting success.
 
 The two halves live in different files and the platform reads them from different places, which is
 exactly why they drift, and why CI now checks they agree.
