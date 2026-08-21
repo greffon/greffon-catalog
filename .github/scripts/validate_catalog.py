@@ -342,6 +342,9 @@ _ENV_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _JINJA_RE = re.compile(r"\{\{|\{%|\{#")
 _SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh"}
 _BUSYBOX_SHELLS = {"sh", "ash"}
+# The greffer excludes its regenerated sidecar volume by SUFFIX match, so this
+# ending is reserved for every entry, not just for the volume it generates.
+_NGINX_VOLUME_SUFFIX = "_nginx_volume"
 
 
 def _service_named_volumes(svc_def):
@@ -441,7 +444,8 @@ def _shell_operators_in(cmd):
     lex.commenters = ""
     try:
         return [tok for tok in lex
-                if tok and (all(ch in _PUNCT for ch in tok) or tok == "#")]
+                if tok and (all(ch in _PUNCT for ch in tok) or tok == "#"
+                            or "`" in tok or "$(" in tok)]
     except ValueError:
         return []  # unbalanced quote: already reported by the shlex.split above
 
@@ -720,6 +724,31 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 f"{rel_dir}: compose declares volume {vol_name!r} but backup.volumes does not "
                 f"classify it. The greffer looks the class up by compose name and refuses the "
                 f"backup with volume_unclassified rather than guessing")
+
+    for vol_name in sorted(backup_vols, key=str):
+        if not isinstance(vol_name, str):
+            continue
+        if _JINJA_RE.search(vol_name):
+            # The compose key is RENDERED before deploy; this metadata key is not.
+            # Both files reading `data_{{ instance_id }}` looks consistent here and
+            # is two different names at runtime, so the greffer looks up the
+            # rendered one, finds no class, and refuses with volume_unclassified.
+            errors.append(
+                f"{rel_dir}: backup.volumes classifies {vol_name!r}, which contains a Jinja "
+                f"expression. The greffer renders the compose volume name but not this key, "
+                f"so the two stop matching at deploy and the backup fails with "
+                f"volume_unclassified. Use a literal name")
+        if vol_name.endswith(_NGINX_VOLUME_SUFFIX):
+            # The greffer skips its regenerated sidecar volume by SUFFIX, not by
+            # exact name, so a catalog volume ending the same way is skipped with
+            # it. That is a silent omission: the backup still succeeds if any other
+            # artifact exists, and this volume is simply not in it.
+            errors.append(
+                f"{rel_dir}: backup.volumes classifies {vol_name!r}, which ends with the "
+                f"reserved suffix {_NGINX_VOLUME_SUFFIX!r}. The greffer drops every volume "
+                f"with that ending when collecting data volumes, since that is how it skips "
+                f"its own regenerated sidecar volume, so this one is silently left out of the "
+                f"snapshot while the backup reports success. Rename it")
 
     db_vols = [v for v, c in backup_vols.items() if c == "database"]
     # `all(... == "regenerable")` and not merely "no data and no database": a map

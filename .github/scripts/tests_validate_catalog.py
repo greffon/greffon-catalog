@@ -1804,6 +1804,44 @@ class BackupPairingTest(unittest.TestCase):
             "    volumes: 1\n")
         self._run(compose=compose)  # must return, not raise
 
+    def test_backtick_substitution_is_rejected(self):
+        """Backticks are neither punctuation-only nor a $ expansion, so both scans
+        passed them; with no shell they reach the program as literal characters."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', "'pg_dump -d `hostname`'")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_jinja_in_a_classified_volume_name_is_rejected(self):
+        """The compose key is rendered and this one is not, so two files that look
+        consistent here name different volumes at deploy."""
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database",
+                                      "data_{{ instance_id }}": "data"}}
+        errs = self._run(metadata=meta)
+        # The Jinja message specifically. Asserting on "volume_unclassified" alone
+        # passed with this rule deleted, because the pre-existing "classified but
+        # absent from compose" check says it too.
+        self.assertTrue(
+            any("contains a Jinja expression" in e for e in errs), errs)
+
+    def test_reserved_nginx_suffix_is_rejected(self):
+        """The greffer skips its sidecar volume by SUFFIX, so a catalog volume
+        ending the same way is dropped with it, silently, on a green backup."""
+        compose = _BACKUP_COMPOSE.replace(
+            "      - db_data:/var/lib/postgresql/data\n",
+            "      - db_data:/var/lib/postgresql/data\n"
+        ).replace("  app:\n    image: nginx\n",
+                  "  app:\n    image: nginx\n    volumes:\n"
+                  "      - app_nginx_volume:/data\n"
+        ).replace("volumes:\n  db_data:\n",
+                  "volumes:\n  db_data:\n  app_nginx_volume:\n")
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database",
+                                      "app_nginx_volume": "data"}}
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(any("reserved suffix" in e for e in errs), errs)
+
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""
         compose = _BACKUP_COMPOSE.replace(
