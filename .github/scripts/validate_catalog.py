@@ -451,11 +451,17 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         errors.append(
                             f"{rel_dir}: 'backup.volumes' keys must be non-empty volume names")
                         continue
+                    if not isinstance(vol_class, str):
+                        errors.append(
+                            f"{rel_dir}: backup.volumes[{vol_name!r}] must be a string, got "
+                            f"{type(vol_class).__name__}. A non-string is unhashable and would "
+                            f"raise rather than lint")
+                        continue
                     if vol_class not in _BACKUP_CLASSES:
                         errors.append(
                             f"{rel_dir}: backup.volumes[{vol_name!r}] must be one of "
                             f"{sorted(_BACKUP_CLASSES)}, got {vol_class!r}")
-                    if compose_volumes and vol_name not in compose_volumes:
+                    if isinstance(compose, dict) and vol_name not in compose_volumes:
                         errors.append(
                             f"{rel_dir}: backup.volumes names {vol_name!r}, which is not a "
                             f"top-level volume in docker-compose.yml. The greffer looks the "
@@ -463,8 +469,8 @@ def validate_greffon_dir(catalog_root, rel_dir):
 
     # Dump/restore hooks are SERVICE labels the greffer reads at backup time.
     dump_hooks, restore_hooks, hook_services = [], [], set()
-    if isinstance(compose, dict):
-        for svc_name, svc in (compose.get("services") or {}).items():
+    if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
+        for svc_name, svc in compose["services"].items():
             if not isinstance(svc, dict):
                 continue
             labels = svc.get("labels") or {}
@@ -478,6 +484,13 @@ def validate_greffon_dir(catalog_root, rel_dir):
             if labels.get("com.greffon.backup.restore"):
                 restore_hooks.append(svc_name); hook_services.add(svc_name)
 
+    if backup_vols and isinstance(compose, dict):
+        for vol_name in sorted(compose_volumes - set(backup_vols)):
+            errors.append(
+                f"{rel_dir}: compose declares volume {vol_name!r} but backup.volumes does not "
+                f"classify it. The greffer looks the class up by compose name and refuses the "
+                f"backup with volume_unclassified rather than guessing")
+
     db_vols = [v for v, c in backup_vols.items() if c == "database"]
 
     if (dump_hooks or restore_hooks) and not backup_vols:
@@ -486,6 +499,16 @@ def validate_greffon_dir(catalog_root, rel_dir):
             f"no 'backup.volumes'. The manager reads classes only from there, so the instance is "
             f"unclassified, the backup falls back to COLD (stop the instance, snapshot volumes) "
             f"and these hooks are never invoked. Add the block, or drop the hooks")
+    if (dump_hooks or restore_hooks) and backup_vols and not db_vols:
+        errors.append(
+            f"{rel_dir}: declares backup hooks on {sorted(hook_services)} but no volume is "
+            # str() every value and dedupe on that: a malformed class may be a list
+            # or dict, and set() over raw values raises TypeError on the unhashable
+            # ones, which is the crash the type check above exists to prevent.
+            f"classed 'database' (classes present: "
+            f"{sorted({str(v) for v in backup_vols.values()})}). The "
+            f"manager selects the dump path from the volume class, so these hooks are never "
+            f"invoked and the database is snapshotted raw instead of dumped")
     if db_vols and not dump_hooks:
         errors.append(
             f"{rel_dir}: backup.volumes classes {db_vols[0]!r} as 'database' but no service "
