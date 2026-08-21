@@ -1842,6 +1842,31 @@ class BackupPairingTest(unittest.TestCase):
         errs = self._run(metadata=meta, compose=compose)
         self.assertTrue(any("reserved suffix" in e for e in errs), errs)
 
+    def test_bare_nginx_volume_name_is_rejected(self):
+        """`nginx_volume` does not end with `_nginx_volume`, but namespacing makes
+        it <id>_nginx_volume, which is both excluded and a sidecar collision."""
+        compose = _BACKUP_COMPOSE.replace(
+            "  app:\n    image: nginx\n",
+            "  app:\n    image: nginx\n    volumes:\n      - nginx_volume:/data\n"
+        ).replace("volumes:\n  db_data:\n", "volumes:\n  db_data:\n  nginx_volume:\n")
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database", "nginx_volume": "data"}}
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(any("reserved suffix" in e for e in errs), errs)
+
+    def test_reserved_suffix_applies_without_a_backup_block(self):
+        """Cold backups use the same _data_volumes, so the rule cannot be scoped
+        to entries that classify their volumes."""
+        compose = _BACKUP_COMPOSE.replace(
+            "  app:\n    image: nginx\n",
+            "  app:\n    image: nginx\n    volumes:\n      - app_nginx_volume:/data\n"
+        ).replace("volumes:\n  db_data:\n",
+                  "volumes:\n  db_data:\n  app_nginx_volume:\n")
+        meta = _backup_meta()
+        meta.pop("backup", None)  # no classification at all
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(any("reserved suffix" in e for e in errs), errs)
+
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""
         compose = _BACKUP_COMPOSE.replace(

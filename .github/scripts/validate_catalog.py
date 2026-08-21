@@ -738,17 +738,24 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 f"expression. The greffer renders the compose volume name but not this key, "
                 f"so the two stop matching at deploy and the backup fails with "
                 f"volume_unclassified. Use a literal name")
-        if vol_name.endswith(_NGINX_VOLUME_SUFFIX):
-            # The greffer skips its regenerated sidecar volume by SUFFIX, not by
-            # exact name, so a catalog volume ending the same way is skipped with
-            # it. That is a silent omission: the backup still succeeds if any other
-            # artifact exists, and this volume is simply not in it.
+    # Every declared volume, not only the classified ones, and tested against the
+    # RUNTIME name. Two ways to miss this, and the first version missed both:
+    #   - an entry with no backup.volumes never entered the loop above, yet COLD
+    #     backups go through the same _data_volumes (backup.py:476) and drop these
+    #     volumes just the same;
+    #   - a compose volume named exactly `nginx_volume` does not end with
+    #     `_nginx_volume`, but namespacing makes it `<instance_id>_nginx_volume`,
+    #     which does, and which additionally collides with the sidecar's own.
+    # Prefixing with "_" models the namespacing without inventing an instance id.
+    for vol_name in sorted(compose_volumes, key=str):
+        if isinstance(vol_name, str) and f"_{vol_name}".endswith(_NGINX_VOLUME_SUFFIX):
             errors.append(
-                f"{rel_dir}: backup.volumes classifies {vol_name!r}, which ends with the "
-                f"reserved suffix {_NGINX_VOLUME_SUFFIX!r}. The greffer drops every volume "
-                f"with that ending when collecting data volumes, since that is how it skips "
-                f"its own regenerated sidecar volume, so this one is silently left out of the "
-                f"snapshot while the backup reports success. Rename it")
+                f"{rel_dir}: compose declares volume {vol_name!r}, whose runtime name ends "
+                f"with the reserved suffix {_NGINX_VOLUME_SUFFIX!r}. That is how the greffer "
+                f"skips its own regenerated sidecar volume, so this one is dropped with it "
+                f"and left out of the snapshot while the backup still reports success. "
+                f"Applies to cold backups too, so it holds whether or not the entry "
+                f"classifies its volumes. Rename it")
 
     db_vols = [v for v, c in backup_vols.items() if c == "database"]
     # `all(... == "regenerable")` and not merely "no data and no database": a map
