@@ -1530,6 +1530,58 @@ class BackupPairingTest(unittest.TestCase):
         self.assertTrue(any("bogus" in e for e in errs), errs)
         self.assertFalse([e for e in errs if "every volume as 'regenerable'" in e], errs)
 
+    def test_shell_operator_glued_to_a_word_is_rejected(self):
+        """`pg_dump|gzip` lexes as ONE token, so whole-token matching missed it."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a|gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_glued_redirect_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a 2>/tmp/e"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_quoted_operator_is_not_a_false_positive(self):
+        """A quoted & belongs to the argument, and docker exec passes it through
+        untouched. Substring matching would have flagged this."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'pg_dump -d "postgres://a?x=1&y=2"'""")
+        self.assertEqual(self._run(compose=compose), [])
+
+    def test_shell_basename_without_dash_c_is_not_a_shell(self):
+        """`busybox timeout 10 pg_dump -c db | gzip` put a shell basename in the
+        first two words and borrowed pg_dump's -c, faking a shell invocation."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"busybox timeout 10 pg_dump -c db | gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_replicas_as_a_numeric_string_is_rejected(self):
+        """compose coerces "0", so it really does mean zero containers."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    scale: "0"\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no_dump_hook" in e for e in errs), errs)
+
+    def test_healthcheck_with_no_test_is_rejected(self):
+        """A truthy mapping is not a healthcheck: docker reports no health state
+        without a command, so the restore waits for a healthy that never comes."""
+        compose = _BACKUP_COMPOSE.replace(
+            '    healthcheck:\n      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            "    healthcheck:\n      interval: 5s\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no usable 'test'" in e for e in errs), errs)
+
+    def test_healthcheck_with_empty_test_list_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            "      test: []\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no usable 'test'" in e for e in errs), errs)
+
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""
         compose = _BACKUP_COMPOSE.replace(

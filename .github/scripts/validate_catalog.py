@@ -326,20 +326,45 @@ def _looks_one_shot(svc_name, svc_def):
 # Tokens shlex hands back as their own argv entry when a hook is written as if a
 # shell were going to run it. `docker exec` gets the argv directly, so they are not.
 _SHELL_OPERATORS = {"|", "||", "&", "&&", ";", ";;", ">", ">>", "<", "<<",
-                    "2>", "2>&1", "|&"}
+                    ">|", "<>", "|&", "(", ")"}
 # $VAR, ${VAR} and compose's escaped $$VAR. Nothing expands them without a shell.
 _EXPANSION_RE = re.compile(r"\$\$?\{?[A-Za-z_]")
 _SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh", "busybox"}
 
 
 def _invokes_a_shell(argv):
-    """True for `sh -c ...`, `/bin/bash -c ...` and `busybox sh -c ...`.
+    """True only for `sh -c ...` / `/bin/bash -c ...` / `busybox sh -c ...`.
 
-    Looks at the first TWO words so the busybox form is not misread as a bare
-    command, and requires -c so that `sh` alone (an interactive shell, which
-    would hang the backup) is not quietly blessed."""
-    head = {os.path.basename(a) for a in argv[:2]}
-    return bool(head & _SHELL_BASENAMES) and "-c" in argv
+    POSITION matters, and an earlier version of this got it wrong by testing
+    membership: `busybox timeout 10 pg_dump -c db | gzip` put a shell basename in
+    the first two words and borrowed pg_dump's `-c` from the far end of the argv,
+    so it claimed a shell and waved the pipe through. The -c must belong to the
+    shell, so it is matched at the position that follows it.
+
+    `sh` with no -c is deliberately not a shell here: an interactive shell would
+    hang the backup rather than run it."""
+    if len(argv) >= 2 and os.path.basename(argv[0]) in _SHELL_BASENAMES - {"busybox"}:
+        return argv[1] == "-c"
+    if (len(argv) >= 3 and os.path.basename(argv[0]) == "busybox"
+            and os.path.basename(argv[1]) in _SHELL_BASENAMES - {"busybox"}):
+        return argv[2] == "-c"
+    return False
+
+
+def _shell_operators_in(cmd):
+    """Unquoted shell operators in `cmd`, using shlex's own punctuation mode.
+
+    Hand-matching whole argv tokens missed everything written without spaces
+    (`pg_dump|gzip` lexes as ONE token), and matching substrings instead would
+    flag a legitimately quoted argument such as "postgres://a?x=1&y=2". This mode
+    splits operators off words while leaving quoted text alone, which is exactly
+    the distinction that matters."""
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        return [tok for tok in lex if tok in _SHELL_OPERATORS]
+    except ValueError:
+        return []  # unbalanced quote: already reported by the shlex.split above
 
 
 def validate_greffon_dir(catalog_root, rel_dir):
@@ -525,7 +550,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     # is INVOKED, not about the characters: the MySQL entries
                     # legitimately use `sh -c '...; exec mysqldump ...'`, where
                     # the metacharacters belong to a shell that really is there.
-                    stray = [tok for tok in argv if tok in _SHELL_OPERATORS]
+                    stray = _shell_operators_in(val)
                     expand = [tok for tok in argv if _EXPANSION_RE.search(tok)]
                     if stray or expand:
                         what = (f"shell operators {stray}" if stray
@@ -637,6 +662,17 @@ def validate_greffon_dir(catalog_root, rel_dir):
             deploy = svc.get("deploy")
             if replicas is None and isinstance(deploy, dict):
                 replicas = deploy.get("replicas")
+            # compose coerces a numeric STRING, so `scale: "0"` really does mean
+            # zero containers; isinstance(int) alone let it through. bool is
+            # excluded explicitly because it is an int subclass in Python, so
+            # `scale: true` (a real YAML footgun) otherwise compares equal to 1
+            # and validates silently.
+            if isinstance(replicas, bool):
+                replicas = None
+            elif isinstance(replicas, str) and replicas.strip().lstrip("+-").isdigit():
+                replicas = int(replicas.strip())
+            elif not isinstance(replicas, int):
+                replicas = None
             if isinstance(replicas, int) and replicas != 1:
                 detail = ("never starts, and the backup fails with no_dump_hook"
                           if replicas == 0 else
@@ -653,11 +689,24 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     or hc_test in ("NONE", ["NONE"])
                 )
             )
+            # A truthy mapping is not a healthcheck. `healthcheck: {interval: 5s}`
+            # and `test: []` both pass a presence test while supplying no command,
+            # so docker reports no health state and _wait_db_healthy waits for a
+            # 'healthy' that cannot arrive. Same outcome as `disable: true`, so it
+            # is the same error, reached by a different route.
+            no_command = isinstance(hc, dict) and not disabled and not hc_test
             if not hc:
                 errors.append(
                     f"{rel_dir}: service {svc_name!r} declares a backup hook but has no "
                     f"'healthcheck'. The greffer's hot restore waits for that healthcheck "
                     f"before streaming the dump back in")
+            elif no_command:
+                errors.append(
+                    f"{rel_dir}: service {svc_name!r} declares a backup hook and a "
+                    f"'healthcheck' with no usable 'test' ({hc_test!r}). Docker reports no "
+                    f"health state without a command to run, so the hot restore waits for a "
+                    f"'healthy' that never arrives and times out, exactly as if the "
+                    f"healthcheck were disabled")
             elif disabled:
                 errors.append(
                     f"{rel_dir}: service {svc_name!r} declares a backup hook but its "
