@@ -1908,6 +1908,28 @@ class BackupPairingTest(unittest.TestCase):
         errs = self._run(compose=compose)
         self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
 
+    def test_custom_volume_name_is_rejected(self):
+        """`name:` opts out of project namespacing, so the docker volume has no
+        <instance_id>_ prefix and the greffer never collects it."""
+        compose = _BACKUP_COMPOSE.replace(
+            "volumes:\n  db_data:\n", "volumes:\n  db_data:\n    name: shared_data\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("project namespacing" in e for e in errs), errs)
+
+    def test_external_volume_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "volumes:\n  db_data:\n", "volumes:\n  db_data:\n    external: true\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("project namespacing" in e for e in errs), errs)
+
+    def test_quoted_operator_as_a_literal_argument_is_accepted(self):
+        """`--separator '|'` is a working hook: docker exec passes the literal
+        through. Matching lexed tokens rejected it, since shlex strips the quotes
+        and a real pipe lexes identically."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'pgtool --separator "|" -d a'""")
+        self.assertEqual(self._run(compose=compose), [])
+
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""
         compose = _BACKUP_COMPOSE.replace(

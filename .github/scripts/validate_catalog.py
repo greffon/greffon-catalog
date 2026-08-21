@@ -327,7 +327,12 @@ def _looks_one_shot(svc_name, svc_def):
 # wrong three times running (`2>&1` lexes as '>&', a here-string as '<<<'), and
 # each miss looked like a passing check. Punctuation-only is the property that
 # actually matters, so it is tested directly instead of enumerated.
-_PUNCT = "();<>|&!"
+# Always an operator wherever it appears unquoted. The backtick is command
+# substitution; `$(` is covered by the paren.
+_PUNCT = "();<>|&`"
+# Syntax only at the START of a word: `-d a#b` is a literal argument, while
+# `# comment` and `! pg_dump` are not.
+_WORD_INITIAL_SYNTAX = "#!"
 # $VAR, ${VAR} and compose's escaped $$VAR. Nothing expands them without a shell.
 _EXPANSION_RE = re.compile(r"\$\$?\{?[A-Za-z_]")
 # A lone $ before a name. `$$` is compose's escape for a literal $, so runs of
@@ -426,30 +431,42 @@ def _names_a_shell(argv):
 
 
 def _shell_operators_in(cmd):
-    """Unquoted shell operators in `cmd`, using shlex's own punctuation mode.
+    """Shell operator characters appearing OUTSIDE quotes in the raw command.
 
-    Hand-matching whole argv tokens missed everything written without spaces
-    (`pg_dump|gzip` lexes as ONE token), and matching substrings instead would
-    flag a legitimately quoted argument such as "postgres://a?x=1&y=2". This mode
-    splits operators off words while leaving quoted text alone, which is exactly
-    the distinction that matters."""
-    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
-    lex.whitespace_split = True
-    # shlex.shlex strips # comments BY DEFAULT; the greffer's shlex.split does not
-    # (comments=False is ITS default). So `pg_dump ... # dump | gzip` really does
-    # reach docker exec as the arguments '#', 'dump', '|', 'gzip', while this scan
-    # used to stop at the # and see a clean command. Matching the greffer's lexer
-    # is the whole point of this function, so the divergence is removed rather
-    # than compensated for.
-    lex.commenters = ""
-    try:
-        return [tok for tok in lex
-                if tok and (all(ch in _PUNCT for ch in tok) or tok == "#"
-                            or "`" in tok or "$(" in tok)]
-    except ValueError:
-        return []  # unbalanced quote: already reported by the shlex.split above
+    Scans the raw string rather than lexed tokens, because the tokens have already
+    lost the distinction that matters: shlex strips quotes, so a legitimate literal
+    argument (tool --separator '|') and a real pipe both arrive as the token "|",
+    and matching tokens rejected the working hook. I accepted that ambiguity
+    earlier on this branch, reasoning such an argument was unlikely. That was the
+    wrong call. A validator that rejects correct entries teaches people to work
+    around it, and quote state is cheap to track.
 
-
+    Deliberately not a shell parser: quoting and word starts, nothing else. `#`
+    and `!` are syntax only at the start of a word, so `-d a#b` stays a literal."""
+    found, quote, escaped, word_start = [], None, False, True
+    for ch in cmd:
+        if escaped:
+            escaped, word_start = False, False
+        elif quote:
+            if ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif ch == "\\":
+            escaped, word_start = True, False
+        elif ch in "\"'":
+            quote, word_start = ch, False
+        elif ch.isspace():
+            word_start = True
+        elif ch in _PUNCT:
+            found.append(ch)
+            word_start = True
+        elif ch in _WORD_INITIAL_SYNTAX and word_start:
+            found.append(ch)
+            word_start = False
+        else:
+            word_start = False
+    return found
 def validate_greffon_dir(catalog_root, rel_dir):
     """Validate a single greffon directory. Returns list of error strings."""
     errors = []
@@ -771,6 +788,23 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 f"expression. The greffer renders it before deploying, so CI cannot know the "
                 f"runtime name and cannot tell whether it is classified, reserved, or mounted "
                 f"by the right service. Use a literal name")
+            continue
+        vol_def = ((compose.get("volumes") or {}).get(vol_name)
+                   if isinstance(compose, dict) else None)
+        if isinstance(vol_def, dict) and (vol_def.get("name") or vol_def.get("external")):
+            # The greffer collects an instance's volumes by the `<instance_id>_`
+            # PREFIX that compose's project namespacing produces (backup.py:190).
+            # Both `name:` and `external: true` opt out of that namespacing, so the
+            # docker volume does not carry the prefix, is never collected, and is
+            # absent from hot backups, cold backups and the restore safety snapshot
+            # alike. The backup still succeeds whenever another artifact exists.
+            why = "name:" if vol_def.get("name") else "external: true"
+            errors.append(
+                f"{rel_dir}: compose volume {vol_name!r} sets {why}, which opts out of "
+                f"compose's project namespacing. The greffer collects an instance's volumes "
+                f"by their '<instance_id>_' prefix, so this one is invisible to it and is "
+                f"silently left out of every backup and of the restore safety snapshot while "
+                f"the backup reports success. Use a plain volume key")
             continue
         if isinstance(vol_name, str) and f"_{vol_name}".endswith(_NGINX_VOLUME_SUFFIX):
             errors.append(
