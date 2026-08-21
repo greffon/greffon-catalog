@@ -323,6 +323,25 @@ def _looks_one_shot(svc_name, svc_def):
     return bool(_TERMINAL_EXIT0_RE.search(_command_text(svc_def)))
 
 
+# Tokens shlex hands back as their own argv entry when a hook is written as if a
+# shell were going to run it. `docker exec` gets the argv directly, so they are not.
+_SHELL_OPERATORS = {"|", "||", "&", "&&", ";", ";;", ">", ">>", "<", "<<",
+                    "2>", "2>&1", "|&"}
+# $VAR, ${VAR} and compose's escaped $$VAR. Nothing expands them without a shell.
+_EXPANSION_RE = re.compile(r"\$\$?\{?[A-Za-z_]")
+_SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh", "busybox"}
+
+
+def _invokes_a_shell(argv):
+    """True for `sh -c ...`, `/bin/bash -c ...` and `busybox sh -c ...`.
+
+    Looks at the first TWO words so the busybox form is not misread as a bare
+    command, and requires -c so that `sh` alone (an interactive shell, which
+    would hang the backup) is not quietly blessed."""
+    head = {os.path.basename(a) for a in argv[:2]}
+    return bool(head & _SHELL_BASENAMES) and "-c" in argv
+
+
 def validate_greffon_dir(catalog_root, rel_dir):
     """Validate a single greffon directory. Returns list of error strings."""
     errors = []
@@ -498,6 +517,26 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"command ({exc}). The greffer runs it through shlex.split and would "
                         f"raise at backup time, not here")
                     continue
+                if argv and not _invokes_a_shell(argv):
+                    # The greffer runs `docker exec <container> <argv>` with no
+                    # shell (backup.py:272, :346), so a pipe, a redirect or a
+                    # $VAR is passed to the program as a literal argument and the
+                    # backup fails at runtime. Note this is about whether a shell
+                    # is INVOKED, not about the characters: the MySQL entries
+                    # legitimately use `sh -c '...; exec mysqldump ...'`, where
+                    # the metacharacters belong to a shell that really is there.
+                    stray = [tok for tok in argv if tok in _SHELL_OPERATORS]
+                    expand = [tok for tok in argv if _EXPANSION_RE.search(tok)]
+                    if stray or expand:
+                        what = (f"shell operators {stray}" if stray
+                                else f"variable expansions {expand}")
+                        errors.append(
+                            f"{rel_dir}: service {svc_name!r} backup.{kind} label uses {what} "
+                            f"but does not invoke a shell. The greffer execs the argv directly, "
+                            f"so these are passed to the program as literal arguments and never "
+                            f"interpreted. Wrap the command in \"sh -c '...'\" if you need a "
+                            f"shell (note compose eats a single $, so write $$VAR)")
+                        continue
                 if not argv:
                     # Two different failures, both silent, hence one check:
                     # an EMPTY value never reaches shlex at all -- the greffer's
@@ -523,7 +562,11 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 f"backup with volume_unclassified rather than guessing")
 
     db_vols = [v for v, c in backup_vols.items() if c == "database"]
-    if backup_vols and not db_vols and not [v for v, c in backup_vols.items() if c == "data"]:
+    # `all(... == "regenerable")` and not merely "no data and no database": a map
+    # holding only an invalid class ({"x": "bogus"}) satisfies the weaker form and
+    # would draw a second, false error saying every volume is regenerable, next to
+    # the real schema complaint. Say one true thing rather than two things.
+    if backup_vols and all(c == "regenerable" for c in backup_vols.values()):
         errors.append(
             f"{rel_dir}: backup.volumes classifies every volume as 'regenerable', which the "
             f"manager still reads as opted-in and runs HOT. The greffer then has nothing to "
@@ -580,6 +623,28 @@ def validate_greffon_dir(catalog_root, rel_dir):
             svc = (compose.get("services") or {}).get(svc_name)
             if not isinstance(svc, dict):
                 continue
+            # The hook is found by COUNTING RUNNING CONTAINERS, not by reading the
+            # compose file: _dump_hooks() walks the instance's running containers
+            # and reads the label off each (backup.py:541-549). So the checks above,
+            # which count SERVICES, can pass while the runtime count is 0 or 2.
+            if svc.get("profiles"):
+                errors.append(
+                    f"{rel_dir}: hook service {svc_name!r} declares profiles "
+                    f"{svc['profiles']!r}. The greffer starts the stack with a plain "
+                    f"`docker-compose up -d` and passes no --profile (backup.py:628), so this "
+                    f"service never starts and the backup fails with no_dump_hook")
+            replicas = svc.get("scale")
+            deploy = svc.get("deploy")
+            if replicas is None and isinstance(deploy, dict):
+                replicas = deploy.get("replicas")
+            if isinstance(replicas, int) and replicas != 1:
+                detail = ("never starts, and the backup fails with no_dump_hook"
+                          if replicas == 0 else
+                          f"starts {replicas} containers, each carrying the hook label, and the "
+                          f"greffer refuses with multiple_database_unsupported")
+                errors.append(
+                    f"{rel_dir}: hook service {svc_name!r} asks for {replicas} replicas, so it "
+                    f"{detail}. A hook service must run exactly one container")
             hc = svc.get("healthcheck")
             hc_test = hc.get("test") if isinstance(hc, dict) else None
             disabled = (

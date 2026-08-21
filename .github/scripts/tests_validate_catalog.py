@@ -1471,6 +1471,65 @@ class BackupPairingTest(unittest.TestCase):
         errs = self._run(compose=compose)
         self.assertTrue(any("does not parse" in e for e in errs), errs)
 
+    # --- the command must be runnable without a shell -----------------------
+    # The greffer execs the argv directly, so shell syntax is inert. These pin
+    # the distinction between "uses metacharacters" and "invokes no shell",
+    # which matters because the MySQL entries legitimately use `sh -c`.
+
+    def test_shell_pipe_without_a_shell_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a | gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_variable_expansion_without_a_shell_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U $$PGUSER -d a -Fc"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_sh_dash_c_hook_is_accepted(self):
+        """Guards the rule against over-reach: this is the real shape the MySQL
+        and MariaDB entries use, and rejecting it would block them."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"',
+            "\"sh -c 'export MYSQL_PWD=$$MYSQL_ROOT_PASSWORD; exec mysqldump -u root a'\"")
+        self.assertEqual(self._run(compose=compose), [])
+
+    # --- the hook must resolve to exactly one running container -------------
+    # The greffer finds hooks by counting RUNNING CONTAINERS, so a check that
+    # counts services can pass while the runtime count is 0 or 2.
+
+    def test_hook_service_behind_a_profile_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    profiles: [\"donotstart\"]\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("never starts" in e for e in errs), errs)
+
+    def test_hook_service_scaled_to_zero_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    scale: 0\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("no_dump_hook" in e for e in errs), errs)
+
+    def test_hook_service_with_replicas_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    deploy:\n      replicas: 2\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(
+            any("multiple_database_unsupported" in e for e in errs), errs)
+
+    def test_invalid_class_does_not_also_claim_all_regenerable(self):
+        """One true error, not a real one plus a false one."""
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "bogus"}}
+        errs = self._run(metadata=meta)
+        self.assertTrue(any("bogus" in e for e in errs), errs)
+        self.assertFalse([e for e in errs if "every volume as 'regenerable'" in e], errs)
+
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""
         compose = _BACKUP_COMPOSE.replace(

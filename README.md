@@ -133,6 +133,15 @@ downtime), and what that requires depends on the classes you use:
 The fallback is deliberate: an older worker takes a COLD backup rather than failing, so an entry
 declaring hooks still works everywhere, just without the no-downtime path.
 
+Two constraints on the hook command itself, both enforced by CI:
+
+- **It is exec'd with no shell.** A pipe, a redirect or a `$VAR` is handed to the program as a
+  literal argument. Wrap it in `sh -c '...'` when you need one, and write `$$VAR` so compose passes
+  the `$` through rather than interpolating it away.
+- **Its service must run exactly one container.** The greffer finds the hook by looking at running
+  containers, so a service behind a `profiles:` never starts (no_dump_hook) and one with
+  `replicas: 2` presents the label twice (multiple_database_unsupported).
+
 The two halves live in different files and the platform reads them from different places, which is
 exactly why they drift, and why CI now checks they agree.
 
