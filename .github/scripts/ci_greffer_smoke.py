@@ -44,6 +44,7 @@ import subprocess
 import sys
 import time
 import uuid
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -345,30 +346,74 @@ def check_cookie_security(entry_dir: str, url: str, ca_path: str) -> bool:
     Scope, stated so nobody over-trusts it: it only sees cookies set on the ROOT.
     An app that sets its session cookie on a login or authorization endpoint (Keycloak
     does) needs the assertion in its own spec. This is a floor, not coverage."""
+    # Follow the chain MANUALLY, stopping before the first hop that leaves the
+    # instance host. `allow_redirects=True` would fetch the external destination
+    # first and filter afterwards, which is too late: `verify=ca_path` trusts only
+    # this instance's self-signed certificate, so any real external HTTPS host
+    # raises SSLError, the retry loop below burns its full 180s, and a healthy
+    # entry fails. An app that redirects to an external identity provider is a
+    # normal thing to do.
+    want_host = urlsplit(url).hostname
     deadline = time.time() + 180
     r = None
+    responses = []
     while time.time() < deadline:
+        responses = []
         try:
-            r = requests.get(url, verify=ca_path, timeout=10, allow_redirects=False)
+            # ONE session for the whole chain. A per-hop requests.get() carries no
+            # cookie jar, so a state or nonce cookie set by the first hop is never
+            # sent to the second, and the probe can walk an unauthenticated or
+            # error path that a browser would never see, missing the very cookie it
+            # is looking for.
+            sess = requests.Session()
+            nxt, hops, exhausted = url, 0, False
+            while nxt and hops < 10:
+                r = sess.get(nxt, verify=ca_path, timeout=10, allow_redirects=False)
+                responses.append(r)
+                loc = r.headers.get("Location") if r.is_redirect else None
+                if not loc:
+                    break
+                nxt = urljoin(nxt, loc)
+                if urlsplit(nxt).hostname != want_host:
+                    log(f"{entry_dir}: redirect leaves the instance host "
+                        f"({urlsplit(nxt).hostname}); not following")
+                    break
+                hops += 1
+                if hops >= 10:
+                    # Ran out of budget while still on-host and still redirecting.
+                    # `r` holds a 3xx, which would sail through the <500 check below
+                    # and report success without ever inspecting the destination.
+                    # Stopping deliberately at an OFF-host hop is different: there we
+                    # have seen everything we are entitled to see.
+                    exhausted = True
         except requests.RequestException:
             r = None
         else:
-            if r.status_code < 500:
+            if exhausted:
+                break
+            if r is not None and r.status_code < 500:
                 break
         time.sleep(3)
+    if exhausted:
+        log(f"{entry_dir}: cookie check INCONCLUSIVE, still redirecting on the same host "
+            f"after 10 hops. Failing rather than reporting success on a chain whose "
+            f"destination was never reached (a redirect loop is itself worth knowing about).")
+        return False
     if r is None or r.status_code >= 500:
         log(f"{entry_dir}: cookie check INCONCLUSIVE, instance never returned a non-5xx "
             f"response within 180s (last: {getattr(r, 'status_code', 'no response')}). "
             f"Failing rather than passing silently: an unreachable instance proves nothing.")
         return False
-    raw = r.raw.headers.get_all("Set-Cookie") if hasattr(r.raw, "headers") else None
-
     def _attrs(header: str) -> set:
-        # Attributes only: everything after the first ';'. Matching the whole header
-        # would flag a cookie whose VALUE merely contains "httponly", and would
-        # accept a Secure belonging to a different cookie.
+        # Attributes only: everything after the first ';'. Matching the whole
+        # header would flag a cookie whose VALUE merely contains "httponly", and
+        # would accept a Secure belonging to a different cookie.
         return {a.strip().split("=", 1)[0].lower() for a in header.split(";")[1:]}
 
+    raw = []
+    for resp in responses:
+        if hasattr(resp.raw, "headers"):
+            raw.extend(resp.raw.headers.get_all("Set-Cookie") or [])
     bad = []
     for c in raw or []:
         attrs = _attrs(c)
