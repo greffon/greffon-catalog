@@ -2,7 +2,7 @@ version: "3"
 services:
   excalidraw:
     image: excalidraw/excalidraw:latest
-    restart: on-failure
+    restart: unless-stopped
     ports:
       - "80:80"
 

@@ -7,7 +7,7 @@ services:
   # daemon stays local by design. See the description in metadata.json.
   multica:
     image: ghcr.io/multica-ai/multica-web:v0.3.13
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - backend
     ports:
@@ -22,7 +22,7 @@ services:
   # thing that makes the hostname resolve through the platform.
   backend:
     image: ghcr.io/multica-ai/multica-backend:v0.3.13
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - multica_db
     environment:
@@ -70,7 +70,7 @@ services:
 
   multica_db:
     image: pgvector/pgvector:pg17
-    restart: on-failure
+    restart: unless-stopped
     environment:
       POSTGRES_DB: "multica"
       POSTGRES_USER: "multica"

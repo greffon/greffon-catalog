@@ -6,7 +6,7 @@ services:
     # of images and the ML model. Runs CPU-only by default; GPU acceleration
     # is optional and host-specific. Storage grows with the photo library.
     image: ghcr.io/immich-app/immich-server:v2.7.5
-    restart: on-failure
+    restart: unless-stopped
     ports:
       - "2283:2283"
     depends_on:
@@ -25,13 +25,13 @@ services:
 
   immich-machine-learning:
     image: ghcr.io/immich-app/immich-machine-learning:v2.7.5
-    restart: on-failure
+    restart: unless-stopped
     volumes:
       - immich_model_cache:/cache
 
   immich_redis:
     image: redis:6.2-bookworm
-    restart: on-failure
+    restart: unless-stopped
     volumes:
       - immich_redis_data:/data
 
@@ -39,7 +39,7 @@ services:
     # Immich requires its purpose-built Postgres image (VectorChord + pgvecto-rs
     # extensions). A stock postgres image will NOT work.
     image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
-    restart: on-failure
+    restart: unless-stopped
     environment:
       POSTGRES_DB: "immich"
       POSTGRES_USER: "immich"

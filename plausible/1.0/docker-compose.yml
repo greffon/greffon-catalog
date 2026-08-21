@@ -2,7 +2,7 @@ version: "3"
 services:
   plausible:
     image: plausible/analytics:latest
-    restart: on-failure
+    restart: unless-stopped
     ports:
       - "8000:8000"
     command: >
@@ -34,6 +34,7 @@ services:
       SMTP_HOST_SSL_ENABLED: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
 
   plausible_db:
+    restart: unless-stopped
     image: postgres:14-alpine
     environment:
       POSTGRES_PASSWORD: postgres
@@ -42,6 +43,7 @@ services:
       - db_data:/var/lib/postgresql/data
 
   plausible_events_db:
+    restart: unless-stopped
     image: clickhouse/clickhouse-server:latest
     environment:
       CLICKHOUSE_DB: plausible_events_db

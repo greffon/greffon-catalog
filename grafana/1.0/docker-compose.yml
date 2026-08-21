@@ -2,7 +2,7 @@ version: "3"
 services:
   grafana:
     image: grafana/grafana:12.2.1
-    restart: on-failure
+    restart: unless-stopped
     # The image runs as UID 472, but the greffer creates named volumes
     # root-owned, so Grafana can't write /var/lib/grafana and fails to start.
     # Run as root so it owns its data volume (matches Vikunja's handling).

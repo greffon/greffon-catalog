@@ -2,7 +2,7 @@ version: "3"
 services:
   paperless:
     image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - paperless_broker
     ports:
@@ -41,7 +41,7 @@ services:
 
   paperless_broker:
     image: redis:8
-    restart: on-failure
+    restart: unless-stopped
     volumes:
       - paperless_redis:/data
 

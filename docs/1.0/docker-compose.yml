@@ -42,7 +42,7 @@ version: "3"
 services:
   postgresql:
     image: postgres:16
-    restart: on-failure
+    restart: unless-stopped
     environment:
       POSTGRES_DB: docs
       POSTGRES_USER: docs
@@ -53,11 +53,11 @@ services:
 
   redis:
     image: redis:5
-    restart: on-failure
+    restart: unless-stopped
 
   minio:
     image: minio/minio
-    restart: on-failure
+    restart: unless-stopped
     # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD injected (generated per instance,
     # shared with createbuckets + the backend/celery S3 client).
     command: minio server --console-address ":9001" /data
@@ -85,7 +85,7 @@ services:
 
   backend:
     image: lasuite/impress-backend:v5.2.1
-    restart: on-failure
+    restart: unless-stopped
     # The published image serves via uvicorn/ASGI (confirmed from the image
     # Cmd). Run migrations inline first, then exec the same ASGI server the
     # image's default CMD uses.
@@ -179,7 +179,7 @@ services:
 
   celery:
     image: lasuite/impress-backend:v5.2.1
-    restart: on-failure
+    restart: unless-stopped
     command: ["celery", "-A", "impress.celery_app", "worker", "-l", "INFO"]
     depends_on:
       - backend
@@ -201,7 +201,7 @@ services:
 
   y-provider:
     image: lasuite/impress-y-provider:v5.2.1
-    restart: on-failure
+    restart: unless-stopped
     environment:
       Y_PROVIDER_API_BASE_URL: http://y-provider:4444/api/
       COLLABORATION_SERVER_ORIGIN: "{{ instance_url }}"
@@ -221,7 +221,7 @@ services:
 
   frontend:
     image: lasuite/impress-frontend:v5.2.1
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - backend
     # No `ports:` — internal-only. Image exposes 8080 (nginx) and calls /api
@@ -229,7 +229,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
-    restart: on-failure
+    restart: unless-stopped
     command: ["start-dev", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
@@ -263,7 +263,7 @@ services:
     # TLS-terminating greffon_nginx, then strips it. This gateway routes the one
     # public origin to every internal service (see baked default.conf).
     image: nginx:1.25
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - backend
       - frontend

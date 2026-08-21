@@ -2,7 +2,7 @@ version: "3"
 services:
   memos:
     image: ghcr.io/usememos/memos:stable
-    restart: on-failure
+    restart: unless-stopped
     ports:
       - "5230:5230"
     volumes:

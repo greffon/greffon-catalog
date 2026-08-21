@@ -35,6 +35,7 @@ services:
     command: sh -c "./manage.py createsuperuser --noinput || true; exit 0"
 
   glitchtip:
+    restart: unless-stopped
     image: glitchtip/glitchtip:latest
     ports:
       - "8000:8000"
@@ -63,6 +64,7 @@ services:
       EMAIL_URL: 'smtp{% if smtp.tls_mode == "starttls" %}+tls{% elif smtp.tls_mode == "tls" %}+ssl{% endif %}://{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@{{ smtp.host }}:{{ smtp.port }}'
 
   glitchtip_worker:
+    restart: unless-stopped
     image: glitchtip/glitchtip:latest
     command: ./bin/run-celery-with-beat.sh
     depends_on:
@@ -81,6 +83,7 @@ services:
       EMAIL_URL: 'smtp{% if smtp.tls_mode == "starttls" %}+tls{% elif smtp.tls_mode == "tls" %}+ssl{% endif %}://{{ smtp.username | urlencode }}:{{ smtp.password | urlencode }}@{{ smtp.host }}:{{ smtp.port }}'
 
   glitchtip_db:
+    restart: unless-stopped
     image: postgres:14-alpine
     environment:
       POSTGRES_PASSWORD: postgres
@@ -95,6 +98,7 @@ services:
       start_period: 10s
 
   redis:
+    restart: unless-stopped
     image: redis:latest
 
 volumes:

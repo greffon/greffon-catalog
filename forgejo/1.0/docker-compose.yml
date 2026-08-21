@@ -6,7 +6,7 @@ services:
     # official registry per upstream docker docs (code.forgejo.org /
     # data.forgejo.org are mirrors). Avoid :11 — that LTS is EOL Jul 2026.
     image: codeberg.org/forgejo/forgejo:15
-    restart: on-failure
+    restart: unless-stopped
     ports:
       # HTTP only. Forgejo also exposes git-over-SSH on 22, but that's a raw
       # TCP service the greffer's per-instance HTTPS proxy can't carry, so SSH
