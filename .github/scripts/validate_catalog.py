@@ -334,6 +334,10 @@ _EXPANSION_RE = re.compile(r"\$\$?\{?[A-Za-z_]")
 # dollars are collapsed pairwise first and only an odd one left over counts.
 _UNESCAPED_DOLLAR_RE = re.compile(r"(?<!\$)(?:\$\$)*\$(?=\{?[A-Za-z_])")
 _SIGNED_INT_RE = re.compile(r"[+-]?\d+")
+# A leading NAME=value word. Shell syntax; docker exec has no idea.
+_ENV_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# The greffer renders compose through Jinja, so CI reads the TEMPLATE.
+_JINJA_RE = re.compile(r"\{\{|\{%")
 _SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh"}
 
 
@@ -415,8 +419,16 @@ def _shell_operators_in(cmd):
     the distinction that matters."""
     lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
     lex.whitespace_split = True
+    # shlex.shlex strips # comments BY DEFAULT; the greffer's shlex.split does not
+    # (comments=False is ITS default). So `pg_dump ... # dump | gzip` really does
+    # reach docker exec as the arguments '#', 'dump', '|', 'gzip', while this scan
+    # used to stop at the # and see a clean command. Matching the greffer's lexer
+    # is the whole point of this function, so the divergence is removed rather
+    # than compensated for.
+    lex.commenters = ""
     try:
-        return [tok for tok in lex if tok and all(ch in _PUNCT for ch in tok)]
+        return [tok for tok in lex
+                if tok and (all(ch in _PUNCT for ch in tok) or tok == "#")]
     except ValueError:
         return []  # unbalanced quote: already reported by the shlex.split above
 
@@ -583,6 +595,18 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 if val is None:
                     continue
                 hook_services.add(svc_name)
+                if isinstance(val, str) and _JINJA_RE.search(val):
+                    # The greffer renders the compose file through Jinja before
+                    # docker-compose ever sees it, so this validator is reading the
+                    # TEMPLATE. `{{ "" }}` is a non-empty string here and an absent
+                    # hook at deploy, which is precisely the silent degrade every
+                    # other check on this branch exists to prevent.
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label contains a Jinja "
+                        f"expression. The greffer renders the compose file before deploying, so "
+                        f"CI validates the template and the runtime gets something else. Write "
+                        f"the command literally")
+                    continue
                 if not isinstance(val, str):
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} backup.{kind} label must be a string, "
@@ -629,6 +653,17 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"{rel_dir}: service {svc_name!r} backup.{kind} label passes an empty "
                         f"script to the shell. It exits 0 having written nothing, so the backup "
                         f"fails with dump_empty rather than reporting an error")
+                    continue
+                if argv and script is None and _ENV_ASSIGN_RE.match(argv[0]):
+                    # `PGPASSWORD=x pg_dump ...` is shell syntax with no punctuation
+                    # and no $, so both scans below pass it. docker exec then looks
+                    # for a program literally named "PGPASSWORD=x".
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} backup.{kind} label starts with the "
+                        f"environment assignment {argv[0]!r}. Only a shell applies those; the "
+                        f"greffer execs argv[0] as a program name, so every backup fails. Set it "
+                        f"in the service's `environment:` (which docker exec inherits, and which "
+                        f"keeps it off the command line), or use \"sh -c '...'\"")
                     continue
                 if argv and script is None:
                     # No shell involved: the greffer runs `docker exec <container>
@@ -755,6 +790,22 @@ def validate_greffon_dir(catalog_root, rel_dir):
             # overlap and aborts with db_volume_misclassified. The backup succeeds
             # every time and the restore can never run, which is the worst shape a
             # backup defect can take.
+            # The other half of the same binding, and the one that loses data
+            # rather than blocking a restore: nothing tied the 'database' volume to
+            # the service that dumps it. Class the DB service's volume
+            # 'regenerable' and an APP volume 'database' and every check here
+            # passed, while the hot path skips both classes (only 'data' is
+            # snapshotted) and captures only the hook's dump. The app volume is
+            # then in no artifact at all, and the backup still reports success.
+            if db_vols and not any(backup_vols.get(v) == "database"
+                                   for v in _service_named_volumes(svc)):
+                errors.append(
+                    f"{rel_dir}: hook service {svc_name!r} mounts none of the volumes classed "
+                    f"'database' ({sorted(db_vols, key=str)}). The greffer captures a database "
+                    f"through the dump hook on the service that HOLDS it, and the hot path "
+                    f"snapshots only 'data' volumes, so a 'database' volume on any other "
+                    f"service lands in no artifact at all while the backup reports success. "
+                    f"Put the hook on the service that mounts it")
             for vol_name in _service_named_volumes(svc):
                 if backup_vols.get(vol_name) == "data":
                     errors.append(
@@ -770,6 +821,17 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     f"{svc['profiles']!r}. The greffer starts the stack with a plain "
                     f"`docker-compose up -d` and passes no --profile (backup.py:628), so this "
                     f"service never starts and the backup fails with no_dump_hook")
+            for field, probe in (("scale", svc.get("scale")),
+                                 ("deploy.replicas", (svc.get("deploy") or {}).get("replicas")
+                                  if isinstance(svc.get("deploy"), dict) else None),
+                                 ("healthcheck.disable", (svc.get("healthcheck") or {}).get("disable")
+                                  if isinstance(svc.get("healthcheck"), dict) else None)):
+                if isinstance(probe, str) and _JINJA_RE.search(probe):
+                    errors.append(
+                        f"{rel_dir}: hook service {svc_name!r} sets {field} from a Jinja "
+                        f"expression ({probe!r}). The greffer renders the compose file before "
+                        f"deploying, so this validates as a harmless string and becomes a "
+                        f"container count or a disabled healthcheck at runtime")
             replicas = svc.get("scale")
             deploy = svc.get("deploy")
             if replicas is None and isinstance(deploy, dict):
@@ -801,6 +863,8 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     f"the operator intended, and a hook service must run exactly one "
                     f"container. Write the literal 1, or leave it unset")
                 replicas = None
+            elif isinstance(replicas, float) and replicas.is_integer():
+                replicas = int(replicas)  # compose normalises 2.0 to 2
             elif not isinstance(replicas, int):
                 replicas = None
             if isinstance(replicas, int) and replicas != 1:

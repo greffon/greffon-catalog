@@ -150,10 +150,17 @@ Two constraints on the hook command itself, both enforced by CI:
   looking at running containers, so a service behind a `profiles:` never starts (no_dump_hook), one
   with `replicas: 2` presents the label twice (multiple_database_unsupported), and a one-shot that
   exits after deploy has nothing left to exec into (no_dump_hook).
-- **Its service must not mount a `data` volume.** The restore guard reads database volumes from
-  docker state, so any volume on the dump service counts as database state. If it is also classed
-  `data` it sits in both sets and the restore refuses with db_volume_misclassified, while every
-  backup keeps reporting success.
+- **No Jinja, and no leading `VAR=value`.** The greffer renders the compose file before deploying,
+  so CI reads the template and the runtime gets whatever it rendered to. And an environment
+  assignment is shell syntax: with no shell, `docker exec` looks for a program by that name. Put
+  the variable in the service's `environment:`, which `docker exec` inherits and which keeps it off
+  the command line.
+- **It must mount the `database` volume, and must not mount a `data` one.** The first loses data:
+  the hot path snapshots only `data` volumes, so a `database` volume on any other service is
+  captured by nothing at all. The second blocks recovery: the restore guard reads database volumes from
+  docker state, so any volume on the dump service counts as database state; if it is also classed
+  `data` it sits in both sets and the restore refuses with db_volume_misclassified. Both fail with
+  every backup still reporting success.
 
 The two halves live in different files and the platform reads them from different places, which is
 exactly why they drift, and why CI now checks they agree.

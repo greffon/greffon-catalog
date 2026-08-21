@@ -1694,6 +1694,56 @@ class BackupPairingTest(unittest.TestCase):
             '    image: postgres:16-alpine\n    scale: "--1"\n')
         self._run(compose=compose)  # must return, not raise
 
+    def test_database_volume_not_on_the_hook_service_is_rejected(self):
+        """Loses data silently: the hot path snapshots only 'data' volumes, so a
+        'database' volume on some other service is captured by nothing at all."""
+        compose = _BACKUP_COMPOSE.replace(
+            "      - db_data:/var/lib/postgresql/data\n",
+            "      - db_cache:/var/lib/postgresql/data\n"
+        ).replace("  app:\n    image: nginx\n",
+                  "  app:\n    image: nginx\n    volumes:\n      - db_data:/app\n"
+        ).replace("volumes:\n  db_data:\n", "volumes:\n  db_data:\n  db_cache:\n")
+        meta = _backup_meta()
+        meta["backup"] = {"volumes": {"db_data": "database", "db_cache": "regenerable"}}
+        errs = self._run(metadata=meta, compose=compose)
+        self.assertTrue(any("mounts none of the volumes classed" in e for e in errs), errs)
+
+    def test_hash_comment_hides_no_syntax(self):
+        """shlex.shlex strips # comments by default; the greffer's shlex.split does
+        not, so those words really do reach docker exec."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_dump -U a -d a # dump | gzip"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_leading_env_assignment_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"PGPASSWORD=x pg_dump -U a -d a -Fc"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("environment assignment" in e for e in errs), errs)
+
+    def test_float_replica_count_is_rejected(self):
+        """compose normalises 2.0 to 2; PyYAML hands us a float."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            "    image: postgres:16-alpine\n    scale: 2.0\n")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("multiple_database_unsupported" in e for e in errs), errs)
+
+    def test_jinja_in_a_hook_label_is_rejected(self):
+        """The greffer renders compose before deploying, so CI reads the template."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'{{ "" }}'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("Jinja expression" in e for e in errs), errs)
+
+    def test_jinja_in_a_replica_count_is_rejected(self):
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    scale: "{{ 2 }}"\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("Jinja" in e for e in errs), errs)
+
     def test_no_backup_block_is_fine(self):
         """An entry that never opts in stays COLD and must not be nagged."""
         compose = _BACKUP_COMPOSE.replace(
