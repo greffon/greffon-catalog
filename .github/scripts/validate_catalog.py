@@ -323,56 +323,18 @@ def _looks_one_shot(svc_name, svc_def):
     return bool(_TERMINAL_EXIT0_RE.search(_command_text(svc_def)))
 
 
-# Tokens shlex hands back as their own argv entry when a hook is written as if a
-# shell were going to run it. `docker exec` gets the argv directly, so they are not.
-_SHELL_OPERATORS = {"|", "||", "&", "&&", ";", ";;", ">", ">>", "<", "<<",
-                    ">|", "<>", "|&", "(", ")",
-                    # punctuation_chars emits compound redirections as one token:
-                    # `2>&1` lexes as ['2', '>&', '1'], so the bare '>' above never
-                    # matches and the whole form slipped through.
-                    ">&", "&>", "<&", "&>>", ">>&"}
+# Any token made ENTIRELY of shell punctuation is an operator. An allowlist was
+# wrong three times running (`2>&1` lexes as '>&', a here-string as '<<<'), and
+# each miss looked like a passing check. Punctuation-only is the property that
+# actually matters, so it is tested directly instead of enumerated.
+_PUNCT = "();<>|&"
 # $VAR, ${VAR} and compose's escaped $$VAR. Nothing expands them without a shell.
 _EXPANSION_RE = re.compile(r"\$\$?\{?[A-Za-z_]")
 # A lone $ before a name. `$$` is compose's escape for a literal $, so runs of
 # dollars are collapsed pairwise first and only an odd one left over counts.
 _UNESCAPED_DOLLAR_RE = re.compile(r"(?<!\$)(?:\$\$)*\$(?=\{?[A-Za-z_])")
 _SIGNED_INT_RE = re.compile(r"[+-]?\d+")
-_SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh", "busybox"}
-
-
-def _shell_script_index(argv):
-    """Index of the script argument of a `sh -c` style invocation, else None.
-
-    Returns an index rather than a bool because every caller needs to know WHERE
-    the script is: what precedes it belongs to the shell, what follows it is
-    passed to the script as positional parameters, and only the script itself is
-    actually interpreted.
-
-    Two earlier versions of this were wrong in opposite directions. Testing
-    membership ("a shell basename in the first two words and a -c anywhere") let
-    `busybox timeout 10 pg_dump -c db | gzip` borrow pg_dump's -c and pass. Then
-    requiring argv[1] to be exactly "-c" rejected `sh -eu -c '...'` and
-    `bash -lc '...'`, which are legitimate and do run the script. So the option
-    words are walked properly: a leading `-` word CONTAINING a c carries the -c,
-    and the script is the word after it.
-
-    `sh` with no -c is deliberately not a shell here: an interactive shell would
-    hang the backup rather than run it."""
-    start = None
-    if argv and os.path.basename(argv[0]) in _SHELL_BASENAMES - {"busybox"}:
-        start = 0
-    elif (len(argv) >= 2 and os.path.basename(argv[0]) == "busybox"
-            and os.path.basename(argv[1]) in _SHELL_BASENAMES - {"busybox"}):
-        start = 1
-    if start is None:
-        return None
-    for i in range(start + 1, len(argv)):
-        word = argv[i]
-        if not word.startswith("-") or word == "-":
-            return None  # a non-option word before any -c: not `sh -c`
-        if "c" in word[1:]:
-            return i + 1 if i + 1 < len(argv) else None
-    return None
+_SHELL_BASENAMES = {"sh", "bash", "ash", "dash", "zsh", "ksh"}
 
 
 def _service_named_volumes(svc_def):
@@ -392,16 +354,55 @@ def _service_named_volumes(svc_def):
     return out
 
 
-def _looks_like_a_shell(argv):
-    """argv[0] (or busybox's argv[1]) names a shell, regardless of its options."""
-    if argv and os.path.basename(argv[0]) in _SHELL_BASENAMES - {"busybox"}:
+def _compose_bool(value):
+    """compose's boolean coercion: YAML gives us a bool, but a QUOTED "true" (or
+    an interpolated one) arrives as a string that compose still reads as true.
+    An `is True` identity test missed those and accepted a disabled healthcheck."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "on", "1"}
+    return False
+
+
+def _shell_script_of(argv):
+    """The script of a `sh -c <script>` hook, or None if this is not that shape.
+
+    EXACTLY two forms are accepted, and nothing may follow the script:
+
+        <shell> -c <script>
+        busybox <shell> -c <script>
+
+    This is deliberately narrower than what a shell would accept, because the
+    wider version kept being wrong. Walking option words to find the -c was
+    revised three times and broke three times: membership let
+    `busybox timeout 10 pg_dump -c db | gzip` borrow an unrelated -c; requiring
+    argv[1] == "-c" rejected the legitimate `sh -eu -c`; and walking the options
+    then matched `--norc` (it contains a c) and ran past a `--` terminator. Every
+    fix grew the parser and the next round found another hole in it.
+
+    So the parser is gone. A catalog entry has no need of shell options: `set -eu`
+    belongs INSIDE the script, where it is also more obvious. Refusing
+    `sh -c <script> <extra>` costs nothing either, and removes the whole question
+    of what the words after a script mean, which was the source of two more bugs.
+    """
+    if len(argv) == 4 and os.path.basename(argv[0]) == "busybox":
+        shell, rest = argv[1], argv[2:]
+    elif len(argv) == 3:
+        shell, rest = argv[0], argv[1:]
+    else:
+        return None
+    if os.path.basename(shell) not in _SHELL_BASENAMES or rest[0] != "-c":
+        return None
+    return rest[1]
+
+
+def _names_a_shell(argv):
+    """argv starts with a shell (or busybox+shell), whatever follows it."""
+    if argv and os.path.basename(argv[0]) in _SHELL_BASENAMES:
         return True
     return (len(argv) >= 2 and os.path.basename(argv[0]) == "busybox"
-            and os.path.basename(argv[1]) in _SHELL_BASENAMES - {"busybox"})
-
-
-def _invokes_a_shell(argv):
-    return _shell_script_index(argv) is not None
+            and os.path.basename(argv[1]) in _SHELL_BASENAMES)
 
 
 def _shell_operators_in(cmd):
@@ -415,7 +416,7 @@ def _shell_operators_in(cmd):
     lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
     lex.whitespace_split = True
     try:
-        return [tok for tok in lex if tok in _SHELL_OPERATORS]
+        return [tok for tok in lex if tok and all(ch in _PUNCT for ch in tok)]
     except ValueError:
         return []  # unbalanced quote: already reported by the shlex.split above
 
@@ -595,12 +596,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"command ({exc}). The greffer runs it through shlex.split and would "
                         f"raise at backup time, not here")
                     continue
-                script_at = _shell_script_index(argv) if argv else None
-                # A single $ is eaten by COMPOSE, before any container sees it, and
+                script = _shell_script_of(argv) if argv else None
+                # A single $ is eaten by COMPOSE, before any container exists, and
                 # it interpolates from the compose process's own environment. So
                 # `$PGUSER` resolves to empty and the hook silently loses the
-                # argument. This is true whether or not a shell is invoked, so it
-                # is checked on the raw label ahead of everything else.
+                # argument. True with or without a shell, so it is checked on the
+                # raw label ahead of everything else.
                 if argv and _UNESCAPED_DOLLAR_RE.search(val):
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} backup.{kind} label uses a single-$ "
@@ -609,48 +610,44 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"argument is lost. Write $$VAR to pass a literal $ through to the "
                         f"container")
                     continue
-                if argv and _looks_like_a_shell(argv) and script_at is None:
-                    # `sh -c` with nothing after it, i.e. -c present but no script.
+                if argv and _names_a_shell(argv) and script is None:
+                    # Anything shell-shaped that is not exactly `<shell> -c <script>`:
+                    # a missing script, options around the -c, or trailing words after
+                    # it. Narrow on purpose (see _shell_script_of): the permissive
+                    # version of this was wrong three rounds running.
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} backup.{kind} label invokes a shell "
-                        f"with no script to run. The greffer execs it as-is, so the dump "
-                        f"produces nothing and the backup fails with dump_empty")
+                        f"but is not exactly \"sh -c '<script>'\" (or \"busybox sh -c "
+                        f"'<script>'\"). Only those two forms are accepted, so that what the "
+                        f"shell interprets is unambiguous: put any options such as `set -eu` "
+                        f"INSIDE the script, and fold trailing words into it rather than "
+                        f"passing them after it, where the shell treats them as $0 and $1 "
+                        f"instead of running them")
                     continue
-                if script_at is not None and not argv[script_at].strip():
+                if script is not None and not script.strip():
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} backup.{kind} label passes an empty "
                         f"script to the shell. It exits 0 having written nothing, so the backup "
                         f"fails with dump_empty rather than reporting an error")
                     continue
-                if argv:
-                    # The greffer runs `docker exec <container> <argv>` with no
-                    # shell (backup.py:272, :346), so a pipe or a redirect is passed
-                    # to the program as a literal argument. This is about whether a
-                    # shell is INVOKED, not about which characters appear: the MySQL
-                    # entries legitimately use `sh -c '...; exec mysqldump ...'`.
-                    #
-                    # When a shell IS invoked only the SCRIPT is interpreted by it.
-                    # Operators after the script are argv the shell hands to that
-                    # script as positional parameters, so `sh -c pg_dump | gzip` is
-                    # just as broken as the bare form and has to be checked too.
-                    scope = val if script_at is None else " ".join(
-                        shlex.quote(a) for a in argv[script_at + 1:])
-                    stray = _shell_operators_in(scope)
-                    expand = ([tok for tok in argv if _EXPANSION_RE.search(tok)]
-                              if script_at is None else [])
+                if argv and script is None:
+                    # No shell involved: the greffer runs `docker exec <container>
+                    # <argv>` (backup.py:272, :346), so a pipe, a redirect or a $VAR
+                    # is handed to the program as a literal argument. With the two
+                    # shell forms pinned above, the script is the ONLY interpreted
+                    # text in a hook, and nothing can sit outside it, so this branch
+                    # no longer has to reason about scope at all.
+                    stray = _shell_operators_in(val)
+                    expand = [tok for tok in argv if _EXPANSION_RE.search(tok)]
                     if stray or expand:
                         what = (f"shell operators {stray}" if stray
                                 else f"variable expansions {expand}")
-                        where = ("but does not invoke a shell"
-                                 if script_at is None else
-                                 "OUTSIDE the -c script, where the shell does not "
-                                 "interpret them")
                         errors.append(
                             f"{rel_dir}: service {svc_name!r} backup.{kind} label uses {what} "
-                            f"{where}. The greffer execs the argv directly, so these are passed "
-                            f"to the program as literal arguments and never interpreted. Wrap "
-                            f"the command in \"sh -c '...'\" if you need a shell (note compose "
-                            f"eats a single $, so write $$VAR)")
+                            f"but does not invoke a shell. The greffer execs the argv directly, "
+                            f"so these are passed to the program as literal arguments and never "
+                            f"interpreted. Wrap the command in \"sh -c '...'\" if you need a "
+                            f"shell (note compose eats a single $, so write $$VAR)")
                         continue
                 if not argv:
                     # Two different failures, both silent, hence one check:
@@ -791,6 +788,19 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 # error it was going to print. A value compose itself rejects is
                 # left to compose.
                 replicas = int(replicas.strip())
+            elif isinstance(replicas, str) and "$" in replicas:
+                # `${DB_REPLICAS:-2}` resolves against the greffer's scrubbed
+                # environment, so the default wins and the count is whatever the
+                # entry author put there. Rather than reimplement compose's
+                # interpolation to find out, refuse the indirection: a hook service
+                # runs exactly one container, and that is not a per-deploy choice.
+                errors.append(
+                    f"{rel_dir}: hook service {svc_name!r} sets its replica count by "
+                    f"interpolation ({replicas!r}). The greffer deploys with a scrubbed "
+                    f"environment, so this resolves to the default rather than to whatever "
+                    f"the operator intended, and a hook service must run exactly one "
+                    f"container. Write the literal 1, or leave it unset")
+                replicas = None
             elif not isinstance(replicas, int):
                 replicas = None
             if isinstance(replicas, int) and replicas != 1:
@@ -805,7 +815,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
             hc_test = hc.get("test") if isinstance(hc, dict) else None
             disabled = (
                 isinstance(hc, dict) and (
-                    hc.get("disable") is True
+                    _compose_bool(hc.get("disable")) is True
                     or hc_test in ("NONE", ["NONE"])
                 )
             )
@@ -830,7 +840,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
             elif disabled:
                 errors.append(
                     f"{rel_dir}: service {svc_name!r} declares a backup hook but its "
-                    f"healthcheck is DISABLED ({'disable: true' if hc.get('disable') is True else 'test: NONE'}). "
+                    f"healthcheck is DISABLED ({'disable: true' if _compose_bool(hc.get('disable')) else 'test: NONE'}). "
                     f"Docker then reports no health state at all, so the hot restore waits for "
                     f"a 'healthy' that never arrives and times out")
 

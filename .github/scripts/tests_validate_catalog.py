@@ -1603,13 +1603,14 @@ class BackupPairingTest(unittest.TestCase):
         errs = self._run(compose=compose)
         self.assertTrue(any("single-$" in e for e in errs), errs)
 
-    def test_operator_outside_the_shell_script_is_rejected(self):
-        """`sh -c pg_dump | gzip` puts the pipe OUTSIDE the -c script, where it is
-        an inert argv word rather than something the shell interprets."""
+    def test_words_after_the_shell_script_are_rejected(self):
+        """`sh -c pg_dump | gzip` puts the pipe outside the script, where the shell
+        takes it as $1 rather than running it. Caught by the shape rule now: only
+        `sh -c <script>` is accepted, so there is no 'outside' left to reason about."""
         compose = _BACKUP_COMPOSE.replace(
             '"pg_dump -U a -d a -Fc"', '"sh -c pg_dump | gzip"')
         errs = self._run(compose=compose)
-        self.assertTrue(any("OUTSIDE the -c script" in e for e in errs), errs)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
 
     def test_compound_redirection_is_rejected(self):
         """punctuation_chars lexes 2>&1 as ['2', '>&', '1'], so a bare '>' misses."""
@@ -1618,16 +1619,60 @@ class BackupPairingTest(unittest.TestCase):
         errs = self._run(compose=compose)
         self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
 
-    def test_shell_options_before_dash_c_are_accepted(self):
-        """Guards against over-rejection: `sh -eu -c` really does run the script."""
+    def test_shell_options_before_dash_c_are_rejected(self):
+        """A DELIBERATE reversal of the previous round, which added option-word
+        walking so `sh -eu -c` would pass. That parser was then wrong twice more
+        (`--norc` contains a c; `--` was walked past), so the option surface is
+        gone: `set -eu` goes inside the script, where it is clearer anyway."""
         compose = _BACKUP_COMPOSE.replace(
             '"pg_dump -U a -d a -Fc"', """'sh -eu -c "pg_dump -U a -d a -Fc"'""")
-        self.assertEqual(self._run(compose=compose), [])
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_double_dash_before_dash_c_is_rejected(self):
+        """`sh -- -c '...'` makes sh open a FILE named -c and exit; the old walker
+        ran straight past the -- terminator and called it a shell invocation."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'sh -- -c "pg_dump -d a"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_long_option_containing_c_is_rejected(self):
+        """`bash --norc '...'` matched the old `"c" in word` test and was treated
+        as a -c invocation, which silently switched off every syntax check."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', """'bash --norc "pg_dump -d a"'""")
+        errs = self._run(compose=compose)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
+
+    def test_here_string_is_rejected(self):
+        """`<<<` lexes as one token and was absent from the operator allowlist.
+        Detection is now punctuation-only, so it needs no enumeration."""
+        compose = _BACKUP_COMPOSE.replace(
+            '"pg_dump -U a -d a -Fc"', '"pg_restore -d a <<< dump"')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("does not invoke a shell" in e for e in errs), errs)
+
+    def test_quoted_disable_true_is_rejected(self):
+        """compose reads "true" as true; an `is True` identity test did not."""
+        compose = _BACKUP_COMPOSE.replace(
+            '      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U a -d a"]\n',
+            '      disable: "true"\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("DISABLED" in e for e in errs), errs)
+
+    def test_interpolated_replica_count_is_rejected(self):
+        """It resolves against the greffer's scrubbed env, so the default wins."""
+        compose = _BACKUP_COMPOSE.replace(
+            "    image: postgres:16-alpine\n",
+            '    image: postgres:16-alpine\n    scale: "${DB_REPLICAS:-2}"\n')
+        errs = self._run(compose=compose)
+        self.assertTrue(any("interpolation" in e for e in errs), errs)
 
     def test_shell_with_no_script_is_rejected(self):
         compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', '"sh -c"')
         errs = self._run(compose=compose)
-        self.assertTrue(any("no script to run" in e for e in errs), errs)
+        self.assertTrue(any("not exactly" in e for e in errs), errs)
 
     def test_shell_with_an_empty_script_is_rejected(self):
         compose = _BACKUP_COMPOSE.replace('"pg_dump -U a -d a -Fc"', """'sh -c ""'""")

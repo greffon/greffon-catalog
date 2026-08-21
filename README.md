@@ -136,8 +136,16 @@ declaring hooks still works everywhere, just without the no-downtime path.
 Two constraints on the hook command itself, both enforced by CI:
 
 - **It is exec'd with no shell.** A pipe, a redirect or a `$VAR` is handed to the program as a
-  literal argument. Wrap it in `sh -c '...'` when you need one, and write `$$VAR` so compose passes
-  the `$` through rather than interpolating it away.
+  literal argument. Write `$$VAR` so compose passes the `$` through rather than interpolating it
+  away, and when you need a shell use exactly one of these two forms, with nothing after the script:
+
+  ```
+  sh -c '<script>'
+  busybox sh -c '<script>'
+  ```
+
+  Shell options are not accepted around the `-c`: put `set -eu` inside the script instead. The
+  narrowness is deliberate, so that what the shell interprets is never in question.
 - **Its service must run exactly one container, and keep running.** The greffer finds the hook by
   looking at running containers, so a service behind a `profiles:` never starts (no_dump_hook), one
   with `replicas: 2` presents the label twice (multiple_database_unsupported), and a one-shot that
