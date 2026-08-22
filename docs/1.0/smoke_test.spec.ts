@@ -68,12 +68,15 @@ test.describe('Docs', () => {
         `(expected a redirect to the IdP; 404 means the init route moved, 4xx with a body ` +
         `means the route exists but wants different inputs)`,
     ).toContain(init.status());
+    // globalThis.URL because this module shadows the global with
+    // `const URL = process.env.DOCS_URL`, so a bare `new URL(...)` here is a
+    // TypeError on a string rather than the WHATWG parser.
     const location = init.headers()['location'] ?? '';
     expect(
       location,
       `authenticate redirected to ${location || '<no Location header>'}, which is not this realm's ` +
         `authorization endpoint (${authEndpoint})`,
-    ).toContain(new URL(authEndpoint).pathname);
+    ).toContain(new globalThis.URL(authEndpoint).pathname);
 
     await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await expect(page.locator('input[name="username"]').first())
