@@ -352,6 +352,36 @@ _BUSYBOX_SHELLS = {"sh", "ash"}
 _NGINX_VOLUME_SUFFIX = "_nginx_volume"
 
 
+# Settings whose value is matched AGAINST THE INCOMING HOST HEADER, as opposed to
+# settings used to BUILD a URL. The distinction is the whole rule: the greffer's
+# per-instance sidecar proxies with `proxy_set_header Host $host`, and nginx's
+# $host carries no port, so a host-allowlist built from `instance_url` minus the
+# scheme can never match on any deployment whose URL has a port. Three entries
+# shipped that way (nextcloud trusted_domains, docs and visio DJANGO_ALLOWED_HOSTS);
+# in Django it is an empty 400 on every backend request, in Nextcloud a
+# "Trusted domain error". Entries that GENERATE urls (n8n N8N_HOST, forgejo
+# server.DOMAIN) legitimately want the port and are deliberately not matched here.
+_HOST_ALLOWLIST_RE = re.compile(r"ALLOWED_HOSTS|TRUSTED_DOMAINS|TRUSTED_HOSTS", re.I)
+# `{{ instance_url.split("://")[1] }}` -- the host WITH its port.
+_HOSTPORT_IDIOM_RE = re.compile(r"""instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]""")
+# The same, followed by `.split(":")[0]` -- the bare host.
+_BARE_HOST_IDIOM_RE = re.compile(
+    r"""instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]"""
+    r"""\s*\.\s*split\(\s*['"]:['"]\s*\)\s*\[\s*0\s*\]""")
+
+
+def _host_allowlist_problem(key, value):
+    """True when a host-allowlist setting derives the host WITH its port and never
+    also supplies the bare host."""
+    if not isinstance(key, str) or not isinstance(value, str):
+        return False
+    if not _HOST_ALLOWLIST_RE.search(key):
+        return False
+    if not _HOSTPORT_IDIOM_RE.search(value):
+        return False
+    return not _BARE_HOST_IDIOM_RE.search(value)
+
+
 def _service_named_volumes(svc_def):
     """Named volumes a service mounts, from both the short and long compose forms.
 
@@ -1000,6 +1030,40 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     f"healthcheck is DISABLED ({'disable: true' if _compose_bool(hc.get('disable')) else 'test: NONE'}). "
                     f"Docker then reports no health state at all, so the hot restore waits for "
                     f"a 'healthy' that never arrives and times out")
+
+    # Host-allowlist settings must accept the port-less host (see the note on
+    # _HOST_ALLOWLIST_RE): the sidecar's `Host $host` drops the port.
+    if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
+        for svc_name, svc_def in compose["services"].items():
+            if not isinstance(svc_def, dict):
+                continue
+            env = svc_def.get("environment")
+            items = (env.items() if isinstance(env, dict)
+                     else [(e.split("=", 1) + [""])[:2] for e in env or []
+                           if isinstance(e, str)])
+            for key, value in items:
+                if _host_allowlist_problem(key, value):
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} sets {key} from "
+                        f"instance_url WITH its port and never the bare host. The greffer's "
+                        f"sidecar proxies with `Host $host`, which drops the port, so this "
+                        f"allowlist cannot match and the app rejects every request on any "
+                        f"deployment whose URL has a port. Add "
+                        f"{{{{ instance_url.split(\"://\")[1].split(\":\")[0] }}}} alongside it")
+    for cfg in meta.get("configurations", []) or []:
+        if not isinstance(cfg, dict):
+            continue
+        default = (cfg.get("default_value") or {}).get("value")
+        for dest in cfg.get("destinations", []) or []:
+            if not isinstance(dest, dict):
+                continue
+            if _host_allowlist_problem(dest.get("key"), default):
+                errors.append(
+                    f"{rel_dir}: configuration {cfg.get('title')!r} defaults "
+                    f"{dest.get('key')} to instance_url WITH its port and never the bare "
+                    f"host. The sidecar's `Host $host` drops the port, so the app rejects "
+                    f"every request on a ported URL. Add "
+                    f"{{{{ instance_url.split(\"://\")[1].split(\":\")[0] }}}} alongside it")
 
     # L4 per-port declarations (optional `ports` list). Mirrors the structural
     # checks in the manager's import_catalog._validate_meta (the importer is

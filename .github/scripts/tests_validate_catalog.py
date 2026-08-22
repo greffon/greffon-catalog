@@ -1371,6 +1371,62 @@ def _backup_meta(**over):
     return meta
 
 
+class HostAllowlistTest(unittest.TestCase):
+    """A host allowlist built from instance_url must accept the PORT-LESS host.
+
+    The sidecar proxies with `Host $host`, which drops the port, so an allowlist
+    holding only host:port matches nothing. Three entries shipped that way.
+    """
+
+    HOSTPORT = '{{ instance_url.split("://")[1] }}'
+    BARE = '{{ instance_url.split("://")[1].split(":")[0] }}'
+
+    def _compose(self, key, value):
+        return textwrap.dedent(f"""\
+            services:
+              app:
+                image: nginx
+                ports:
+                  - "8080:8080"
+                environment:
+                  {key}: '{value}'
+            """)
+
+    def _run(self, *, compose=None, metadata=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=metadata or _base_metadata(),
+                                 compose_yaml=compose)
+            return [e for e in validate_greffon_dir(tmp, rel) if "bare host" in e]
+
+    def test_django_allowed_hosts_without_bare_host_is_rejected(self):
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS",
+                                               f"{self.HOSTPORT},localhost,backend"))
+        self.assertTrue(errs, "host:port-only allowlist must be rejected")
+
+    def test_trusted_domains_without_bare_host_is_rejected(self):
+        errs = self._run(compose=self._compose("NEXTCLOUD_TRUSTED_DOMAINS",
+                                               f"{self.HOSTPORT} localhost"))
+        self.assertTrue(errs, errs)
+
+    def test_both_forms_present_is_accepted(self):
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},{self.BARE},localhost"))
+        self.assertEqual(errs, [])
+
+    def test_url_building_setting_is_not_flagged(self):
+        """n8n's N8N_HOST and forgejo's server.DOMAIN legitimately want the port:
+        they GENERATE urls rather than validate an incoming Host. Guards the rule
+        against over-reach, which is how it stays useful."""
+        for key in ("N8N_HOST", "FORGEJO__server__DOMAIN", "COLLABORATION_WS_URL"):
+            with self.subTest(key=key):
+                self.assertEqual(self._run(compose=self._compose(key, self.HOSTPORT)), [])
+
+    def test_literal_allowlist_is_not_flagged(self):
+        """No instance_url idiom at all: nothing to say."""
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", "example.com,localhost"))
+        self.assertEqual(errs, [])
+
+
 class BackupPairingTest(unittest.TestCase):
     def _run(self, *, metadata=None, compose=None):
         """Backup-related errors only. The shared fixture writes no
