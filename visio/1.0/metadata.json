@@ -390,5 +390,14 @@
         }
       ]
     }
-  ]
+  ],
+  "backup": {
+    "volumes": {
+      "postgres_data": "database",
+      "minio_data": "data",
+      "gateway_conf": "data",
+      "keycloak_import": "data",
+      "livekit_conf": "data"
+    }
+  }
 }

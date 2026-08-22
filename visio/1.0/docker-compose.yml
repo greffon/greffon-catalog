@@ -54,8 +54,31 @@ services:
       POSTGRES_DB: meet
       POSTGRES_USER: meet
       # POSTGRES_PASSWORD injected (shared with backend DB_PASSWORD)
+    # Phase 3 hot DB backup hooks (SERVICE -> container labels read by the
+    # greffer). This is the single DB of the stack, so the hot-DB path applies;
+    # the object-store (minio_data) and config volumes are captured as data
+    # snapshots (see metadata.json backup.volumes). dump: pg_dump custom format
+    # to stdout; restore: pg_restore from stdin, --clean --if-exists so a
+    # re-restore drops+recreates objects, --single-transaction so a failed
+    # restore aborts atomically. Both run as the superuser (POSTGRES_USER=meet)
+    # over the unix socket (trust auth -> no password despite the injected one).
+    labels:
+      com.greffon.backup.dump: "pg_dump -U meet -d meet -Fc"
+      com.greffon.backup.restore: "pg_restore -U meet -d meet --clean --if-exists --no-owner --single-transaction"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Required by the greffer's hot DB restore: _wait_db_healthy waits for this
+    # healthcheck to pass before streaming pg_restore in.
+    healthcheck:
+      # -h 127.0.0.1 on purpose: the postgres entrypoint runs a TEMPORARY
+      # server on the unix socket during initdb, and a socket-based
+      # pg_isready reports ready against it just before the real server
+      # exists. The temp server sets listen_addresses='', so forcing TCP
+      # cannot see it. Matches keycloak/1.0, which documents the race.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U meet -d meet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:5
@@ -128,7 +151,11 @@ services:
       # gateway (http://gateway:8083) so they pick up X-Forwarded-Proto: https
       # and don't trip Production's SECURE_SSL_REDIRECT; the Host then reads
       # `gateway:8083`. See the LiveKit config webhook url in metadata.json.
-      DJANGO_ALLOWED_HOSTS: '{{ instance_url.split("://")[1] }},localhost,backend,gateway'
+      # Both forms on purpose: Django strips the port from the Host header
+      # before matching ALLOWED_HOSTS, so a host:port entry can NEVER match
+      # and every backend request 400s (DisallowedHost, empty body) on any
+      # deployment whose URL carries a port.
+      DJANGO_ALLOWED_HOSTS: '{{ instance_url.split("://")[1] }},{{ instance_url.split("://")[1].split(":")[0] }},localhost,backend,gateway'
       DJANGO_CSRF_TRUSTED_ORIGINS: "{{ instance_url }}"
       # DJANGO_SECRET_KEY injected
       MEET_BASE_URL: "{{ instance_url }}"
