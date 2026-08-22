@@ -24,17 +24,39 @@ const URL = process.env.NEXTCLOUD_URL!;
  */
 async function waitUntilInstalled() {
   const ctx = await pwRequest.newContext({ ignoreHTTPSErrors: true });
+  // Carry the last thing we actually saw into the failure message. A bare
+  // "never became ready" says nothing about WHY, and this instance installs in
+  // ~39s locally with the identical images and env, so when CI disagrees the
+  // response body is the evidence that distinguishes "still installing" from
+  // "not reachable" from "reachable but erroring".
+  let last = 'no response';
   try {
     await expect
       .poll(
         async () => {
-          const r = await ctx.get(`${URL}/status.php`, { timeout: 15_000 }).catch(() => null);
-          if (!r || !r.ok()) return false;
-          return ((await r.json().catch(() => ({}))) as { installed?: boolean }).installed === true;
+          const r = await ctx.get(`${URL}/status.php`, { timeout: 15_000 }).catch((e) => {
+            last = `request failed: ${e}`;
+            return null;
+          });
+          if (!r) return false;
+          const body = await r.text().catch(() => '<unreadable>');
+          last = `HTTP ${r.status()} ${body.slice(0, 200)}`;
+          if (!r.ok()) return false;
+          try {
+            return (JSON.parse(body) as { installed?: boolean }).installed === true;
+          } catch {
+            return false;
+          }
         },
-        { message: 'Nextcloud never reported installed:true', timeout: 180_000, intervals: [2_000] },
+        {
+          message: `Nextcloud never reported installed:true; last /status.php was ${last}`,
+          timeout: 180_000,
+          intervals: [2_000],
+        },
       )
       .toBe(true);
+  } catch (e) {
+    throw new Error(`Nextcloud never reported installed:true. Last /status.php: ${last}`);
   } finally {
     await ctx.dispose();
   }
