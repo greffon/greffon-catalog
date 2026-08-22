@@ -44,10 +44,23 @@ test.describe('Docs', () => {
       `${authEndpoint}?client_id=docs&response_type=code` +
       `&scope=${encodeURIComponent('openid email')}` +
       `&redirect_uri=${encodeURIComponent(`${base}/api/v1.0/callback/`)}`;
+    // Docs' OWN origin must answer before we go around it. Driving the
+    // authorization endpoint directly is what makes this test stable, but on its
+    // own it would pass with the Docs frontend or backend entirely broken, since
+    // it then only ever talks to Keycloak. Assert the app responds first, so a
+    // dead app fails here instead of silently reducing this to a Keycloak test.
+    const app = await request.get(base, { timeout: 60_000 });
+    expect(app.ok(), `GET ${base} -> ${app.status()}`).toBe(true);
+
     await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await expect(page.locator('input[name="username"]').first())
       .toBeVisible({ timeout: 30_000 });
     await expect(page.locator('input[type="password"]').first())
+      .toBeVisible({ timeout: 30_000 });
+    // A form you cannot submit is not a usable sign-in surface, and the file's
+    // own docstring above still promises this check. Without it, a broken or
+    // missing submit control passes the two assertions above.
+    await expect(page.locator('input[type="submit"], button[type="submit"]').first())
       .toBeVisible({ timeout: 30_000 });
   });
 });
