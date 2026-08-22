@@ -1421,6 +1421,22 @@ class HostAllowlistTest(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(self._run(compose=self._compose(key, self.HOSTPORT)), [])
 
+    def test_bare_host_inside_a_jinja_comment_does_not_satisfy_the_rule(self):
+        """`{# ... #}` renders to nothing, so a bare host commented out is absent
+        from the deployed value. Matching raw text let it satisfy the check."""
+        commented = (f"{self.HOSTPORT}"
+                     "{# " + self.BARE + " #}")
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", commented))
+        self.assertTrue(errs, "a commented-out bare host must not satisfy the rule")
+
+    def test_hostport_inside_a_jinja_comment_is_not_flagged(self):
+        """The other direction: if the PORTED form is what is commented out, the
+        value never renders a host:port at all, so there is nothing to complain
+        about. Guards the strip against being one-sided."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "{# " + self.HOSTPORT + " #}localhost"))
+        self.assertEqual(errs, [])
+
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
     # NOTHING for any entry, which is strictly worse than the error it replaces.

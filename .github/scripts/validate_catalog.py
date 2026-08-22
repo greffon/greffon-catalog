@@ -370,16 +370,27 @@ _BARE_HOST_IDIOM_RE = re.compile(
     r"""\s*\.\s*split\(\s*['"]:['"]\s*\)\s*\[\s*0\s*\]""")
 
 
+# `{# ... #}` renders to nothing, so anything inside it is not part of the value.
+_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.S)
+
+
 def _host_allowlist_problem(key, value):
     """True when a host-allowlist setting derives the host WITH its port and never
-    also supplies the bare host."""
+    also supplies the bare host.
+
+    Jinja comments are stripped FIRST. Matching the raw text meant a bare-host
+    expression sitting inside `{# ... #}` satisfied the check while rendering to
+    nothing, so a value that is still port-only at deploy time passed. The same
+    strip applies to the host:port half, since a commented-out one is equally
+    absent from the rendered value."""
     if not isinstance(key, str) or not isinstance(value, str):
         return False
     if not _HOST_ALLOWLIST_RE.search(key):
         return False
-    if not _HOSTPORT_IDIOM_RE.search(value):
+    rendered = _JINJA_COMMENT_RE.sub("", value)
+    if not _HOSTPORT_IDIOM_RE.search(rendered):
         return False
-    return not _BARE_HOST_IDIOM_RE.search(value)
+    return not _BARE_HOST_IDIOM_RE.search(rendered)
 
 
 def _service_named_volumes(svc_def):
