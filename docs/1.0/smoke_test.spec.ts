@@ -61,10 +61,12 @@ test.describe('Docs', () => {
       maxRedirects: 0,
       timeout: 60_000,
     });
+    const initBody = (await init.text().catch(() => '')).slice(0, 300);
     expect(
       [301, 302, 303, 307, 308],
-      `GET ${base}/api/v1.0/authenticate/ -> ${init.status()} (expected a redirect ` +
-        `to the IdP; a 404 here means the init route moved, not that the handoff is broken)`,
+      `GET ${base}/api/v1.0/authenticate/ -> ${init.status()} body=${initBody} ` +
+        `(expected a redirect to the IdP; 404 means the init route moved, 4xx with a body ` +
+        `means the route exists but wants different inputs)`,
     ).toContain(init.status());
     const location = init.headers()['location'] ?? '';
     expect(
