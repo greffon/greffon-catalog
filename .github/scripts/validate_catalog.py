@@ -1037,10 +1037,19 @@ def validate_greffon_dir(catalog_root, rel_dir):
         for svc_name, svc_def in compose["services"].items():
             if not isinstance(svc_def, dict):
                 continue
+            # Branch on the two shapes compose actually accepts and ignore
+            # anything else. `env or []` looked like a guard but only covers
+            # falsey values: `environment: 1` is truthy and not iterable, and
+            # iterating it raises, which aborts `--all` for the WHOLE catalog and
+            # discards every diagnostic collected so far. Malformed compose is
+            # reported by the shape checks elsewhere; it must not crash this one.
             env = svc_def.get("environment")
-            items = (env.items() if isinstance(env, dict)
-                     else [(e.split("=", 1) + [""])[:2] for e in env or []
-                           if isinstance(e, str)])
+            if isinstance(env, dict):
+                items = list(env.items())
+            elif isinstance(env, list):
+                items = [(e.split("=", 1) + [""])[:2] for e in env if isinstance(e, str)]
+            else:
+                items = []
             for key, value in items:
                 if _host_allowlist_problem(key, value):
                     errors.append(
@@ -1050,11 +1059,20 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"allowlist cannot match and the app rejects every request on any "
                         f"deployment whose URL has a port. Add "
                         f"{{{{ instance_url.split(\"://\")[1].split(\":\")[0] }}}} alongside it")
-    for cfg in meta.get("configurations", []) or []:
+    # Same reasoning: `configurations: 1` is truthy and not iterable, and a
+    # configuration whose default_value is a scalar has no .get. Both are ordinary
+    # validation failures reported elsewhere, so guard the shapes rather than
+    # letting them terminate the run.
+    meta_configs = meta.get("configurations")
+    for cfg in (meta_configs if isinstance(meta_configs, list) else []):
         if not isinstance(cfg, dict):
             continue
-        default = (cfg.get("default_value") or {}).get("value")
-        for dest in cfg.get("destinations", []) or []:
+        raw_default = cfg.get("default_value")
+        default = raw_default.get("value") if isinstance(raw_default, dict) else None
+        dests = cfg.get("destinations")
+        if not isinstance(dests, list):
+            continue
+        for dest in dests:
             if not isinstance(dest, dict):
                 continue
             if _host_allowlist_problem(dest.get("key"), default):

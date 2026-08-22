@@ -1421,6 +1421,48 @@ class HostAllowlistTest(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(self._run(compose=self._compose(key, self.HOSTPORT)), [])
 
+    # --- malformed input must not abort the run --------------------------
+    # `--all` validates the whole catalog in one process, so a crash here reports
+    # NOTHING for any entry, which is strictly worse than the error it replaces.
+
+    def test_scalar_environment_does_not_crash(self):
+        for shape in ("environment: 1", "environment: true", "environment: hello"):
+            with self.subTest(shape=shape):
+                compose = textwrap.dedent(f"""\
+                    services:
+                      app:
+                        image: nginx
+                        ports:
+                          - "8080:8080"
+                        {shape}
+                    """)
+                self._run(compose=compose)  # must return, not raise
+
+    def test_scalar_configurations_does_not_crash(self):
+        meta = _base_metadata()
+        meta["configurations"] = 1
+        self._run(metadata=meta)  # must return, not raise
+
+    def test_scalar_default_value_does_not_crash(self):
+        meta = _base_metadata()
+        meta["configurations"] = [{
+            "title": "X",
+            "schema": {"properties": {"value": {"type": "string"}}},
+            "default_value": "not-a-mapping",
+            "destinations": [{"type": "env", "container": "app", "key": "DJANGO_ALLOWED_HOSTS"}],
+        }]
+        self._run(metadata=meta)  # must return, not raise
+
+    def test_scalar_destinations_does_not_crash(self):
+        meta = _base_metadata()
+        meta["configurations"] = [{
+            "title": "X",
+            "schema": {"properties": {"value": {"type": "string"}}},
+            "default_value": {"value": "x"},
+            "destinations": 7,
+        }]
+        self._run(metadata=meta)  # must return, not raise
+
     def test_literal_allowlist_is_not_flagged(self):
         """No instance_url idiom at all: nothing to say."""
         errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", "example.com,localhost"))
