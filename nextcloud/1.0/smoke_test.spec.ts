@@ -8,7 +8,43 @@ const URL = process.env.NEXTCLOUD_URL!;
  *   - NEXTCLOUD_TRUSTED_DOMAINS resolved via {{ instance_host }} template
  *   - Login succeeds and lands on the dashboard
  */
+/**
+ * Wait for Nextcloud to finish INSTALLING, not merely to be running.
+ *
+ * The smoke harness gates on the greffer reporting the containers `running`
+ * (ci_greffer_smoke.py), which happens seconds after start. Nextcloud's env-var
+ * auto-install then runs for tens of seconds more, and until it finishes the app
+ * serves the setup wizard: no login form, and WebDAV answers 400. Both tests in
+ * this file were racing that install.
+ *
+ * `/status.php` is the app's own signal. Note the check is `installed === true`
+ * on the PARSED json, not a substring: the body of an uninstalled instance is
+ * `{"installed":false,...}`, so a substring test for `installed` matches the very
+ * state it is supposed to exclude.
+ */
+async function waitUntilInstalled() {
+  const ctx = await pwRequest.newContext({ ignoreHTTPSErrors: true });
+  try {
+    await expect
+      .poll(
+        async () => {
+          const r = await ctx.get(`${URL}/status.php`, { timeout: 15_000 }).catch(() => null);
+          if (!r || !r.ok()) return false;
+          return ((await r.json().catch(() => ({}))) as { installed?: boolean }).installed === true;
+        },
+        { message: 'Nextcloud never reported installed:true', timeout: 180_000, intervals: [2_000] },
+      )
+      .toBe(true);
+  } finally {
+    await ctx.dispose();
+  }
+}
+
 test.describe('Nextcloud', () => {
+  test.beforeEach(async () => {
+    test.skip(!URL, 'NEXTCLOUD_URL not set');
+    await waitUntilInstalled();
+  });
   test('admin logs in, lands on dashboard', async ({ page }) => {
     test.skip(!URL, 'NEXTCLOUD_URL not set');
 
