@@ -70,7 +70,12 @@ services:
     # Required by the greffer's hot DB restore: _wait_db_healthy waits for this
     # healthcheck to pass before streaming pg_restore in.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U meet -d meet"]
+      # -h 127.0.0.1 on purpose: the postgres entrypoint runs a TEMPORARY
+      # server on the unix socket during initdb, and a socket-based
+      # pg_isready reports ready against it just before the real server
+      # exists. The temp server sets listen_addresses='', so forcing TCP
+      # cannot see it. Matches keycloak/1.0, which documents the race.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U meet -d meet"]
       interval: 10s
       timeout: 5s
       retries: 5

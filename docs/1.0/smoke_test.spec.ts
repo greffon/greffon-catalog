@@ -44,13 +44,34 @@ test.describe('Docs', () => {
       `${authEndpoint}?client_id=docs&response_type=code` +
       `&scope=${encodeURIComponent('openid email')}` +
       `&redirect_uri=${encodeURIComponent(`${base}/api/v1.0/callback/`)}`;
-    // Docs' OWN origin must answer before we go around it. Driving the
-    // authorization endpoint directly is what makes this test stable, but on its
-    // own it would pass with the Docs frontend or backend entirely broken, since
-    // it then only ever talks to Keycloak. Assert the app responds first, so a
-    // dead app fails here instead of silently reducing this to a Keycloak test.
+    // Docs' OWN origin must answer before we go around it.
     const app = await request.get(base, { timeout: 60_000 });
     expect(app.ok(), `GET ${base} -> ${app.status()}`).toBe(true);
+
+    // ...and its BACKEND must actually hand off to this realm. A 2xx from the
+    // frontend shell only proves a static bundle is being served; the OIDC wiring
+    // lives in the backend, and driving the authorization endpoint ourselves
+    // (below) never touches it. Docs runs mozilla-django-oidc, whose init view
+    // sits beside the callback the realm is configured with
+    // (${base}/api/v1.0/callback/), so the init route is /api/v1.0/authenticate/.
+    // Following no redirects, it must send us at this realm's authorization
+    // endpoint: that is the handoff, and it is what breaks when OIDC_OP_* is
+    // misconfigured while Keycloak itself stays healthy.
+    const init = await request.get(`${base}/api/v1.0/authenticate/`, {
+      maxRedirects: 0,
+      timeout: 60_000,
+    });
+    expect(
+      [301, 302, 303, 307, 308],
+      `GET ${base}/api/v1.0/authenticate/ -> ${init.status()} (expected a redirect ` +
+        `to the IdP; a 404 here means the init route moved, not that the handoff is broken)`,
+    ).toContain(init.status());
+    const location = init.headers()['location'] ?? '';
+    expect(
+      location,
+      `authenticate redirected to ${location || '<no Location header>'}, which is not this realm's ` +
+        `authorization endpoint (${authEndpoint})`,
+    ).toContain(new URL(authEndpoint).pathname);
 
     await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await expect(page.locator('input[name="username"]').first())
