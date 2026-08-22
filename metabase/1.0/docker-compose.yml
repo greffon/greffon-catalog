@@ -48,8 +48,24 @@ services:
       POSTGRES_DB: "metabase"
       POSTGRES_USER: "metabase"
       POSTGRES_PASSWORD: "{{ instance_id }}"
+    # Phase 3 hot DB backup hooks (SERVICE -> container labels read by the
+    # greffer). dump: pg_dump custom format to stdout; restore: pg_restore from
+    # stdin, --clean --if-exists so a re-restore drops+recreates objects,
+    # --single-transaction so a failed restore aborts atomically. Both run as
+    # the local superuser (POSTGRES_USER=metabase) over the unix socket (trust
+    # auth -> no password needed despite the per-instance POSTGRES_PASSWORD).
+    labels:
+      com.greffon.backup.dump: "pg_dump -U metabase -d metabase -Fc"
+      com.greffon.backup.restore: "pg_restore -U metabase -d metabase --clean --if-exists --no-owner --single-transaction"
     volumes:
       - metabase_db_data:/var/lib/postgresql/data
+    # Required by the greffer's hot DB restore: _wait_db_healthy waits for this
+    # healthcheck to pass before streaming pg_restore in.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase -d metabase"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   metabase_db_data:
