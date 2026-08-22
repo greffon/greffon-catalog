@@ -52,9 +52,29 @@ The greffer renders each catalog `docker-compose.yml` as a Jinja2 template at de
 If a catalog template needs the host portion (or `host:port`) of the URL rather than the full URL, use Jinja string ops on `instance_url` at the call site rather than expecting a separate variable. The most common pattern:
 
 ```jinja
-# Just the host[:port] part — what a browser sends in the `Host:` header.
+# The host[:port] part, for BUILDING a URL or a WebSocket origin.
 {{ instance_url.split('://')[1] }}
+
+# The bare host, for anything MATCHED AGAINST the Host header the app receives.
+{{ instance_url.split('://')[1].split(':')[0] }}
 ```
+
+**Pick by what consumes the value, not by what the browser sends.** The browser does
+send `host:port`, but the per-instance sidecar proxies with `proxy_set_header Host
+$host`, and nginx's `$host` carries no port. So an app validating an incoming Host
+sees the bare host, and a host allowlist built from the first form matches nothing
+and rejects every request, on any deployment whose URL has a port.
+
+| Setting | Form | Why |
+|---|---|---|
+| `DJANGO_ALLOWED_HOSTS`, `NEXTCLOUD_TRUSTED_DOMAINS` | bare host | compared against the Host the app receives |
+| `N8N_HOST`, `FORGEJO__server__DOMAIN` | `host[:port]` | used to generate URLs |
+| `COLLABORATION_WS_URL`, `LIVEKIT_API_URL` | full URL | they are URLs |
+
+Declaring both forms is fine and is the safest default for an allowlist, since it
+holds whichever arrives. CI enforces this for settings named `*ALLOWED_HOSTS*`,
+`*TRUSTED_DOMAINS*` and `*TRUSTED_HOSTS*`, because three entries shipped with the
+port-only form and rejected every request until it was found.
 
 This works whether the URL has an explicit port (`https://example.com:8443`) or uses the default (`https://abc.my.greffon.local`). The catalog stays declarative, with a single source-of-truth Jinja variable, and there's no cross-PR contract about pre-parsed pieces for a reviewer to track. The `_template/` reference compose has an example.
 
