@@ -438,6 +438,18 @@ def _classify_expr(expr):
     return None
 
 
+def _app_of(rel_dir):
+    """The entry's app name from its relative dir, whatever shape the caller used.
+
+    Splitting the raw string on "/" returned "." for `--dir ./docs/1.0`, and the
+    whole path on Windows, where find_all_greffon_dirs builds a backslash path.
+    Either way the map lookup missed and the rule silently did nothing while
+    reporting success, which is the failure mode a validator can least afford."""
+    norm = os.path.normpath(str(rel_dir)).replace("\\", "/")
+    parts = [part for part in norm.split("/") if part not in ("", ".", "..")]
+    return parts[0] if parts else ""
+
+
 def _host_allowlist_problem(app, key, value):
     """None when fine, else a short reason code. `app` is the entry's directory
     name, since the parser belongs to the app rather than to the setting name."""
@@ -1169,7 +1181,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
             else:
                 items = []
             for key, value in items:
-                why = _host_allowlist_problem(rel_dir.split("/")[0], key, value)
+                why = _host_allowlist_problem(_app_of(rel_dir), key, value)
                 if why == "embedded":
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} embeds a host expression inside a "
@@ -1214,7 +1226,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
         for dest in dests:
             if not isinstance(dest, dict):
                 continue
-            why = _host_allowlist_problem(rel_dir.split("/")[0], dest.get("key"), default)
+            why = _host_allowlist_problem(_app_of(rel_dir), dest.get("key"), default)
             if why == "embedded":
                 errors.append(
                     f"{rel_dir}: configuration {cfg.get('title')!r} embeds a host expression "

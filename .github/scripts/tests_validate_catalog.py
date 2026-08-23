@@ -1702,6 +1702,17 @@ class HostAllowlistTest(unittest.TestCase):
             "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} *"), app="nextcloud")
         self.assertTrue(errs, errs)
 
+    def test_app_lookup_survives_path_shape(self):
+        """`--dir ./docs/1.0` and Windows backslash paths both produced an app name
+        the map could not match, so the rule skipped silently and the run still
+        reported success. Tests the resolver directly, since a fixture cannot
+        produce a Windows path on this host."""
+        from validate_catalog import _app_of
+        for rel, expected in (("docs/1.0", "docs"), ("./docs/1.0", "docs"),
+                              ("docs/1.0/", "docs"), ("nextcloud\\1.0", "nextcloud")):
+            with self.subTest(rel=rel):
+                self.assertEqual(_app_of(rel), expected)
+
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
     # NOTHING for any entry, which is strictly worse than the error it replaces.
