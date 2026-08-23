@@ -378,11 +378,17 @@ _JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.S)
 # CSRF_TRUSTED_ORIGINS and Docs' OIDC_REDIRECT_ALLOWED_HOSTS both take full
 # origins, scheme and port included, so demanding a bare host there would be
 # actively wrong advice. Excluded by name rather than by guessing from the value.
-_URLISH_KEY_RE = re.compile(r"REDIRECT|ORIGIN|URL|URI", re.I)
+# Anchored on the _ delimiters, not free substrings: "URI" hides inside SECURITY,
+# so an unanchored pattern silently skipped SECURITY_ALLOWED_HOSTS, a genuine
+# incoming-host setting. An exclusion that quietly widens is worse than no
+# exclusion, because it removes the check without saying so.
+_URLISH_KEY_RE = re.compile(r"(?:^|_)(?:REDIRECT|ORIGINS?|URLS?|URIS?)(?:_|$)", re.I)
 # `{% ... %}` is control flow, and what it renders cannot be decided by reading
 # the template: `{% if false %}` drops its body and `{% raw %}` emits the
 # expression as literal text rather than evaluating it.
 _JINJA_STATEMENT_RE = re.compile(r"\{%")
+# Contents of each {{ ... }} expression.
+_JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
 
 
 def _host_allowlist_problem(key, value):
@@ -404,6 +410,13 @@ def _host_allowlist_problem(key, value):
         return None
     if _JINJA_STATEMENT_RE.search(rendered):
         return "control-flow"
+    # `{{ 'instance_url.split(...)...' }}` renders the idiom as literal TEXT rather
+    # than evaluating it, so the deployed allowlist gains an unusable string and no
+    # host. The legitimate form starts with the identifier; only a leading quote
+    # makes the whole expression a string literal, which is the case worth refusing.
+    if any(expr.strip()[:1] in ("'", '"')
+           for expr in _JINJA_EXPR_RE.findall(rendered)):
+        return "string-literal"
     return None if _BARE_HOST_IDIOM_RE.search(rendered) else "no-bare-host"
 
 
@@ -1077,7 +1090,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 items = []
             for key, value in items:
                 why = _host_allowlist_problem(key, value)
-                if why == "control-flow":
+                if why == "string-literal":
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} builds {key} from a Jinja STRING "
+                        f"literal, which renders the expression as text instead of evaluating "
+                        f"it, so the allowlist gains an unusable string and still no bare host")
+                elif why == "control-flow":
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} builds {key} with Jinja control "
                         f"flow ({{% ... %}}). Whether the bare host survives depends on what "
@@ -1108,7 +1126,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
             if not isinstance(dest, dict):
                 continue
             why = _host_allowlist_problem(dest.get("key"), default)
-            if why == "control-flow":
+            if why == "string-literal":
+                errors.append(
+                    f"{rel_dir}: configuration {cfg.get('title')!r} builds {dest.get('key')} "
+                    f"from a Jinja STRING literal, which renders as text rather than being "
+                    f"evaluated, so no bare host reaches the allowlist")
+            elif why == "control-flow":
                 errors.append(
                     f"{rel_dir}: configuration {cfg.get('title')!r} builds "
                     f"{dest.get('key')} with Jinja control flow ({{% ... %}}). What it renders "

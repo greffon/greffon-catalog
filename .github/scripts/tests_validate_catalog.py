@@ -1382,6 +1382,9 @@ class HostAllowlistTest(unittest.TestCase):
     BARE = '{{ instance_url.split("://")[1].split(":")[0] }}'
 
     def _compose(self, key, value):
+        # json.dumps for the scalar: JSON is valid YAML and escapes quotes
+        # correctly. Hand-wrapping in single quotes silently mangled any value
+        # containing one, which made a test fail against correct code.
         return textwrap.dedent(f"""\
             services:
               app:
@@ -1389,7 +1392,7 @@ class HostAllowlistTest(unittest.TestCase):
                 ports:
                   - "8080:8080"
                 environment:
-                  {key}: '{value}'
+                  {key}: {json.dumps(value)}
             """)
 
     def _run(self, *, compose=None, metadata=None):
@@ -1463,6 +1466,22 @@ class HostAllowlistTest(unittest.TestCase):
         it, so the deployed allowlist contains the source, not a host."""
         val = self.HOSTPORT + "{% raw %}" + self.BARE + "{% endraw %}"
         errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, errs)
+
+    def test_urlish_exclusion_is_anchored(self):
+        """`URI` is a substring of `SECURITY`, so an unanchored exclusion silently
+        skipped SECURITY_ALLOWED_HOSTS, a real incoming-host setting. An exclusion
+        that quietly widens removes the check without saying so."""
+        errs = self._run(compose=self._compose(
+            "SECURITY_ALLOWED_HOSTS", f"{self.HOSTPORT},localhost"))
+        self.assertTrue(errs, "SECURITY_ALLOWED_HOSTS must still be checked")
+
+    def test_bare_host_as_a_jinja_string_literal_is_rejected(self):
+        """`{{ 'instance_url...' }}` renders the idiom as literal text instead of
+        evaluating it, so the allowlist gains a useless string and no host."""
+        quoted = self.BARE.replace("{{ ", "{{ '").replace(" }}", "' }}")
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},{quoted}"))
         self.assertTrue(errs, errs)
 
     # --- malformed input must not abort the run --------------------------
