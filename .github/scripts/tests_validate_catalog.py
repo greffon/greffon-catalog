@@ -1432,13 +1432,19 @@ class HostAllowlistTest(unittest.TestCase):
         errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", commented))
         self.assertTrue(errs, "a commented-out bare host must not satisfy the rule")
 
-    def test_hostport_inside_a_jinja_comment_is_not_flagged(self):
-        """The other direction: if the PORTED form is what is commented out, the
-        value never renders a host:port at all, so there is nothing to complain
-        about. Guards the strip against being one-sided."""
+    def test_any_jinja_comment_in_an_allowlist_is_refused(self):
+        """DELIBERATE over-rejection, replacing an earlier assertion that this was
+        fine. A commented-out ported host does render to just `localhost`, so
+        refusing it rejects a harmless value.
+
+        It is refused because the alternative is worse: telling a real `{# #}` from
+        the characters "{#" inside a string literal cannot be done by text
+        substitution, and getting it wrong deleted a genuine expression and reported
+        the allowlist clean. An allowlist has no use for a comment, so the ambiguity
+        is removed rather than resolved."""
         errs = self._run(compose=self._compose(
             "DJANGO_ALLOWED_HOSTS", "{# " + self.HOSTPORT + " #}localhost"))
-        self.assertEqual(errs, [])
+        self.assertTrue(errs, "comments are refused in allowlists, not interpreted")
 
     def test_redirect_allowlist_is_not_flagged(self):
         """OIDC_REDIRECT_ALLOWED_HOSTS holds URLs, not bare hosts. It matches the
@@ -1530,6 +1536,23 @@ class HostAllowlistTest(unittest.TestCase):
         errs = self._run(compose=self._compose(
             "DJANGO_ALLOWED_HOSTS", f'{self.HOSTPORT},{self.BARE},{{{{ "localhost" }}}}'))
         self.assertEqual(errs, [])
+
+    def test_computed_host_port_is_not_a_constant(self):
+        """`{{ "" ~ instance_host ~ ":" ~ instance_port ~ "" }}` renders host:port,
+        the exact value this rule rejects. A regex spanning first quote to last
+        called the whole computation a constant and let it through."""
+        val = '{{ "" ~ instance_host ~ ":" ~ instance_port ~ "" }}'
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, "a computed host:port must not pass as a constant")
+
+    def test_comment_markers_inside_a_literal_do_not_hide_an_expression(self):
+        """`{{ "{#" if false else "" }}` puts comment characters in a STRING. A
+        textual strip read them as a real comment and deleted the ported
+        expression between them, leaving nothing to complain about."""
+        val = ('{{ "{#" if false else "" }}' + self.HOSTPORT
+               + '{{ "#}" if false else "" }}')
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, errs)
 
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports

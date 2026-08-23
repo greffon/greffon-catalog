@@ -362,7 +362,6 @@ _HOST_ALLOWLIST_RE = re.compile(r"ALLOWED_HOSTS|TRUSTED_DOMAINS|TRUSTED_HOSTS", 
 # Anchored on the _ delimiters: "URI" hides inside "SECURITY", and an unanchored
 # exclusion silently skipped SECURITY_ALLOWED_HOSTS.
 _URLISH_KEY_RE = re.compile(r"(?:^|_)(?:REDIRECT|ORIGINS?|URLS?|URIS?)(?:_|$)", re.I)
-_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.S)
 _JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
 _JINJA_STATEMENT_RE = re.compile(r"\{%")
 
@@ -379,8 +378,27 @@ _EXPR_BARE_RE = re.compile(
     r"""^\s*(?:instance_host"""
     r"""|instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]"""
     r"""\s*\.\s*split\(\s*['"]:['"]\s*\)\s*\[\s*0\s*\])\s*$""")
-# A constant: a quoted literal that mentions nothing about the instance.
-_EXPR_CONST_RE = re.compile(r"""^\s*(['"]).*?\1\s*$""", re.S)
+_INSTANCE_VAR_RE = re.compile(r"\binstance_(?:url|host|port|id)\b")
+
+
+def _is_standalone_literal(expr):
+    """True only when the expression is ONE quoted string and nothing else.
+
+    A regex from the first quote to the last called
+    `{{ "" ~ instance_host ~ ":" ~ instance_port ~ "" }}` a constant, though it
+    computes host:port and renders the very value this rule exists to reject."""
+    s = (expr or "").strip()
+    if s[:1] not in ("'", '"'):
+        return False
+    quote, i = s[0], 1
+    while i < len(s):
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] == quote:
+            return not s[i + 1:].strip()
+        i += 1
+    return False
 
 
 def _classify_expr(expr):
@@ -389,7 +407,7 @@ def _classify_expr(expr):
         return "bare"
     if _EXPR_PORTED_RE.match(expr):
         return "ported"
-    if _EXPR_CONST_RE.match(expr) and "instance_url" not in expr:
+    if _is_standalone_literal(expr) and not _INSTANCE_VAR_RE.search(expr):
         return "const"
     return None
 
@@ -400,11 +418,16 @@ def _host_allowlist_problem(key, value):
         return None
     if not _HOST_ALLOWLIST_RE.search(key) or _URLISH_KEY_RE.search(key):
         return None
-    rendered = _JINJA_COMMENT_RE.sub("", value)
-    exprs = _JINJA_EXPR_RE.findall(rendered)
-    if not exprs and not _JINJA_STATEMENT_RE.search(rendered):
+    # Comments are REFUSED, not stripped. Stripping them textually cannot tell a
+    # real `{# #}` from the characters "{#" inside a string literal, and getting
+    # that wrong deleted a genuine expression and returned clean. An allowlist has
+    # no use for a comment, so the ambiguity is removed rather than resolved.
+    if "{#" in value or "#}" in value:
+        return "control-flow"
+    exprs = _JINJA_EXPR_RE.findall(value)
+    if not exprs and not _JINJA_STATEMENT_RE.search(value):
         return None  # a literal allowlist; nothing derived from the instance
-    if _JINJA_STATEMENT_RE.search(rendered):
+    if _JINJA_STATEMENT_RE.search(value):
         return "control-flow"
     kinds = [_classify_expr(e) for e in exprs]
     if any(k is None for k in kinds):
