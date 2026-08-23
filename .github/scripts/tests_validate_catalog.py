@@ -1577,13 +1577,46 @@ class HostAllowlistTest(unittest.TestCase):
             "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} {self.BARE} localhost"))
         self.assertEqual(errs, [])
 
-    def test_json_array_allowlist_is_accepted(self):
-        """Some apps encode the allowlist as JSON; docs already does for its
-        redirect allowlist. Splitting that on commas leaves `["` glued to the
-        first entry, which made a correct allowlist look embedded."""
+    def test_json_array_is_rejected_for_a_comma_separated_setting(self):
+        """Reverses an earlier round, and is more correct than what it replaces.
+
+        Django parses ALLOWED_HOSTS as a COMMA-separated string, so a JSON array is
+        not a valid value for it and the brackets and quotes become part of the
+        hosts. The previous version accepted it because the rule guessed at
+        encodings; with the separator known per setting there is nothing to guess.
+        An app that genuinely wants JSON gets an entry in the map with its own
+        handling, rather than every setting inheriting a format none of them
+        declared."""
         errs = self._run(compose=self._compose(
             "DJANGO_ALLOWED_HOSTS", '["{{ instance_host }}","localhost"]'))
+        self.assertTrue(errs, "JSON is not Django's encoding for this setting")
+
+    def test_unknown_allowlist_names_are_not_checked(self):
+        """The map is deliberately narrow. A denylist (DISALLOWED_HOSTS) matched the
+        old substring pattern, where the advice would have been backwards."""
+        errs = self._run(compose=self._compose("DISALLOWED_HOSTS", self.HOSTPORT))
         self.assertEqual(errs, [])
+
+    def test_semicolon_is_not_a_separator(self):
+        """Neither Django nor Nextcloud splits on `;`, so this is ONE unusable entry
+        even though it contains both idioms. A generic separator list accepted it."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT};{self.BARE}"))
+        self.assertTrue(errs, errs)
+
+    def test_misordered_delimiters_are_rejected(self):
+        """`localhost }} {{ instance_host` has equal counts and invalid ordering.
+        Counting delimiters passed it; masking well-formed pairs leaves the strays."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "localhost }} {{ instance_host"))
+        self.assertTrue(errs, errs)
+
+    def test_placeholder_collision_does_not_crash(self):
+        """A literal entry shaped like the internal masking token indexed past the
+        table and raised IndexError, aborting --all for the whole catalog."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},__GREFFON_EXPR_1__"))
+        self.assertTrue(errs, errs)
 
     def test_json_array_missing_the_bare_host_is_rejected(self):
         """The encoding is understood, so the rule still applies inside it."""

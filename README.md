@@ -72,9 +72,17 @@ and rejects every request, on any deployment whose URL has a port.
 | `COLLABORATION_WS_URL`, `LIVEKIT_API_URL` | full URL | they are URLs |
 
 Declaring both forms is fine and is the safest default for an allowlist, since it
-holds whichever arrives. CI enforces this for settings named `*ALLOWED_HOSTS*`,
-`*TRUSTED_DOMAINS*` and `*TRUSTED_HOSTS*`, because three entries shipped with the
-port-only form and rejected every request until it was found.
+holds whichever arrives.
+
+CI checks this, for a deliberately short list of settings it knows by name
+(`DJANGO_ALLOWED_HOSTS`, `NEXTCLOUD_TRUSTED_DOMAINS`, `SECURITY_ALLOWED_HOSTS`),
+because the separator an app parses is a property of that app: Django splits on
+commas, Nextcloud on spaces, and a rule that guesses gets it wrong in one direction
+or the other. **Adding a new app's allowlist means adding one line to
+`_HOST_ALLOWLISTS` in `validate_catalog.py`**, with the separator that app parses.
+Until it is there, the setting is not checked, which is why the guidance above
+matters more than the check: three entries shipped the port-only form and rejected
+every request until it was found.
 
 This works whether the URL has an explicit port (`https://example.com:8443`) or uses the default (`https://abc.my.greffon.local`). The catalog stays declarative, with a single source-of-truth Jinja variable, and there's no cross-PR contract about pre-parsed pieces for a reviewer to track. The `_template/` reference compose has an example.
 

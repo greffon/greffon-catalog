@@ -352,26 +352,30 @@ _BUSYBOX_SHELLS = {"sh", "ash"}
 _NGINX_VOLUME_SUFFIX = "_nginx_volume"
 
 
-# Settings whose value is matched AGAINST THE INCOMING HOST HEADER, as opposed to
-# settings used to BUILD a URL. The greffer's per-instance sidecar proxies with
-# `proxy_set_header Host $host`, and nginx's $host carries no port, so an allowlist
-# holding only a ported host matches nothing and the app rejects every request.
-# Three entries shipped that way, and three separate docs recommended the idiom
-# that produced it.
-_HOST_ALLOWLIST_RE = re.compile(r"ALLOWED_HOSTS|TRUSTED_DOMAINS|TRUSTED_HOSTS", re.I)
-# Anchored on the _ delimiters: "URI" hides inside "SECURITY", and an unanchored
-# exclusion silently skipped SECURITY_ALLOWED_HOSTS.
-_URLISH_KEY_RE = re.compile(r"(?:^|_)(?:REDIRECT|ORIGINS?|URLS?|URIS?)(?:_|$)", re.I)
+# Host allowlists this rule understands, mapped to the separator the APP parses.
+# An explicit map, not a name pattern. A pattern matched DISALLOWED_HOSTS (a
+# denylist, where the advice would be backwards) and OIDC_REDIRECT_ALLOWED_HOSTS
+# (URLs), and it could not know each app's encoding, which produced a false result
+# in one direction or the other every time a new encoding turned up: JSON arrays,
+# semicolons, whitespace inside JSON strings. Keyed on the exact setting, the
+# separator is a fact rather than a guess.
+#
+# The cost is honest and small: a new app's allowlist is unchecked until it is
+# added here, one line. The prevention that scales is the documentation, which now
+# names the right idiom in the catalog README and in add-greffon.md.
+_HOST_ALLOWLISTS = {
+    "DJANGO_ALLOWED_HOSTS": ",",
+    "NEXTCLOUD_TRUSTED_DOMAINS": " ",
+    "SECURITY_ALLOWED_HOSTS": ",",
+}
 _JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
 _JINJA_STATEMENT_RE = re.compile(r"\{%")
+_MASK = "__GREFFON_EXPR_{}__"
+_MASK_RE = re.compile(r"__GREFFON_EXPR_(\d+)__")
 
-# The value is a TEMPLATE, and CI cannot evaluate it. Five separate bypasses came
-# from trying to decide what arbitrary Jinja renders by matching its source text:
-# comments, `{% if false %}`, `{% raw %}`, string literals, and inline conditionals.
-# So each expression must be one of a few RECOGNISED forms and anything else is
-# refused. That is narrower than Jinja allows, deliberately: an allowlist is not
-# the place for computed values, and the cost of guessing wrong here is an app
-# that rejects every request.
+# Each entry must be one of these, or a plain literal. Everything else is refused:
+# the validator cannot evaluate Jinja, and five separate bypasses came from trying
+# to decide what arbitrary template text renders by matching its source.
 _EXPR_PORTED_RE = re.compile(
     r"""^\s*instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]\s*$""")
 _EXPR_BARE_RE = re.compile(
@@ -382,11 +386,7 @@ _INSTANCE_VAR_RE = re.compile(r"\binstance_(?:url|host|port|id)\b")
 
 
 def _is_standalone_literal(expr):
-    """True only when the expression is ONE quoted string and nothing else.
-
-    A regex from the first quote to the last called
-    `{{ "" ~ instance_host ~ ":" ~ instance_port ~ "" }}` a constant, though it
-    computes host:port and renders the very value this rule exists to reject."""
+    """True only when the expression is ONE quoted string and nothing else."""
     s = (expr or "").strip()
     if s[:1] not in ("'", '"'):
         return False
@@ -402,7 +402,6 @@ def _is_standalone_literal(expr):
 
 
 def _classify_expr(expr):
-    """One of 'ported', 'bare', 'const', or None for anything unrecognised."""
     if _EXPR_BARE_RE.match(expr):
         return "bare"
     if _EXPR_PORTED_RE.match(expr):
@@ -412,86 +411,46 @@ def _classify_expr(expr):
     return None
 
 
-def _allowlist_entries(value):
-    """Split an allowlist into its ENTRIES without splitting inside `{{ ... }}`.
+def _host_allowlist_problem(key, value):
+    """None when fine, else a short reason code."""
+    if not isinstance(key, str) or not isinstance(value, str):
+        return None
+    separator = _HOST_ALLOWLISTS.get(key)
+    if separator is None:
+        return None
+    if "{#" in value or "#}" in value or _JINJA_STATEMENT_RE.search(value):
+        return "control-flow"
+    if "__GREFFON_EXPR_" in value:
+        return "unrecognised"  # would collide with the masking below
+    if "{{" not in value:
+        return None  # a literal allowlist; nothing derived from the instance
 
-    Both separators appear in the catalog: Nextcloud's trusted_domains is space
-    separated, Django's ALLOWED_HOSTS is comma separated. The idioms themselves
-    contain spaces, so the expressions are masked out before splitting and each
-    entry is returned as either an expression body or literal text."""
     exprs = []
 
     def stash(m):
         exprs.append(m.group(1))
-        return f"__GREFFON_EXPR_{len(exprs) - 1}__"
+        return _MASK.format(len(exprs) - 1)
 
     masked = _JINJA_EXPR_RE.sub(stash, value)
-    # Some apps encode the allowlist as a JSON array rather than a delimited
-    # string; docs already does exactly that for its redirect allowlist. Splitting
-    # such a value on commas leaves `["` and `"]` glued to the entries, so a
-    # perfectly good allowlist looked like an expression embedded in other text.
-    stripped = masked.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        try:
-            items = json.loads(stripped)
-        except ValueError:
-            items = None
-        if isinstance(items, list) and all(isinstance(i, str) for i in items):
-            for item in items:
-                marks = re.findall(r"__GREFFON_EXPR_(\d+)__", item)
-                if not marks:
-                    yield ("literal", item)
-                elif re.fullmatch(r"__GREFFON_EXPR_\d+__", item.strip()):
-                    yield ("expr", exprs[int(marks[0])])
-                else:
-                    yield ("embedded", item)
-            return
-    for token in re.split(r"[,\s;]+", stripped):
+    # Any delimiter still standing means the template is malformed. Counting `{{`
+    # against `}}` passed `localhost }} {{ instance_host`, where the counts match
+    # and the order does not; masking well-formed pairs first leaves the strays.
+    if "{{" in masked or "}}" in masked:
+        return "control-flow"
+
+    kinds = set()
+    for token in masked.split(separator):
+        token = token.strip()
         if not token:
             continue
-        marks = re.findall(r"__GREFFON_EXPR_(\d+)__", token)
+        marks = _MASK_RE.findall(token)
         if not marks:
-            yield ("literal", token)
-        elif re.fullmatch(r"__GREFFON_EXPR_\d+__", token):
-            yield ("expr", exprs[int(marks[0])])
-        else:
-            # An expression glued to other text: `https://{{ instance_host }}`
-            # renders a URL, not a host, and the app compares a host.
-            yield ("embedded", token)
-
-
-def _host_allowlist_problem(key, value):
-    """None when fine, else a short reason code.
-
-    Works per ENTRY rather than per expression. Checking only that a recognised
-    bare-host expression appeared somewhere accepted
-    `DJANGO_ALLOWED_HOSTS: "https://{{ instance_host }}"`, which renders a URL and
-    matches no Host at all: the expression was present and the entry was still
-    unusable."""
-    if not isinstance(key, str) or not isinstance(value, str):
-        return None
-    if not _HOST_ALLOWLIST_RE.search(key) or _URLISH_KEY_RE.search(key):
-        return None
-    # Comments are REFUSED, not stripped: text substitution cannot tell a real
-    # `{# #}` from those characters inside a string literal, and getting it wrong
-    # deleted a genuine expression and reported the allowlist clean.
-    if "{#" in value or "#}" in value or _JINJA_STATEMENT_RE.search(value):
-        return "control-flow"
-    # Unbalanced delimiters mean the value is not a template this validator can
-    # read, and Jinja will refuse it at deploy. Treating the leftovers as literal
-    # text returned clean on something that never renders at all.
-    if value.count("{{") != value.count("}}"):
-        return "control-flow"
-    if "{{" not in value:
-        return None  # a literal allowlist; nothing derived from the instance
-    kinds = set()
-    for what, body in _allowlist_entries(value):
-        if what == "embedded":
-            return "embedded"
-        if what == "literal":
             kinds.add("const")
             continue
-        kind = _classify_expr(body)
+        if not _MASK_RE.fullmatch(token):
+            # `https://{{ instance_host }}` renders a URL, not a host.
+            return "embedded"
+        kind = _classify_expr(exprs[int(marks[0])])
         if kind is None:
             return "unrecognised"
         kinds.add(kind)
@@ -1150,7 +1109,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     f"a 'healthy' that never arrives and times out")
 
     # Host-allowlist settings must accept the port-less host (see the note on
-    # _HOST_ALLOWLIST_RE): the sidecar's `Host $host` drops the port.
+    # _HOST_ALLOWLISTS): the sidecar's `Host $host` drops the port.
     if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
         for svc_name, svc_def in compose["services"].items():
             if not isinstance(svc_def, dict):
