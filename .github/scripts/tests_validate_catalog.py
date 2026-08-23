@@ -1686,6 +1686,22 @@ class HostAllowlistTest(unittest.TestCase):
                     "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"),
                     f"{name} is not an IFS separator")
 
+    def test_django_wildcard_satisfies_the_requirement(self):
+        """`*` disables Django's host check, so it matches the bare host too.
+        Rejecting it was also inconsistent: an allowlist of only `*` was already
+        accepted, because it contains no expression and never reached the check."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},*"))
+        self.assertEqual(errs, [])
+
+    def test_wildcard_is_per_app_not_universal(self):
+        """The map claims a wildcard only where this catalog can demonstrate one.
+        Nextcloud gets none, so `*` there is an ordinary literal and the ported
+        form still needs its bare companion."""
+        errs = self._run(compose=self._compose(
+            "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} *"), app="nextcloud")
+        self.assertTrue(errs, errs)
+
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
     # NOTHING for any entry, which is strictly worse than the error it replaces.

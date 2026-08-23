@@ -378,14 +378,22 @@ _HOST_ALLOWLISTS = {
     # Django reads ALLOWED_HOSTS comma separated, and treats a leading dot as its
     # documented subdomain pattern (".example.com" matches example.com and any
     # subdomain), which carries no scheme or port.
-    ("docs", "DJANGO_ALLOWED_HOSTS"): {"split": r"\s*,\s*", "prefixes": (".",)},
-    ("visio", "DJANGO_ALLOWED_HOSTS"): {"split": r"\s*,\s*", "prefixes": (".",)},
+    # `*` disables Django's host check entirely, so it matches the bare host too.
+    # Whether that is wise is a different question from the one this rule asks.
+    ("docs", "DJANGO_ALLOWED_HOSTS"):
+        {"split": r"\s*,\s*", "prefixes": (".",), "wildcards": ("*",)},
+    ("visio", "DJANGO_ALLOWED_HOSTS"):
+        {"split": r"\s*,\s*", "prefixes": (".",), "wildcards": ("*",)},
     # Nextcloud's entrypoint reads trusted_domains through shell word splitting, so
     # entries are separated by the DEFAULT IFS characters and only those. `\s+`
     # was too generous: it also matches \r, \v, \f and unicode spaces, none of
     # which the shell splits on, so a value the app sees as one broken token would
     # have validated as two good ones.
-    ("nextcloud", "NEXTCLOUD_TRUSTED_DOMAINS"): {"split": r"[ \t\n]+", "prefixes": ()},
+    # No wildcard listed for Nextcloud: it does support wildcard entries, but the
+    # exact semantics of a bare `*` there are not something this catalog can
+    # demonstrate, and a guess is what this map exists to avoid.
+    ("nextcloud", "NEXTCLOUD_TRUSTED_DOMAINS"):
+        {"split": r"[ \t\n]+", "prefixes": (), "wildcards": ()},
 }
 _JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
 _JINJA_STATEMENT_RE = re.compile(r"\{%")
@@ -465,7 +473,11 @@ def _host_allowlist_problem(app, key, value):
             continue
         marks = _MASK_RE.findall(token)
         if not marks:
-            kinds.add("const")
+            # A literal entry the app treats as matching ANY host satisfies the
+            # requirement on its own. Rejecting it was also inconsistent: an
+            # allowlist of only `*` was already accepted, since it contains no
+            # expression at all and never reached this check.
+            kinds.add("bare" if token in spec.get("wildcards", ()) else "const")
             continue
         # A prefix the app treats as part of the host pattern is not "embedded in
         # other text": Django's ".{{ instance_host }}" is a subdomain wildcard and
