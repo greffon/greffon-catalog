@@ -1554,6 +1554,29 @@ class HostAllowlistTest(unittest.TestCase):
         errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
         self.assertTrue(errs, errs)
 
+    def test_bare_host_embedded_in_a_url_is_rejected(self):
+        """`https://{{ instance_host }}` contains a recognised bare-host expression
+        and is still unusable: it renders a URL, and the app compares a bare Host.
+        Checking that the expression APPEARED, rather than that the entry IS the
+        host, accepted it."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "https://{{ instance_host }}"))
+        self.assertTrue(errs, "an expression inside a larger entry must be rejected")
+
+    def test_bare_host_glued_to_a_port_is_rejected(self):
+        """Same shape without a scheme: the entry has to be the host on its own."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "{{ instance_host }}:8443"))
+        self.assertTrue(errs, errs)
+
+    def test_space_separated_allowlist_is_parsed_per_entry(self):
+        """Nextcloud separates trusted_domains by SPACE while Django uses commas,
+        and the idioms contain spaces themselves. Guards the splitter against
+        tearing an expression in half."""
+        errs = self._run(compose=self._compose(
+            "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} {self.BARE} localhost"))
+        self.assertEqual(errs, [])
+
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
     # NOTHING for any entry, which is strictly worse than the error it replaces.

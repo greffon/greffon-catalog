@@ -412,26 +412,64 @@ def _classify_expr(expr):
     return None
 
 
+def _allowlist_entries(value):
+    """Split an allowlist into its ENTRIES without splitting inside `{{ ... }}`.
+
+    Both separators appear in the catalog: Nextcloud's trusted_domains is space
+    separated, Django's ALLOWED_HOSTS is comma separated. The idioms themselves
+    contain spaces, so the expressions are masked out before splitting and each
+    entry is returned as either an expression body or literal text."""
+    exprs = []
+
+    def stash(m):
+        exprs.append(m.group(1))
+        return f"\x00{len(exprs) - 1}\x00"
+
+    masked = _JINJA_EXPR_RE.sub(stash, value)
+    for token in re.split(r"[,\s]+", masked.strip()):
+        if not token:
+            continue
+        marks = re.findall(r"\x00(\d+)\x00", token)
+        if not marks:
+            yield ("literal", token)
+        elif re.fullmatch(r"\x00\d+\x00", token):
+            yield ("expr", exprs[int(marks[0])])
+        else:
+            # An expression glued to other text: `https://{{ instance_host }}`
+            # renders a URL, not a host, and the app compares a host.
+            yield ("embedded", token)
+
+
 def _host_allowlist_problem(key, value):
-    """None when fine, else a short reason code."""
+    """None when fine, else a short reason code.
+
+    Works per ENTRY rather than per expression. Checking only that a recognised
+    bare-host expression appeared somewhere accepted
+    `DJANGO_ALLOWED_HOSTS: "https://{{ instance_host }}"`, which renders a URL and
+    matches no Host at all: the expression was present and the entry was still
+    unusable."""
     if not isinstance(key, str) or not isinstance(value, str):
         return None
     if not _HOST_ALLOWLIST_RE.search(key) or _URLISH_KEY_RE.search(key):
         return None
-    # Comments are REFUSED, not stripped. Stripping them textually cannot tell a
-    # real `{# #}` from the characters "{#" inside a string literal, and getting
-    # that wrong deleted a genuine expression and returned clean. An allowlist has
-    # no use for a comment, so the ambiguity is removed rather than resolved.
-    if "{#" in value or "#}" in value:
+    # Comments are REFUSED, not stripped: text substitution cannot tell a real
+    # `{# #}` from those characters inside a string literal, and getting it wrong
+    # deleted a genuine expression and reported the allowlist clean.
+    if "{#" in value or "#}" in value or _JINJA_STATEMENT_RE.search(value):
         return "control-flow"
-    exprs = _JINJA_EXPR_RE.findall(value)
-    if not exprs and not _JINJA_STATEMENT_RE.search(value):
+    if "{{" not in value:
         return None  # a literal allowlist; nothing derived from the instance
-    if _JINJA_STATEMENT_RE.search(value):
-        return "control-flow"
-    kinds = [_classify_expr(e) for e in exprs]
-    if any(k is None for k in kinds):
-        return "unrecognised"
+    kinds = set()
+    for what, body in _allowlist_entries(value):
+        if what == "embedded":
+            return "embedded"
+        if what == "literal":
+            kinds.add("const")
+            continue
+        kind = _classify_expr(body)
+        if kind is None:
+            return "unrecognised"
+        kinds.add(kind)
     if "ported" in kinds and "bare" not in kinds:
         return "no-bare-host"
     return None
@@ -1107,7 +1145,13 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 items = []
             for key, value in items:
                 why = _host_allowlist_problem(key, value)
-                if why == "unrecognised":
+                if why == "embedded":
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} embeds a host expression inside a "
+                        f"larger {key} entry. The entry has to BE the host: something like "
+                        f"https://{{{{ instance_host }}}} renders a URL, and the app compares a "
+                        f"bare host, so it matches nothing")
+                elif why == "unrecognised":
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} builds {key} from a Jinja expression "
                         f"this validator does not recognise. A host allowlist accepts only "
@@ -1146,7 +1190,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
             if not isinstance(dest, dict):
                 continue
             why = _host_allowlist_problem(dest.get("key"), default)
-            if why == "unrecognised":
+            if why == "embedded":
+                errors.append(
+                    f"{rel_dir}: configuration {cfg.get('title')!r} embeds a host expression "
+                    f"inside a larger {dest.get('key')} entry. The entry has to BE the host; a "
+                    f"URL around it matches no Host header")
+            elif why == "unrecognised":
                 errors.append(
                     f"{rel_dir}: configuration {cfg.get('title')!r} builds {dest.get('key')} "
                     f"from a Jinja expression this validator does not recognise. Use the ported "
