@@ -1709,9 +1709,28 @@ class HostAllowlistTest(unittest.TestCase):
         produce a Windows path on this host."""
         from validate_catalog import _app_of
         for rel, expected in (("docs/1.0", "docs"), ("./docs/1.0", "docs"),
-                              ("docs/1.0/", "docs"), ("nextcloud\\1.0", "nextcloud")):
+                              ("docs/1.0/", "docs"), ("nextcloud\\1.0", "nextcloud"),
+                              # absolute, which the CLI accepts: taking the FIRST
+                              # component returned "Users" and skipped the rule
+                              ("/home/me/catalog/docs/1.0", "docs"),
+                              ("../catalog/nextcloud/1.0", "nextcloud")):
             with self.subTest(rel=rel):
                 self.assertEqual(_app_of(rel), expected)
+
+    def test_a_spec_with_only_a_separator_does_not_crash(self):
+        """The README and add-greffon.md invite people to add entries to the map.
+        A missing optional key raised KeyError, which aborts --all for the entire
+        catalog: a documented extension path must not contain a crash."""
+        from validate_catalog import _HOST_ALLOWLISTS, _host_allowlist_problem
+        key = ("regtest", "DJANGO_ALLOWED_HOSTS")
+        _HOST_ALLOWLISTS[key] = {"split": ","}
+        try:
+            self.assertEqual(
+                _host_allowlist_problem("regtest", "DJANGO_ALLOWED_HOSTS",
+                                        f"{self.HOSTPORT},localhost"),
+                "no-bare-host")
+        finally:
+            del _HOST_ALLOWLISTS[key]
 
     def test_non_ifs_whitespace_is_not_trimmed_off_an_entry(self):
         """Python's str.strip() discards CR, vertical tab and NBSP; the shell that

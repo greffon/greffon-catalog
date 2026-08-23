@@ -450,7 +450,11 @@ def _app_of(rel_dir):
     reporting success, which is the failure mode a validator can least afford."""
     norm = os.path.normpath(str(rel_dir)).replace("\\", "/")
     parts = [part for part in norm.split("/") if part not in ("", ".", "..")]
-    return parts[0] if parts else ""
+    # The app is the VERSION directory's parent, counted from the end. Taking the
+    # first component worked for "docs/1.0" and returned "Users" for the absolute
+    # path the CLI also accepts, which missed the map and skipped the rule in
+    # silence. Counting from the right is independent of what precedes the entry.
+    return parts[-2] if len(parts) >= 2 else ""
 
 
 def _host_allowlist_problem(app, key, value):
@@ -482,8 +486,12 @@ def _host_allowlist_problem(app, key, value):
         return "control-flow"
 
     kinds = set()
-    trim = spec["trim"]
-    for token in re.split(spec["split"], masked.strip(trim)):
+    # Only "split" is required. Everything else defaults, because the README and
+    # add-greffon.md invite people to add entries here and a missing key would
+    # raise KeyError and abort `--all` for the whole catalog: a documented
+    # extension path must not have a crash in it.
+    trim = spec.get("trim", "")
+    for token in re.split(spec.get("split", ","), masked.strip(trim)):
         token = token.strip(trim)
         if not token:
             continue
@@ -499,7 +507,7 @@ def _host_allowlist_problem(app, key, value):
         # other text": Django's ".{{ instance_host }}" is a subdomain wildcard and
         # carries no scheme or port.
         bare_token = token
-        for prefix in spec["prefixes"]:
+        for prefix in spec.get("prefixes", ()):
             if bare_token.startswith(prefix):
                 bare_token = bare_token[len(prefix):]
                 break

@@ -79,8 +79,10 @@ CI checks this for a deliberately short list of settings it knows by name
 parsed is a property of the app, not something a rule can infer. Django splits on
 commas and treats a leading dot as a subdomain pattern; Nextcloud splits on any
 shell whitespace and has no such pattern. **Adding a new app's allowlist means
-adding one entry to `_HOST_ALLOWLISTS` in `validate_catalog.py`**, with the
-separator that app parses and any prefix it treats as part of a host.
+adding one entry to `_HOST_ALLOWLISTS` in `validate_catalog.py`**, keyed by
+`(<app>, <ENV_KEY>)`. Only `split` is required; `trim`, `prefixes` and `wildcards`
+describe what else that app's parser does and each defaults to nothing when
+omitted.
 Until it is there, the setting is not checked, which is why the guidance above
 matters more than the check: three entries shipped the port-only form and rejected
 every request until it was found.
