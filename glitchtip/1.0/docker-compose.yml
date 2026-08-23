@@ -88,7 +88,12 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d glitchtip"]
+      # -h 127.0.0.1 on purpose. The postgres entrypoint runs a TEMPORARY server
+      # during initdb with `-c listen_addresses=''` (docker-entrypoint.sh), so it
+      # accepts UNIX-SOCKET connections only. A socket-based pg_isready therefore
+      # reports ready against that temp server, which is about to shut down,
+      # before the real one exists. Forcing TCP cannot see it.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d glitchtip"]
       interval: 5s
       timeout: 5s
       retries: 20
