@@ -35,7 +35,7 @@ services:
     # this HTTP gateway, not livekit's L4 media port. Same contract the wireguard
     # reference greffon relies on by listing its web-UI port ahead of the L4 one.
     image: nginx:1.25
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - backend
       - frontend
@@ -49,7 +49,7 @@ services:
 
   postgresql:
     image: postgres:16
-    restart: on-failure
+    restart: unless-stopped
     environment:
       POSTGRES_DB: meet
       POSTGRES_USER: meet
@@ -82,11 +82,11 @@ services:
 
   redis:
     image: redis:5
-    restart: on-failure
+    restart: unless-stopped
 
   minio:
     image: minio/minio
-    restart: on-failure
+    restart: unless-stopped
     # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD injected (generated per instance)
     command: minio server --console-address ":9001" /data
     volumes:
@@ -118,7 +118,7 @@ services:
     # config's comment for the rationale and the literal-IP requirement on
     # GREFFER_PUBLIC_HOST / RATHOLE_PUBLIC_HOST.
     image: livekit/livekit-server:v1.10.0
-    restart: on-failure
+    restart: unless-stopped
     command: ["--config", "/etc/livekit.yaml"]
     volumes:
       - livekit_conf:/etc
@@ -133,7 +133,7 @@ services:
 
   backend:
     image: lasuite/meet-backend:v1.19.0
-    restart: on-failure
+    restart: unless-stopped
     command: >
       sh -c "python manage.py migrate --no-input &&
              exec gunicorn -c /usr/local/etc/gunicorn/meet.py meet.wsgi:application"
@@ -212,7 +212,7 @@ services:
 
   celery:
     image: lasuite/meet-backend:v1.19.0
-    restart: on-failure
+    restart: unless-stopped
     command: ["celery", "-A", "meet.celery_app", "worker", "-l", "INFO"]
     depends_on:
       - backend
@@ -235,7 +235,7 @@ services:
 
   frontend:
     image: lasuite/meet-frontend:v1.19.0
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - backend
     # No `ports:` — internal-only. Image exposes 8080 (nginx), calls /api
@@ -243,7 +243,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
-    restart: on-failure
+    restart: unless-stopped
     command: ["start-dev", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin

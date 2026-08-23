@@ -2,7 +2,7 @@ version: "3"
 services:
   metabase:
     image: metabase/metabase:v0.61.2
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - metabase_db
     ports:
@@ -43,7 +43,7 @@ services:
 
   metabase_db:
     image: postgres:16
-    restart: on-failure
+    restart: unless-stopped
     environment:
       POSTGRES_DB: "metabase"
       POSTGRES_USER: "metabase"

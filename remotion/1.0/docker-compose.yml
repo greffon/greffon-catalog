@@ -16,6 +16,7 @@ version: "3"
 # are responsible for their own license compliance.
 services:
   studio:
+    restart: unless-stopped
     image: ghcr.io/greffon/remotion-studio:1.0
     labels:
       # Studio streams live updates (preview + render progress) over SSE.

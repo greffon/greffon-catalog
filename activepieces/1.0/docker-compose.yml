@@ -2,7 +2,7 @@ version: "3"
 services:
   activepieces:
     image: ghcr.io/activepieces/activepieces:0.83.0
-    restart: on-failure
+    restart: unless-stopped
     ports:
       - "80:80"
     depends_on:
@@ -46,7 +46,7 @@ services:
 
   activepieces_db:
     image: pgvector/pgvector:0.8.0-pg14
-    restart: on-failure
+    restart: unless-stopped
     environment:
       POSTGRES_DB: "activepieces"
       POSTGRES_USER: "activepieces"
@@ -58,7 +58,7 @@ services:
 
   activepieces_redis:
     image: redis:7.0.7
-    restart: on-failure
+    restart: unless-stopped
     volumes:
       - activepieces_redis:/data
 

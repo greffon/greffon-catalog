@@ -2,7 +2,7 @@ version: "3"
 services:
   linkding:
     image: sissbruecker/linkding:latest
-    restart: on-failure
+    restart: unless-stopped
     ports:
       - "9090:9090"
     environment:

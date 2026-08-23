@@ -2,7 +2,7 @@ version: "3"
 services:
   wordpress:
     image: wordpress:7.0-php8.3-apache
-    restart: on-failure
+    restart: unless-stopped
     depends_on:
       - wordpress_db
     ports:
@@ -47,7 +47,7 @@ services:
 
   wordpress_db:
     image: mariadb:11
-    restart: on-failure
+    restart: unless-stopped
     environment:
       MARIADB_DATABASE: "wordpress"
       MARIADB_USER: "wordpress"
