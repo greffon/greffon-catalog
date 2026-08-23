@@ -374,23 +374,37 @@ _BARE_HOST_IDIOM_RE = re.compile(
 _JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.S)
 
 
-def _host_allowlist_problem(key, value):
-    """True when a host-allowlist setting derives the host WITH its port and never
-    also supplies the bare host.
+# A setting can be named like an allowlist and still hold URLs. Django's
+# CSRF_TRUSTED_ORIGINS and Docs' OIDC_REDIRECT_ALLOWED_HOSTS both take full
+# origins, scheme and port included, so demanding a bare host there would be
+# actively wrong advice. Excluded by name rather than by guessing from the value.
+_URLISH_KEY_RE = re.compile(r"REDIRECT|ORIGIN|URL|URI", re.I)
+# `{% ... %}` is control flow, and what it renders cannot be decided by reading
+# the template: `{% if false %}` drops its body and `{% raw %}` emits the
+# expression as literal text rather than evaluating it.
+_JINJA_STATEMENT_RE = re.compile(r"\{%")
 
-    Jinja comments are stripped FIRST. Matching the raw text meant a bare-host
-    expression sitting inside `{# ... #}` satisfied the check while rendering to
-    nothing, so a value that is still port-only at deploy time passed. The same
-    strip applies to the host:port half, since a commented-out one is equally
-    absent from the rendered value."""
+
+def _host_allowlist_problem(key, value):
+    """None when fine, else a short reason code.
+
+    Jinja is handled by rendering-time semantics, not by text matching, because
+    the two disagree in three separate ways here. Comments are stripped, since
+    `{# ... #}` renders to nothing. Statement blocks are refused outright rather
+    than searched, since `{% if false %}` and `{% raw %}` both keep a bare-host
+    expression in the source while keeping it out of the deployed value, and
+    deciding which requires evaluating the template.
+    """
     if not isinstance(key, str) or not isinstance(value, str):
-        return False
-    if not _HOST_ALLOWLIST_RE.search(key):
-        return False
+        return None
+    if not _HOST_ALLOWLIST_RE.search(key) or _URLISH_KEY_RE.search(key):
+        return None
     rendered = _JINJA_COMMENT_RE.sub("", value)
     if not _HOSTPORT_IDIOM_RE.search(rendered):
-        return False
-    return not _BARE_HOST_IDIOM_RE.search(rendered)
+        return None
+    if _JINJA_STATEMENT_RE.search(rendered):
+        return "control-flow"
+    return None if _BARE_HOST_IDIOM_RE.search(rendered) else "no-bare-host"
 
 
 def _service_named_volumes(svc_def):
@@ -1062,7 +1076,14 @@ def validate_greffon_dir(catalog_root, rel_dir):
             else:
                 items = []
             for key, value in items:
-                if _host_allowlist_problem(key, value):
+                why = _host_allowlist_problem(key, value)
+                if why == "control-flow":
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} builds {key} with Jinja control "
+                        f"flow ({{% ... %}}). Whether the bare host survives depends on what "
+                        f"the greffer renders, which CI cannot decide by reading the template, "
+                        f"so the allowlist has to be written without it")
+                elif why:
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} sets {key} from "
                         f"instance_url WITH its port and never the bare host. The greffer's "
@@ -1086,7 +1107,14 @@ def validate_greffon_dir(catalog_root, rel_dir):
         for dest in dests:
             if not isinstance(dest, dict):
                 continue
-            if _host_allowlist_problem(dest.get("key"), default):
+            why = _host_allowlist_problem(dest.get("key"), default)
+            if why == "control-flow":
+                errors.append(
+                    f"{rel_dir}: configuration {cfg.get('title')!r} builds "
+                    f"{dest.get('key')} with Jinja control flow ({{% ... %}}). What it renders "
+                    f"cannot be decided by reading the template, so write the allowlist "
+                    f"without it")
+            elif why:
                 errors.append(
                     f"{rel_dir}: configuration {cfg.get('title')!r} defaults "
                     f"{dest.get('key')} to instance_url WITH its port and never the bare "

@@ -1437,6 +1437,34 @@ class HostAllowlistTest(unittest.TestCase):
             "DJANGO_ALLOWED_HOSTS", "{# " + self.HOSTPORT + " #}localhost"))
         self.assertEqual(errs, [])
 
+    def test_redirect_allowlist_is_not_flagged(self):
+        """OIDC_REDIRECT_ALLOWED_HOSTS holds URLs, not bare hosts. It matches the
+        name pattern, so without the exclusion the rule would demand a bare-host
+        entry that would be wrong to add."""
+        errs = self._run(compose=self._compose(
+            "OIDC_REDIRECT_ALLOWED_HOSTS", f'["https://{self.HOSTPORT}"]'))
+        self.assertEqual(errs, [])
+
+    def test_csrf_trusted_origins_is_not_flagged(self):
+        """Origins carry scheme and port by definition."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_CSRF_TRUSTED_ORIGINS", f"https://{self.HOSTPORT}"))
+        self.assertEqual(errs, [])
+
+    def test_bare_host_in_a_dead_branch_is_rejected(self):
+        """`{% if false %}` keeps the expression in the source and out of the
+        rendered value, so a text search sees a bare host that never deploys."""
+        val = self.HOSTPORT + "{% if false %}," + self.BARE + "{% endif %}"
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, "control flow must not be accepted on faith")
+
+    def test_bare_host_inside_raw_is_rejected(self):
+        """`{% raw %}` emits the expression as literal text instead of evaluating
+        it, so the deployed allowlist contains the source, not a host."""
+        val = self.HOSTPORT + "{% raw %}" + self.BARE + "{% endraw %}"
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, errs)
+
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
     # NOTHING for any entry, which is strictly worse than the error it replaces.
