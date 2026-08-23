@@ -391,6 +391,28 @@ _JINJA_STATEMENT_RE = re.compile(r"\{%")
 _JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
 
 
+def _is_only_a_string_literal(expr):
+    """True when a Jinja expression is NOTHING BUT a quoted string.
+
+    `{{ 'instance_url...' }}` renders its own source as text and is the bypass this
+    catches. `{{ ",".join([...]) }}` also starts with a quote, but the quote is the
+    receiver of a call that really does evaluate and render both host forms, so
+    treating every quote-leading expression as a literal rejected a correct value.
+    The test is whether anything follows the closing quote."""
+    s = (expr or "").strip()
+    if s[:1] not in ("'", '"'):
+        return False
+    quote, i = s[0], 1
+    while i < len(s):
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] == quote:
+            return not s[i + 1:].strip()
+        i += 1
+    return False  # unterminated: not our business, Jinja will complain
+
+
 def _host_allowlist_problem(key, value):
     """None when fine, else a short reason code.
 
@@ -414,8 +436,7 @@ def _host_allowlist_problem(key, value):
     # than evaluating it, so the deployed allowlist gains an unusable string and no
     # host. The legitimate form starts with the identifier; only a leading quote
     # makes the whole expression a string literal, which is the case worth refusing.
-    if any(expr.strip()[:1] in ("'", '"')
-           for expr in _JINJA_EXPR_RE.findall(rendered)):
+    if any(_is_only_a_string_literal(expr) for expr in _JINJA_EXPR_RE.findall(rendered)):
         return "string-literal"
     return None if _BARE_HOST_IDIOM_RE.search(rendered) else "no-bare-host"
 

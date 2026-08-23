@@ -1484,6 +1484,15 @@ class HostAllowlistTest(unittest.TestCase):
             "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},{quoted}"))
         self.assertTrue(errs, errs)
 
+    def test_string_led_expression_that_renders_is_accepted(self):
+        """`{{ ",".join([...]) }}` starts with a quote but the quote is the receiver
+        of a call that really evaluates, rendering both host forms. Treating every
+        quote-leading expression as a literal rejected a correct allowlist."""
+        val = ('{{ ",".join([instance_url.split("://")[1], '
+               'instance_url.split("://")[1].split(":")[0]]) }}')
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertEqual(errs, [], "a string-led expression that renders must pass")
+
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
     # NOTHING for any entry, which is strictly worse than the error it replaces.
