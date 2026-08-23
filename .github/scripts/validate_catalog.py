@@ -423,16 +423,36 @@ def _allowlist_entries(value):
 
     def stash(m):
         exprs.append(m.group(1))
-        return f"\x00{len(exprs) - 1}\x00"
+        return f"__GREFFON_EXPR_{len(exprs) - 1}__"
 
     masked = _JINJA_EXPR_RE.sub(stash, value)
-    for token in re.split(r"[,\s]+", masked.strip()):
+    # Some apps encode the allowlist as a JSON array rather than a delimited
+    # string; docs already does exactly that for its redirect allowlist. Splitting
+    # such a value on commas leaves `["` and `"]` glued to the entries, so a
+    # perfectly good allowlist looked like an expression embedded in other text.
+    stripped = masked.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        try:
+            items = json.loads(stripped)
+        except ValueError:
+            items = None
+        if isinstance(items, list) and all(isinstance(i, str) for i in items):
+            for item in items:
+                marks = re.findall(r"__GREFFON_EXPR_(\d+)__", item)
+                if not marks:
+                    yield ("literal", item)
+                elif re.fullmatch(r"__GREFFON_EXPR_\d+__", item.strip()):
+                    yield ("expr", exprs[int(marks[0])])
+                else:
+                    yield ("embedded", item)
+            return
+    for token in re.split(r"[,\s;]+", stripped):
         if not token:
             continue
-        marks = re.findall(r"\x00(\d+)\x00", token)
+        marks = re.findall(r"__GREFFON_EXPR_(\d+)__", token)
         if not marks:
             yield ("literal", token)
-        elif re.fullmatch(r"\x00\d+\x00", token):
+        elif re.fullmatch(r"__GREFFON_EXPR_\d+__", token):
             yield ("expr", exprs[int(marks[0])])
         else:
             # An expression glued to other text: `https://{{ instance_host }}`
@@ -456,6 +476,11 @@ def _host_allowlist_problem(key, value):
     # `{# #}` from those characters inside a string literal, and getting it wrong
     # deleted a genuine expression and reported the allowlist clean.
     if "{#" in value or "#}" in value or _JINJA_STATEMENT_RE.search(value):
+        return "control-flow"
+    # Unbalanced delimiters mean the value is not a template this validator can
+    # read, and Jinja will refuse it at deploy. Treating the leftovers as literal
+    # text returned clean on something that never renders at all.
+    if value.count("{{") != value.count("}}"):
         return "control-flow"
     if "{{" not in value:
         return None  # a literal allowlist; nothing derived from the instance

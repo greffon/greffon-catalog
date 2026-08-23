@@ -1577,6 +1577,27 @@ class HostAllowlistTest(unittest.TestCase):
             "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} {self.BARE} localhost"))
         self.assertEqual(errs, [])
 
+    def test_json_array_allowlist_is_accepted(self):
+        """Some apps encode the allowlist as JSON; docs already does for its
+        redirect allowlist. Splitting that on commas leaves `["` glued to the
+        first entry, which made a correct allowlist look embedded."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", '["{{ instance_host }}","localhost"]'))
+        self.assertEqual(errs, [])
+
+    def test_json_array_missing_the_bare_host_is_rejected(self):
+        """The encoding is understood, so the rule still applies inside it."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f'["{self.HOSTPORT}","localhost"]'))
+        self.assertTrue(errs, errs)
+
+    def test_unbalanced_jinja_delimiters_are_rejected(self):
+        """An unclosed `{{` stashes no expression, so the leftovers were read as
+        literal text and the value passed. Jinja refuses it at deploy."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", '{{ instance_url.split("://")[1] '))
+        self.assertTrue(errs, errs)
+
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
     # NOTHING for any entry, which is strictly worse than the error it replaces.
