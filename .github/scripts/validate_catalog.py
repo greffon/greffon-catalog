@@ -353,92 +353,65 @@ _NGINX_VOLUME_SUFFIX = "_nginx_volume"
 
 
 # Settings whose value is matched AGAINST THE INCOMING HOST HEADER, as opposed to
-# settings used to BUILD a URL. The distinction is the whole rule: the greffer's
-# per-instance sidecar proxies with `proxy_set_header Host $host`, and nginx's
-# $host carries no port, so a host-allowlist built from `instance_url` minus the
-# scheme can never match on any deployment whose URL has a port. Three entries
-# shipped that way (nextcloud trusted_domains, docs and visio DJANGO_ALLOWED_HOSTS);
-# in Django it is an empty 400 on every backend request, in Nextcloud a
-# "Trusted domain error". Entries that GENERATE urls (n8n N8N_HOST, forgejo
-# server.DOMAIN) legitimately want the port and are deliberately not matched here.
+# settings used to BUILD a URL. The greffer's per-instance sidecar proxies with
+# `proxy_set_header Host $host`, and nginx's $host carries no port, so an allowlist
+# holding only a ported host matches nothing and the app rejects every request.
+# Three entries shipped that way, and three separate docs recommended the idiom
+# that produced it.
 _HOST_ALLOWLIST_RE = re.compile(r"ALLOWED_HOSTS|TRUSTED_DOMAINS|TRUSTED_HOSTS", re.I)
-# `{{ instance_url.split("://")[1] }}` -- the host WITH its port.
-_HOSTPORT_IDIOM_RE = re.compile(r"""instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]""")
-# The same, followed by `.split(":")[0]` -- the bare host.
-_BARE_HOST_IDIOM_RE = re.compile(
-    r"""instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]"""
-    r"""\s*\.\s*split\(\s*['"]:['"]\s*\)\s*\[\s*0\s*\]""")
-
-
-# `{# ... #}` renders to nothing, so anything inside it is not part of the value.
-_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.S)
-
-
-# A setting can be named like an allowlist and still hold URLs. Django's
-# CSRF_TRUSTED_ORIGINS and Docs' OIDC_REDIRECT_ALLOWED_HOSTS both take full
-# origins, scheme and port included, so demanding a bare host there would be
-# actively wrong advice. Excluded by name rather than by guessing from the value.
-# Anchored on the _ delimiters, not free substrings: "URI" hides inside SECURITY,
-# so an unanchored pattern silently skipped SECURITY_ALLOWED_HOSTS, a genuine
-# incoming-host setting. An exclusion that quietly widens is worse than no
-# exclusion, because it removes the check without saying so.
+# Anchored on the _ delimiters: "URI" hides inside "SECURITY", and an unanchored
+# exclusion silently skipped SECURITY_ALLOWED_HOSTS.
 _URLISH_KEY_RE = re.compile(r"(?:^|_)(?:REDIRECT|ORIGINS?|URLS?|URIS?)(?:_|$)", re.I)
-# `{% ... %}` is control flow, and what it renders cannot be decided by reading
-# the template: `{% if false %}` drops its body and `{% raw %}` emits the
-# expression as literal text rather than evaluating it.
-_JINJA_STATEMENT_RE = re.compile(r"\{%")
-# Contents of each {{ ... }} expression.
+_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.S)
 _JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
+_JINJA_STATEMENT_RE = re.compile(r"\{%")
+
+# The value is a TEMPLATE, and CI cannot evaluate it. Five separate bypasses came
+# from trying to decide what arbitrary Jinja renders by matching its source text:
+# comments, `{% if false %}`, `{% raw %}`, string literals, and inline conditionals.
+# So each expression must be one of a few RECOGNISED forms and anything else is
+# refused. That is narrower than Jinja allows, deliberately: an allowlist is not
+# the place for computed values, and the cost of guessing wrong here is an app
+# that rejects every request.
+_EXPR_PORTED_RE = re.compile(
+    r"""^\s*instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]\s*$""")
+_EXPR_BARE_RE = re.compile(
+    r"""^\s*(?:instance_host"""
+    r"""|instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]"""
+    r"""\s*\.\s*split\(\s*['"]:['"]\s*\)\s*\[\s*0\s*\])\s*$""")
+# A constant: a quoted literal that mentions nothing about the instance.
+_EXPR_CONST_RE = re.compile(r"""^\s*(['"]).*?\1\s*$""", re.S)
 
 
-def _is_only_a_string_literal(expr):
-    """True when a Jinja expression is NOTHING BUT a quoted string.
-
-    `{{ 'instance_url...' }}` renders its own source as text and is the bypass this
-    catches. `{{ ",".join([...]) }}` also starts with a quote, but the quote is the
-    receiver of a call that really does evaluate and render both host forms, so
-    treating every quote-leading expression as a literal rejected a correct value.
-    The test is whether anything follows the closing quote."""
-    s = (expr or "").strip()
-    if s[:1] not in ("'", '"'):
-        return False
-    quote, i = s[0], 1
-    while i < len(s):
-        if s[i] == "\\":
-            i += 2
-            continue
-        if s[i] == quote:
-            return not s[i + 1:].strip()
-        i += 1
-    return False  # unterminated: not our business, Jinja will complain
+def _classify_expr(expr):
+    """One of 'ported', 'bare', 'const', or None for anything unrecognised."""
+    if _EXPR_BARE_RE.match(expr):
+        return "bare"
+    if _EXPR_PORTED_RE.match(expr):
+        return "ported"
+    if _EXPR_CONST_RE.match(expr) and "instance_url" not in expr:
+        return "const"
+    return None
 
 
 def _host_allowlist_problem(key, value):
-    """None when fine, else a short reason code.
-
-    Jinja is handled by rendering-time semantics, not by text matching, because
-    the two disagree in three separate ways here. Comments are stripped, since
-    `{# ... #}` renders to nothing. Statement blocks are refused outright rather
-    than searched, since `{% if false %}` and `{% raw %}` both keep a bare-host
-    expression in the source while keeping it out of the deployed value, and
-    deciding which requires evaluating the template.
-    """
+    """None when fine, else a short reason code."""
     if not isinstance(key, str) or not isinstance(value, str):
         return None
     if not _HOST_ALLOWLIST_RE.search(key) or _URLISH_KEY_RE.search(key):
         return None
     rendered = _JINJA_COMMENT_RE.sub("", value)
-    if not _HOSTPORT_IDIOM_RE.search(rendered):
-        return None
+    exprs = _JINJA_EXPR_RE.findall(rendered)
+    if not exprs and not _JINJA_STATEMENT_RE.search(rendered):
+        return None  # a literal allowlist; nothing derived from the instance
     if _JINJA_STATEMENT_RE.search(rendered):
         return "control-flow"
-    # `{{ 'instance_url.split(...)...' }}` renders the idiom as literal TEXT rather
-    # than evaluating it, so the deployed allowlist gains an unusable string and no
-    # host. The legitimate form starts with the identifier; only a leading quote
-    # makes the whole expression a string literal, which is the case worth refusing.
-    if any(_is_only_a_string_literal(expr) for expr in _JINJA_EXPR_RE.findall(rendered)):
-        return "string-literal"
-    return None if _BARE_HOST_IDIOM_RE.search(rendered) else "no-bare-host"
+    kinds = [_classify_expr(e) for e in exprs]
+    if any(k is None for k in kinds):
+        return "unrecognised"
+    if "ported" in kinds and "bare" not in kinds:
+        return "no-bare-host"
+    return None
 
 
 def _service_named_volumes(svc_def):
@@ -1111,11 +1084,14 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 items = []
             for key, value in items:
                 why = _host_allowlist_problem(key, value)
-                if why == "string-literal":
+                if why == "unrecognised":
                     errors.append(
-                        f"{rel_dir}: service {svc_name!r} builds {key} from a Jinja STRING "
-                        f"literal, which renders the expression as text instead of evaluating "
-                        f"it, so the allowlist gains an unusable string and still no bare host")
+                        f"{rel_dir}: service {svc_name!r} builds {key} from a Jinja expression "
+                        f"this validator does not recognise. A host allowlist accepts only "
+                        f"{{{{ instance_url.split(\"://\")[1] }}}} (the ported host), "
+                        f"{{{{ instance_host }}}} or its split equivalent (the bare host), and "
+                        f"plain literals. Notably {{{{ instance_url }}}} is NOT one of them: it "
+                        f"renders a scheme and possibly a port, and the app compares a bare host")
                 elif why == "control-flow":
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} builds {key} with Jinja control "
@@ -1147,11 +1123,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
             if not isinstance(dest, dict):
                 continue
             why = _host_allowlist_problem(dest.get("key"), default)
-            if why == "string-literal":
+            if why == "unrecognised":
                 errors.append(
                     f"{rel_dir}: configuration {cfg.get('title')!r} builds {dest.get('key')} "
-                    f"from a Jinja STRING literal, which renders as text rather than being "
-                    f"evaluated, so no bare host reaches the allowlist")
+                    f"from a Jinja expression this validator does not recognise. Use the ported "
+                    f"host, the bare host ({{{{ instance_host }}}}), or plain literals. "
+                    f"{{{{ instance_url }}}} renders a scheme and cannot match a Host header")
             elif why == "control-flow":
                 errors.append(
                     f"{rel_dir}: configuration {cfg.get('title')!r} builds "

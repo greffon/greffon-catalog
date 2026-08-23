@@ -1484,14 +1484,52 @@ class HostAllowlistTest(unittest.TestCase):
             "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},{quoted}"))
         self.assertTrue(errs, errs)
 
-    def test_string_led_expression_that_renders_is_accepted(self):
-        """`{{ ",".join([...]) }}` starts with a quote but the quote is the receiver
-        of a call that really evaluates, rendering both host forms. Treating every
-        quote-leading expression as a literal rejected a correct allowlist."""
+    def test_computed_expression_is_refused_even_though_it_renders(self):
+        """DELIBERATE over-rejection, and a reversal of the previous round.
+
+        `{{ ",".join([hostport, bare]) }}` does render both forms, so refusing it is
+        strictly speaking a false positive. It is refused anyway: accepting arbitrary
+        expressions is what produced five separate bypasses (comments, {% if false %},
+        {% raw %}, string literals, inline conditionals), each of which let a
+        port-only allowlist through while CI called it safe. The validator cannot
+        evaluate Jinja, so it recognises a few forms and refuses the rest.
+
+        The trade is cheap in one direction and expensive in the other: refusing
+        costs an author one rewrite into two expressions, with the accepted forms
+        named in the error. Accepting costs a guarantee CI cannot deliver."""
         val = ('{{ ",".join([instance_url.split("://")[1], '
                'instance_url.split("://")[1].split(":")[0]]) }}')
         errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
-        self.assertEqual(errs, [], "a string-led expression that renders must pass")
+        self.assertTrue(errs, "computed expressions are refused, not analysed")
+
+    def test_full_instance_url_is_refused(self):
+        """`{{ instance_url }}` renders a scheme and possibly a port, so it cannot
+        match a Host header. The rule only knew the split idiom before, so this
+        skipped validation entirely, and add-greffon.md recommended exactly this."""
+        errs = self._run(compose=self._compose(
+            "NEXTCLOUD_TRUSTED_DOMAINS", "{{ instance_url }} localhost"))
+        self.assertTrue(errs, errs)
+
+    def test_instance_host_counts_as_the_bare_host(self):
+        """The platform already exposes the port-less host; it should be the easy
+        way to satisfy this rule, not a form the validator fails to recognise."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "{{ instance_host }},localhost"))
+        self.assertEqual(errs, [])
+
+    def test_inline_conditional_is_refused(self):
+        """`{{ x if false }}` has no {% block %}, so the control-flow refusal missed
+        it while the text search saw a bare host that never renders."""
+        val = self.HOSTPORT + ',{{ instance_url.split("://")[1].split(":")[0] if false }}'
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, errs)
+
+    def test_unrelated_literal_expression_does_not_block(self):
+        """A constant alongside the two required forms is harmless. Rejecting on
+        ANY literal expression blocked a correct allowlist."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f'{self.HOSTPORT},{self.BARE},{{{{ "localhost" }}}}'))
+        self.assertEqual(errs, [])
 
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
