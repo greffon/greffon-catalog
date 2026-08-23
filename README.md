@@ -48,8 +48,17 @@ The greffer renders each catalog `docker-compose.yml` as a Jinja2 template at de
 |---------------------|------------------------------------------------------------|-------------------------------------------------------------|
 | `{{ instance_id }}` | Short UUID of this greffon instance (e.g. `e71c060d`)      | Per-instance keys, filenames                                |
 | `{{ instance_url }}` | Full public URL where browsers reach this instance (e.g. `https://abc.my.greffon.local`). | OAuth callback base, app-self-URL env vars, anywhere a full URL is needed. |
+| `{{ instance_host }}` | Host only, no scheme and **no port** (e.g. `abc.my.greffon.local`). | Anything matched against the `Host:` header the app receives, such as a trusted-domain or allowed-hosts list. |
+| `{{ instance_port }}` | The port, or empty when the URL uses the default. | Rarely needed on its own; prefer `instance_url`. |
 
-If a catalog template needs the host portion (or `host:port`) of the URL rather than the full URL, use Jinja string ops on `instance_url` at the call site rather than expecting a separate variable. The most common pattern:
+`instance_url` is the source of truth and the greffer's own guidance prefers deriving
+from it at the call site. `instance_host` and `instance_port` are parsed from it and
+are kept for the cases where a bare host is what the app wants. This table previously
+listed only the first two, while `add-greffon.md` and the baked-file render context
+both listed all four, so the same variable was documented as available in one place
+and absent in another.
+
+To take the host portion from `instance_url` directly, the common pattern is:
 
 ```jinja
 # The host[:port] part, for BUILDING a URL or a WebSocket origin.
