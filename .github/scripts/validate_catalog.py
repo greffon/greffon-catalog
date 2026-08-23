@@ -363,10 +363,20 @@ _NGINX_VOLUME_SUFFIX = "_nginx_volume"
 # The cost is honest and small: a new app's allowlist is unchecked until it is
 # added here, one line. The prevention that scales is the documentation, which now
 # names the right idiom in the catalog README and in add-greffon.md.
+# Per setting: how the APP splits entries, and any prefix it treats as part of a
+# host pattern. Both are properties of that app's parser, which is the whole reason
+# this is a map. Only settings whose parser is verifiable from an entry in this
+# catalog are listed; SECURITY_ALLOWED_HOSTS was dropped for that reason, since
+# nothing here uses it and its separator would have been a guess, which is the
+# behaviour this map exists to remove.
 _HOST_ALLOWLISTS = {
-    "DJANGO_ALLOWED_HOSTS": ",",
-    "NEXTCLOUD_TRUSTED_DOMAINS": " ",
-    "SECURITY_ALLOWED_HOSTS": ",",
+    # Django: comma separated, and a leading dot is its documented subdomain
+    # pattern (".example.com" matches example.com and any subdomain).
+    "DJANGO_ALLOWED_HOSTS": {"split": r"\s*,\s*", "prefixes": (".",)},
+    # Nextcloud's entrypoint reads trusted_domains through shell word splitting,
+    # so any run of IFS whitespace separates entries, not the single space a
+    # literal split assumed. No leading-dot pattern; it uses explicit entries.
+    "NEXTCLOUD_TRUSTED_DOMAINS": {"split": r"\s+", "prefixes": ()},
 }
 _JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
 _JINJA_STATEMENT_RE = re.compile(r"\{%")
@@ -415,8 +425,8 @@ def _host_allowlist_problem(key, value):
     """None when fine, else a short reason code."""
     if not isinstance(key, str) or not isinstance(value, str):
         return None
-    separator = _HOST_ALLOWLISTS.get(key)
-    if separator is None:
+    spec = _HOST_ALLOWLISTS.get(key)
+    if spec is None:
         return None
     if "{#" in value or "#}" in value or _JINJA_STATEMENT_RE.search(value):
         return "control-flow"
@@ -439,7 +449,7 @@ def _host_allowlist_problem(key, value):
         return "control-flow"
 
     kinds = set()
-    for token in masked.split(separator):
+    for token in re.split(spec["split"], masked.strip()):
         token = token.strip()
         if not token:
             continue
@@ -447,9 +457,18 @@ def _host_allowlist_problem(key, value):
         if not marks:
             kinds.add("const")
             continue
-        if not _MASK_RE.fullmatch(token):
+        # A prefix the app treats as part of the host pattern is not "embedded in
+        # other text": Django's ".{{ instance_host }}" is a subdomain wildcard and
+        # carries no scheme or port.
+        bare_token = token
+        for prefix in spec["prefixes"]:
+            if bare_token.startswith(prefix):
+                bare_token = bare_token[len(prefix):]
+                break
+        if not _MASK_RE.fullmatch(bare_token):
             # `https://{{ instance_host }}` renders a URL, not a host.
             return "embedded"
+        token = bare_token
         kind = _classify_expr(exprs[int(marks[0])])
         if kind is None:
             return "unrecognised"

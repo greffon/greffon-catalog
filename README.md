@@ -74,12 +74,13 @@ and rejects every request, on any deployment whose URL has a port.
 Declaring both forms is fine and is the safest default for an allowlist, since it
 holds whichever arrives.
 
-CI checks this, for a deliberately short list of settings it knows by name
-(`DJANGO_ALLOWED_HOSTS`, `NEXTCLOUD_TRUSTED_DOMAINS`, `SECURITY_ALLOWED_HOSTS`),
-because the separator an app parses is a property of that app: Django splits on
-commas, Nextcloud on spaces, and a rule that guesses gets it wrong in one direction
-or the other. **Adding a new app's allowlist means adding one line to
-`_HOST_ALLOWLISTS` in `validate_catalog.py`**, with the separator that app parses.
+CI checks this for a deliberately short list of settings it knows by name
+(`DJANGO_ALLOWED_HOSTS`, `NEXTCLOUD_TRUSTED_DOMAINS`), because how an allowlist is
+parsed is a property of the app, not something a rule can infer. Django splits on
+commas and treats a leading dot as a subdomain pattern; Nextcloud splits on any
+shell whitespace and has no such pattern. **Adding a new app's allowlist means
+adding one entry to `_HOST_ALLOWLISTS` in `validate_catalog.py`**, with the
+separator that app parses and any prefix it treats as part of a host.
 Until it is there, the setting is not checked, which is why the guidance above
 matters more than the check: three entries shipped the port-only form and rejected
 every request until it was found.

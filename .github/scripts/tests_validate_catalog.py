@@ -1474,13 +1474,13 @@ class HostAllowlistTest(unittest.TestCase):
         errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
         self.assertTrue(errs, errs)
 
-    def test_urlish_exclusion_is_anchored(self):
-        """`URI` is a substring of `SECURITY`, so an unanchored exclusion silently
-        skipped SECURITY_ALLOWED_HOSTS, a real incoming-host setting. An exclusion
-        that quietly widens removes the check without saying so."""
+    def test_settings_outside_the_map_are_not_checked(self):
+        """SECURITY_ALLOWED_HOSTS was in the map briefly and is not any more: no
+        entry uses it, so its separator would have been a guess, and guessing is
+        what the map exists to stop. Documents the deliberate coverage limit."""
         errs = self._run(compose=self._compose(
             "SECURITY_ALLOWED_HOSTS", f"{self.HOSTPORT},localhost"))
-        self.assertTrue(errs, "SECURITY_ALLOWED_HOSTS must still be checked")
+        self.assertEqual(errs, [])
 
     def test_bare_host_as_a_jinja_string_literal_is_rejected(self):
         """`{{ 'instance_url...' }}` renders the idiom as literal text instead of
@@ -1629,6 +1629,32 @@ class HostAllowlistTest(unittest.TestCase):
         literal text and the value passed. Jinja refuses it at deploy."""
         errs = self._run(compose=self._compose(
             "DJANGO_ALLOWED_HOSTS", '{{ instance_url.split("://")[1] '))
+        self.assertTrue(errs, errs)
+
+    def test_nextcloud_entries_split_on_any_whitespace(self):
+        """Nextcloud's entrypoint reads trusted_domains through shell word
+        splitting, so tabs and newlines separate entries just as spaces do.
+        Splitting on a single space glued them together and reported a valid
+        allowlist as embedded."""
+        for name, sep in (("tab", chr(9)), ("newline", chr(10)), ("double space", "  ")):
+            with self.subTest(sep=name):
+                val = f"{self.HOSTPORT}{sep}{{{{ instance_host }}}}{sep}localhost"
+                self.assertEqual(self._run(compose=self._compose(
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val)), [])
+
+    def test_django_leading_dot_is_a_host_pattern(self):
+        """`.example.com` is Django's documented subdomain pattern, matching the
+        base host and any subdomain. It carries no scheme or port, so refusing it
+        as `embedded` blocked a valid tenant-subdomain allowlist."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", ".{{ instance_host }},localhost"))
+        self.assertEqual(errs, [])
+
+    def test_leading_dot_is_not_accepted_for_nextcloud(self):
+        """The prefix is per app: Nextcloud matches trusted_domains explicitly and
+        has no leading-dot pattern, so the same text there is a broken entry."""
+        errs = self._run(compose=self._compose(
+            "NEXTCLOUD_TRUSTED_DOMAINS", "{{ instance_host }} .{{ instance_host }}"))
         self.assertTrue(errs, errs)
 
     # --- malformed input must not abort the run --------------------------
