@@ -26,9 +26,12 @@ from validate_catalog import (
 )
 
 
-def _write_greffon(tmpdir, *, metadata, compose_yaml=None):
-    """Write a complete greffon dir under tmpdir/test/1.0/. Returns the rel dir."""
-    greffon_dir = os.path.join(tmpdir, "test", "1.0")
+def _write_greffon(tmpdir, *, metadata, compose_yaml=None, app="test"):
+    """Write a complete greffon dir under tmpdir/<app>/1.0/. Returns the rel dir.
+
+    `app` matters for rules keyed by application rather than by setting name (the
+    host-allowlist map), where the parser is a property of the app."""
+    greffon_dir = os.path.join(tmpdir, app, "1.0")
     os.makedirs(greffon_dir, exist_ok=True)
     with open(os.path.join(greffon_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f)
@@ -42,7 +45,7 @@ def _write_greffon(tmpdir, *, metadata, compose_yaml=None):
             volumes:
               data:
             """))
-    return "test/1.0"
+    return f"{app}/1.0"
 
 
 def _base_metadata(**overrides):
@@ -1395,10 +1398,12 @@ class HostAllowlistTest(unittest.TestCase):
                   {key}: {json.dumps(value)}
             """)
 
-    def _run(self, *, compose=None, metadata=None):
+    # The map is keyed by (app, setting), so a fixture has to be written as the
+    # app that owns the setting. Defaults to docs, which owns DJANGO_ALLOWED_HOSTS.
+    def _run(self, *, compose=None, metadata=None, app="docs"):
         with tempfile.TemporaryDirectory() as tmp:
             rel = _write_greffon(tmp, metadata=metadata or _base_metadata(),
-                                 compose_yaml=compose)
+                                 compose_yaml=compose, app=app)
             return [e for e in validate_greffon_dir(tmp, rel) if "bare host" in e]
 
     def test_django_allowed_hosts_without_bare_host_is_rejected(self):
@@ -1408,7 +1413,8 @@ class HostAllowlistTest(unittest.TestCase):
 
     def test_trusted_domains_without_bare_host_is_rejected(self):
         errs = self._run(compose=self._compose("NEXTCLOUD_TRUSTED_DOMAINS",
-                                               f"{self.HOSTPORT} localhost"))
+                                               f"{self.HOSTPORT} localhost"),
+                         app="nextcloud")
         self.assertTrue(errs, errs)
 
     def test_both_forms_present_is_accepted(self):
@@ -1513,7 +1519,8 @@ class HostAllowlistTest(unittest.TestCase):
         match a Host header. The rule only knew the split idiom before, so this
         skipped validation entirely, and add-greffon.md recommended exactly this."""
         errs = self._run(compose=self._compose(
-            "NEXTCLOUD_TRUSTED_DOMAINS", "{{ instance_url }} localhost"))
+            "NEXTCLOUD_TRUSTED_DOMAINS", "{{ instance_url }} localhost"),
+            app="nextcloud")
         self.assertTrue(errs, errs)
 
     def test_instance_host_counts_as_the_bare_host(self):
@@ -1574,7 +1581,8 @@ class HostAllowlistTest(unittest.TestCase):
         and the idioms contain spaces themselves. Guards the splitter against
         tearing an expression in half."""
         errs = self._run(compose=self._compose(
-            "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} {self.BARE} localhost"))
+            "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} {self.BARE} localhost"),
+            app="nextcloud")
         self.assertEqual(errs, [])
 
     def test_json_array_is_rejected_for_a_comma_separated_setting(self):
@@ -1640,7 +1648,7 @@ class HostAllowlistTest(unittest.TestCase):
             with self.subTest(sep=name):
                 val = f"{self.HOSTPORT}{sep}{{{{ instance_host }}}}{sep}localhost"
                 self.assertEqual(self._run(compose=self._compose(
-                    "NEXTCLOUD_TRUSTED_DOMAINS", val)), [])
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"), [])
 
     def test_django_leading_dot_is_a_host_pattern(self):
         """`.example.com` is Django's documented subdomain pattern, matching the
@@ -1654,8 +1662,29 @@ class HostAllowlistTest(unittest.TestCase):
         """The prefix is per app: Nextcloud matches trusted_domains explicitly and
         has no leading-dot pattern, so the same text there is a broken entry."""
         errs = self._run(compose=self._compose(
-            "NEXTCLOUD_TRUSTED_DOMAINS", "{{ instance_host }} .{{ instance_host }}"))
+            "NEXTCLOUD_TRUSTED_DOMAINS", "{{ instance_host }} .{{ instance_host }}"),
+            app="nextcloud")
         self.assertTrue(errs, errs)
+
+    def test_rules_are_scoped_to_the_owning_app(self):
+        """Keyed by (app, setting). Two Django apps can both read
+        DJANGO_ALLOWED_HOSTS and cast it differently, so the name alone does not
+        determine the parser, and an unlisted app is not judged by another's."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},localhost"), app="someapp")
+        self.assertEqual(errs, [], "an app outside the map is not checked")
+
+    def test_nextcloud_splits_only_on_default_ifs(self):
+        """Shell word splitting uses space, tab and newline. `\\s+` also matches
+        CR, vertical tab and unicode spaces, none of which the shell splits on, so
+        a value the app receives as ONE broken token validated as two good ones."""
+        for name, sep in (("carriage return", chr(13)), ("vertical tab", chr(11)),
+                          ("non-breaking space", chr(160))):
+            with self.subTest(sep=name):
+                val = f"{self.HOSTPORT}{sep}{{{{ instance_host }}}}"
+                self.assertTrue(self._run(compose=self._compose(
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"),
+                    f"{name} is not an IFS separator")
 
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports

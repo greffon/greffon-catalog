@@ -369,14 +369,23 @@ _NGINX_VOLUME_SUFFIX = "_nginx_volume"
 # catalog are listed; SECURITY_ALLOWED_HOSTS was dropped for that reason, since
 # nothing here uses it and its separator would have been a guess, which is the
 # behaviour this map exists to remove.
+# Keyed by (app, setting), not by setting alone. The README says parsing is a
+# property of the app, and keying on the name alone contradicted that: two Django
+# apps can both read DJANGO_ALLOWED_HOSTS and cast it differently (a plain
+# os.environ split, django-environ's Env.list, a JSON cast), so the name does not
+# determine the parser even when it looks app-specific.
 _HOST_ALLOWLISTS = {
-    # Django: comma separated, and a leading dot is its documented subdomain
-    # pattern (".example.com" matches example.com and any subdomain).
-    "DJANGO_ALLOWED_HOSTS": {"split": r"\s*,\s*", "prefixes": (".",)},
-    # Nextcloud's entrypoint reads trusted_domains through shell word splitting,
-    # so any run of IFS whitespace separates entries, not the single space a
-    # literal split assumed. No leading-dot pattern; it uses explicit entries.
-    "NEXTCLOUD_TRUSTED_DOMAINS": {"split": r"\s+", "prefixes": ()},
+    # Django reads ALLOWED_HOSTS comma separated, and treats a leading dot as its
+    # documented subdomain pattern (".example.com" matches example.com and any
+    # subdomain), which carries no scheme or port.
+    ("docs", "DJANGO_ALLOWED_HOSTS"): {"split": r"\s*,\s*", "prefixes": (".",)},
+    ("visio", "DJANGO_ALLOWED_HOSTS"): {"split": r"\s*,\s*", "prefixes": (".",)},
+    # Nextcloud's entrypoint reads trusted_domains through shell word splitting, so
+    # entries are separated by the DEFAULT IFS characters and only those. `\s+`
+    # was too generous: it also matches \r, \v, \f and unicode spaces, none of
+    # which the shell splits on, so a value the app sees as one broken token would
+    # have validated as two good ones.
+    ("nextcloud", "NEXTCLOUD_TRUSTED_DOMAINS"): {"split": r"[ \t\n]+", "prefixes": ()},
 }
 _JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
 _JINJA_STATEMENT_RE = re.compile(r"\{%")
@@ -421,11 +430,12 @@ def _classify_expr(expr):
     return None
 
 
-def _host_allowlist_problem(key, value):
-    """None when fine, else a short reason code."""
+def _host_allowlist_problem(app, key, value):
+    """None when fine, else a short reason code. `app` is the entry's directory
+    name, since the parser belongs to the app rather than to the setting name."""
     if not isinstance(key, str) or not isinstance(value, str):
         return None
-    spec = _HOST_ALLOWLISTS.get(key)
+    spec = _HOST_ALLOWLISTS.get((app, key))
     if spec is None:
         return None
     if "{#" in value or "#}" in value or _JINJA_STATEMENT_RE.search(value):
@@ -1147,7 +1157,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
             else:
                 items = []
             for key, value in items:
-                why = _host_allowlist_problem(key, value)
+                why = _host_allowlist_problem(rel_dir.split("/")[0], key, value)
                 if why == "embedded":
                     errors.append(
                         f"{rel_dir}: service {svc_name!r} embeds a host expression inside a "
@@ -1192,7 +1202,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
         for dest in dests:
             if not isinstance(dest, dict):
                 continue
-            why = _host_allowlist_problem(dest.get("key"), default)
+            why = _host_allowlist_problem(rel_dir.split("/")[0], dest.get("key"), default)
             if why == "embedded":
                 errors.append(
                     f"{rel_dir}: configuration {cfg.get('title')!r} embeds a host expression "
