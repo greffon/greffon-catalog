@@ -1713,6 +1713,27 @@ class HostAllowlistTest(unittest.TestCase):
             with self.subTest(rel=rel):
                 self.assertEqual(_app_of(rel), expected)
 
+    def test_non_ifs_whitespace_is_not_trimmed_off_an_entry(self):
+        """Python's str.strip() discards CR, vertical tab and NBSP; the shell that
+        parses trusted_domains does not. So `{{ instance_host }}\\r` validated as a
+        clean bare host while Nextcloud received `host\\r` and matched nothing."""
+        for name, ch in (("carriage return", chr(13)), ("non-breaking space", chr(160)),
+                         ("vertical tab", chr(11))):
+            with self.subTest(ch=name):
+                val = f"{self.HOSTPORT} {{{{ instance_host }}}}{ch}"
+                self.assertTrue(self._run(compose=self._compose(
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"),
+                    f"{name} is not trimmed by the app")
+
+    def test_ifs_whitespace_around_an_entry_is_fine(self):
+        """The other direction, so the trim set is not simply empty: space, tab and
+        newline ARE discarded by the shell, so they must not fail the entry."""
+        for name, ch in (("space", " "), ("tab", chr(9)), ("newline", chr(10))):
+            with self.subTest(ch=name):
+                val = f"{self.HOSTPORT} {{{{ instance_host }}}}{ch}"
+                self.assertEqual(self._run(compose=self._compose(
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"), [])
+
     # --- malformed input must not abort the run --------------------------
     # `--all` validates the whole catalog in one process, so a crash here reports
     # NOTHING for any entry, which is strictly worse than the error it replaces.

@@ -380,10 +380,12 @@ _HOST_ALLOWLISTS = {
     # subdomain), which carries no scheme or port.
     # `*` disables Django's host check entirely, so it matches the bare host too.
     # Whether that is wise is a different question from the one this rule asks.
-    ("docs", "DJANGO_ALLOWED_HOSTS"):
-        {"split": r"\s*,\s*", "prefixes": (".",), "wildcards": ("*",)},
-    ("visio", "DJANGO_ALLOWED_HOSTS"):
-        {"split": r"\s*,\s*", "prefixes": (".",), "wildcards": ("*",)},
+    ("docs", "DJANGO_ALLOWED_HOSTS"): {
+        "split": r"[ \t]*,[ \t]*", "trim": " \t",
+        "prefixes": (".",), "wildcards": ("*",)},
+    ("visio", "DJANGO_ALLOWED_HOSTS"): {
+        "split": r"[ \t]*,[ \t]*", "trim": " \t",
+        "prefixes": (".",), "wildcards": ("*",)},
     # Nextcloud's entrypoint reads trusted_domains through shell word splitting, so
     # entries are separated by the DEFAULT IFS characters and only those. `\s+`
     # was too generous: it also matches \r, \v, \f and unicode spaces, none of
@@ -392,8 +394,9 @@ _HOST_ALLOWLISTS = {
     # No wildcard listed for Nextcloud: it does support wildcard entries, but the
     # exact semantics of a bare `*` there are not something this catalog can
     # demonstrate, and a guess is what this map exists to avoid.
-    ("nextcloud", "NEXTCLOUD_TRUSTED_DOMAINS"):
-        {"split": r"[ \t\n]+", "prefixes": (), "wildcards": ()},
+    ("nextcloud", "NEXTCLOUD_TRUSTED_DOMAINS"): {
+        "split": r"[ \t\n]+", "trim": " \t\n",
+        "prefixes": (), "wildcards": ()},
 }
 _JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
 _JINJA_STATEMENT_RE = re.compile(r"\{%")
@@ -479,8 +482,9 @@ def _host_allowlist_problem(app, key, value):
         return "control-flow"
 
     kinds = set()
-    for token in re.split(spec["split"], masked.strip()):
-        token = token.strip()
+    trim = spec["trim"]
+    for token in re.split(spec["split"], masked.strip(trim)):
+        token = token.strip(trim)
         if not token:
             continue
         marks = _MASK_RE.findall(token)
