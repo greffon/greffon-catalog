@@ -26,9 +26,12 @@ from validate_catalog import (
 )
 
 
-def _write_greffon(tmpdir, *, metadata, compose_yaml=None):
-    """Write a complete greffon dir under tmpdir/test/1.0/. Returns the rel dir."""
-    greffon_dir = os.path.join(tmpdir, "test", "1.0")
+def _write_greffon(tmpdir, *, metadata, compose_yaml=None, app="test"):
+    """Write a complete greffon dir under tmpdir/<app>/1.0/. Returns the rel dir.
+
+    `app` matters for rules keyed by application rather than by setting name (the
+    host-allowlist map), where the parser is a property of the app."""
+    greffon_dir = os.path.join(tmpdir, app, "1.0")
     os.makedirs(greffon_dir, exist_ok=True)
     with open(os.path.join(greffon_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f)
@@ -42,7 +45,7 @@ def _write_greffon(tmpdir, *, metadata, compose_yaml=None):
             volumes:
               data:
             """))
-    return "test/1.0"
+    return f"{app}/1.0"
 
 
 def _base_metadata(**overrides):
@@ -1369,6 +1372,433 @@ def _backup_meta(**over):
     }
     meta.update(over)
     return meta
+
+
+class HostAllowlistTest(unittest.TestCase):
+    """A host allowlist built from instance_url must accept the PORT-LESS host.
+
+    The sidecar proxies with `Host $host`, which drops the port, so an allowlist
+    holding only host:port matches nothing. Three entries shipped that way.
+    """
+
+    HOSTPORT = '{{ instance_url.split("://")[1] }}'
+    BARE = '{{ instance_url.split("://")[1].split(":")[0] }}'
+
+    def _compose(self, key, value):
+        # json.dumps for the scalar: JSON is valid YAML and escapes quotes
+        # correctly. Hand-wrapping in single quotes silently mangled any value
+        # containing one, which made a test fail against correct code.
+        return textwrap.dedent(f"""\
+            services:
+              app:
+                image: nginx
+                ports:
+                  - "8080:8080"
+                environment:
+                  {key}: {json.dumps(value)}
+            """)
+
+    # The map is keyed by (app, setting), so a fixture has to be written as the
+    # app that owns the setting. Defaults to docs, which owns DJANGO_ALLOWED_HOSTS.
+    def _run(self, *, compose=None, metadata=None, app="docs"):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=metadata or _base_metadata(),
+                                 compose_yaml=compose, app=app)
+            return [e for e in validate_greffon_dir(tmp, rel) if "bare host" in e]
+
+    def test_django_allowed_hosts_without_bare_host_is_rejected(self):
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS",
+                                               f"{self.HOSTPORT},localhost,backend"))
+        self.assertTrue(errs, "host:port-only allowlist must be rejected")
+
+    def test_trusted_domains_without_bare_host_is_rejected(self):
+        errs = self._run(compose=self._compose("NEXTCLOUD_TRUSTED_DOMAINS",
+                                               f"{self.HOSTPORT} localhost"),
+                         app="nextcloud")
+        self.assertTrue(errs, errs)
+
+    def test_both_forms_present_is_accepted(self):
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},{self.BARE},localhost"))
+        self.assertEqual(errs, [])
+
+    def test_url_building_setting_is_not_flagged(self):
+        """n8n's N8N_HOST and forgejo's server.DOMAIN legitimately want the port:
+        they GENERATE urls rather than validate an incoming Host. Guards the rule
+        against over-reach, which is how it stays useful."""
+        for key in ("N8N_HOST", "FORGEJO__server__DOMAIN", "COLLABORATION_WS_URL"):
+            with self.subTest(key=key):
+                self.assertEqual(self._run(compose=self._compose(key, self.HOSTPORT)), [])
+
+    def test_bare_host_inside_a_jinja_comment_does_not_satisfy_the_rule(self):
+        """`{# ... #}` renders to nothing, so a bare host commented out is absent
+        from the deployed value. Matching raw text let it satisfy the check."""
+        commented = (f"{self.HOSTPORT}"
+                     "{# " + self.BARE + " #}")
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", commented))
+        self.assertTrue(errs, "a commented-out bare host must not satisfy the rule")
+
+    def test_any_jinja_comment_in_an_allowlist_is_refused(self):
+        """DELIBERATE over-rejection, replacing an earlier assertion that this was
+        fine. A commented-out ported host does render to just `localhost`, so
+        refusing it rejects a harmless value.
+
+        It is refused because the alternative is worse: telling a real `{# #}` from
+        the characters "{#" inside a string literal cannot be done by text
+        substitution, and getting it wrong deleted a genuine expression and reported
+        the allowlist clean. An allowlist has no use for a comment, so the ambiguity
+        is removed rather than resolved."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "{# " + self.HOSTPORT + " #}localhost"))
+        self.assertTrue(errs, "comments are refused in allowlists, not interpreted")
+
+    def test_redirect_allowlist_is_not_flagged(self):
+        """OIDC_REDIRECT_ALLOWED_HOSTS holds URLs, not bare hosts. It matches the
+        name pattern, so without the exclusion the rule would demand a bare-host
+        entry that would be wrong to add."""
+        errs = self._run(compose=self._compose(
+            "OIDC_REDIRECT_ALLOWED_HOSTS", f'["https://{self.HOSTPORT}"]'))
+        self.assertEqual(errs, [])
+
+    def test_csrf_trusted_origins_is_not_flagged(self):
+        """Origins carry scheme and port by definition."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_CSRF_TRUSTED_ORIGINS", f"https://{self.HOSTPORT}"))
+        self.assertEqual(errs, [])
+
+    def test_bare_host_in_a_dead_branch_is_rejected(self):
+        """`{% if false %}` keeps the expression in the source and out of the
+        rendered value, so a text search sees a bare host that never deploys."""
+        val = self.HOSTPORT + "{% if false %}," + self.BARE + "{% endif %}"
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, "control flow must not be accepted on faith")
+
+    def test_bare_host_inside_raw_is_rejected(self):
+        """`{% raw %}` emits the expression as literal text instead of evaluating
+        it, so the deployed allowlist contains the source, not a host."""
+        val = self.HOSTPORT + "{% raw %}" + self.BARE + "{% endraw %}"
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, errs)
+
+    def test_settings_outside_the_map_are_not_checked(self):
+        """SECURITY_ALLOWED_HOSTS was in the map briefly and is not any more: no
+        entry uses it, so its separator would have been a guess, and guessing is
+        what the map exists to stop. Documents the deliberate coverage limit."""
+        errs = self._run(compose=self._compose(
+            "SECURITY_ALLOWED_HOSTS", f"{self.HOSTPORT},localhost"))
+        self.assertEqual(errs, [])
+
+    def test_bare_host_as_a_jinja_string_literal_is_rejected(self):
+        """`{{ 'instance_url...' }}` renders the idiom as literal text instead of
+        evaluating it, so the allowlist gains a useless string and no host."""
+        quoted = self.BARE.replace("{{ ", "{{ '").replace(" }}", "' }}")
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},{quoted}"))
+        self.assertTrue(errs, errs)
+
+    def test_computed_expression_is_refused_even_though_it_renders(self):
+        """DELIBERATE over-rejection, and a reversal of the previous round.
+
+        `{{ ",".join([hostport, bare]) }}` does render both forms, so refusing it is
+        strictly speaking a false positive. It is refused anyway: accepting arbitrary
+        expressions is what produced five separate bypasses (comments, {% if false %},
+        {% raw %}, string literals, inline conditionals), each of which let a
+        port-only allowlist through while CI called it safe. The validator cannot
+        evaluate Jinja, so it recognises a few forms and refuses the rest.
+
+        The trade is cheap in one direction and expensive in the other: refusing
+        costs an author one rewrite into two expressions, with the accepted forms
+        named in the error. Accepting costs a guarantee CI cannot deliver."""
+        val = ('{{ ",".join([instance_url.split("://")[1], '
+               'instance_url.split("://")[1].split(":")[0]]) }}')
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, "computed expressions are refused, not analysed")
+
+    def test_full_instance_url_is_refused(self):
+        """`{{ instance_url }}` renders a scheme and possibly a port, so it cannot
+        match a Host header. The rule only knew the split idiom before, so this
+        skipped validation entirely, and add-greffon.md recommended exactly this."""
+        errs = self._run(compose=self._compose(
+            "NEXTCLOUD_TRUSTED_DOMAINS", "{{ instance_url }} localhost"),
+            app="nextcloud")
+        self.assertTrue(errs, errs)
+
+    def test_instance_host_counts_as_the_bare_host(self):
+        """The platform already exposes the port-less host; it should be the easy
+        way to satisfy this rule, not a form the validator fails to recognise."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "{{ instance_host }},localhost"))
+        self.assertEqual(errs, [])
+
+    def test_inline_conditional_is_refused(self):
+        """`{{ x if false }}` has no {% block %}, so the control-flow refusal missed
+        it while the text search saw a bare host that never renders."""
+        val = self.HOSTPORT + ',{{ instance_url.split("://")[1].split(":")[0] if false }}'
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, errs)
+
+    def test_unrelated_literal_expression_does_not_block(self):
+        """A constant alongside the two required forms is harmless. Rejecting on
+        ANY literal expression blocked a correct allowlist."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f'{self.HOSTPORT},{self.BARE},{{{{ "localhost" }}}}'))
+        self.assertEqual(errs, [])
+
+    def test_computed_host_port_is_not_a_constant(self):
+        """`{{ "" ~ instance_host ~ ":" ~ instance_port ~ "" }}` renders host:port,
+        the exact value this rule rejects. A regex spanning first quote to last
+        called the whole computation a constant and let it through."""
+        val = '{{ "" ~ instance_host ~ ":" ~ instance_port ~ "" }}'
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, "a computed host:port must not pass as a constant")
+
+    def test_comment_markers_inside_a_literal_do_not_hide_an_expression(self):
+        """`{{ "{#" if false else "" }}` puts comment characters in a STRING. A
+        textual strip read them as a real comment and deleted the ported
+        expression between them, leaving nothing to complain about."""
+        val = ('{{ "{#" if false else "" }}' + self.HOSTPORT
+               + '{{ "#}" if false else "" }}')
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", val))
+        self.assertTrue(errs, errs)
+
+    def test_bare_host_embedded_in_a_url_is_rejected(self):
+        """`https://{{ instance_host }}` contains a recognised bare-host expression
+        and is still unusable: it renders a URL, and the app compares a bare Host.
+        Checking that the expression APPEARED, rather than that the entry IS the
+        host, accepted it."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "https://{{ instance_host }}"))
+        self.assertTrue(errs, "an expression inside a larger entry must be rejected")
+
+    def test_bare_host_glued_to_a_port_is_rejected(self):
+        """Same shape without a scheme: the entry has to be the host on its own."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "{{ instance_host }}:8443"))
+        self.assertTrue(errs, errs)
+
+    def test_space_separated_allowlist_is_parsed_per_entry(self):
+        """Nextcloud separates trusted_domains by SPACE while Django uses commas,
+        and the idioms contain spaces themselves. Guards the splitter against
+        tearing an expression in half."""
+        errs = self._run(compose=self._compose(
+            "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} {self.BARE} localhost"),
+            app="nextcloud")
+        self.assertEqual(errs, [])
+
+    def test_json_array_is_rejected_for_a_comma_separated_setting(self):
+        """Reverses an earlier round, and is more correct than what it replaces.
+
+        Django parses ALLOWED_HOSTS as a COMMA-separated string, so a JSON array is
+        not a valid value for it and the brackets and quotes become part of the
+        hosts. The previous version accepted it because the rule guessed at
+        encodings; with the separator known per setting there is nothing to guess.
+        An app that genuinely wants JSON gets an entry in the map with its own
+        handling, rather than every setting inheriting a format none of them
+        declared."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", '["{{ instance_host }}","localhost"]'))
+        self.assertTrue(errs, "JSON is not Django's encoding for this setting")
+
+    def test_unknown_allowlist_names_are_not_checked(self):
+        """The map is deliberately narrow. A denylist (DISALLOWED_HOSTS) matched the
+        old substring pattern, where the advice would have been backwards."""
+        errs = self._run(compose=self._compose("DISALLOWED_HOSTS", self.HOSTPORT))
+        self.assertEqual(errs, [])
+
+    def test_semicolon_is_not_a_separator(self):
+        """Neither Django nor Nextcloud splits on `;`, so this is ONE unusable entry
+        even though it contains both idioms. A generic separator list accepted it."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT};{self.BARE}"))
+        self.assertTrue(errs, errs)
+
+    def test_misordered_delimiters_are_rejected(self):
+        """`localhost }} {{ instance_host` has equal counts and invalid ordering.
+        Counting delimiters passed it; masking well-formed pairs leaves the strays."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", "localhost }} {{ instance_host"))
+        self.assertTrue(errs, errs)
+
+    def test_placeholder_collision_does_not_crash(self):
+        """A literal entry shaped like the internal masking token indexed past the
+        table and raised IndexError, aborting --all for the whole catalog."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},__GREFFON_EXPR_1__"))
+        self.assertTrue(errs, errs)
+
+    def test_json_array_missing_the_bare_host_is_rejected(self):
+        """The encoding is understood, so the rule still applies inside it."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f'["{self.HOSTPORT}","localhost"]'))
+        self.assertTrue(errs, errs)
+
+    def test_unbalanced_jinja_delimiters_are_rejected(self):
+        """An unclosed `{{` stashes no expression, so the leftovers were read as
+        literal text and the value passed. Jinja refuses it at deploy."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", '{{ instance_url.split("://")[1] '))
+        self.assertTrue(errs, errs)
+
+    def test_nextcloud_entries_split_on_any_whitespace(self):
+        """Nextcloud's entrypoint reads trusted_domains through shell word
+        splitting, so tabs and newlines separate entries just as spaces do.
+        Splitting on a single space glued them together and reported a valid
+        allowlist as embedded."""
+        for name, sep in (("tab", chr(9)), ("newline", chr(10)), ("double space", "  ")):
+            with self.subTest(sep=name):
+                val = f"{self.HOSTPORT}{sep}{{{{ instance_host }}}}{sep}localhost"
+                self.assertEqual(self._run(compose=self._compose(
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"), [])
+
+    def test_django_leading_dot_is_a_host_pattern(self):
+        """`.example.com` is Django's documented subdomain pattern, matching the
+        base host and any subdomain. It carries no scheme or port, so refusing it
+        as `embedded` blocked a valid tenant-subdomain allowlist."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", ".{{ instance_host }},localhost"))
+        self.assertEqual(errs, [])
+
+    def test_leading_dot_is_not_accepted_for_nextcloud(self):
+        """The prefix is per app: Nextcloud matches trusted_domains explicitly and
+        has no leading-dot pattern, so the same text there is a broken entry."""
+        errs = self._run(compose=self._compose(
+            "NEXTCLOUD_TRUSTED_DOMAINS", "{{ instance_host }} .{{ instance_host }}"),
+            app="nextcloud")
+        self.assertTrue(errs, errs)
+
+    def test_rules_are_scoped_to_the_owning_app(self):
+        """Keyed by (app, setting). Two Django apps can both read
+        DJANGO_ALLOWED_HOSTS and cast it differently, so the name alone does not
+        determine the parser, and an unlisted app is not judged by another's."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},localhost"), app="someapp")
+        self.assertEqual(errs, [], "an app outside the map is not checked")
+
+    def test_nextcloud_splits_only_on_default_ifs(self):
+        """Shell word splitting uses space, tab and newline. `\\s+` also matches
+        CR, vertical tab and unicode spaces, none of which the shell splits on, so
+        a value the app receives as ONE broken token validated as two good ones."""
+        for name, sep in (("carriage return", chr(13)), ("vertical tab", chr(11)),
+                          ("non-breaking space", chr(160))):
+            with self.subTest(sep=name):
+                val = f"{self.HOSTPORT}{sep}{{{{ instance_host }}}}"
+                self.assertTrue(self._run(compose=self._compose(
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"),
+                    f"{name} is not an IFS separator")
+
+    def test_django_wildcard_satisfies_the_requirement(self):
+        """`*` disables Django's host check, so it matches the bare host too.
+        Rejecting it was also inconsistent: an allowlist of only `*` was already
+        accepted, because it contains no expression and never reached the check."""
+        errs = self._run(compose=self._compose(
+            "DJANGO_ALLOWED_HOSTS", f"{self.HOSTPORT},*"))
+        self.assertEqual(errs, [])
+
+    def test_wildcard_is_per_app_not_universal(self):
+        """The map claims a wildcard only where this catalog can demonstrate one.
+        Nextcloud gets none, so `*` there is an ordinary literal and the ported
+        form still needs its bare companion."""
+        errs = self._run(compose=self._compose(
+            "NEXTCLOUD_TRUSTED_DOMAINS", f"{self.HOSTPORT} *"), app="nextcloud")
+        self.assertTrue(errs, errs)
+
+    def test_app_lookup_survives_path_shape(self):
+        """`--dir ./docs/1.0` and Windows backslash paths both produced an app name
+        the map could not match, so the rule skipped silently and the run still
+        reported success. Tests the resolver directly, since a fixture cannot
+        produce a Windows path on this host."""
+        from validate_catalog import _app_of
+        for rel, expected in (("docs/1.0", "docs"), ("./docs/1.0", "docs"),
+                              ("docs/1.0/", "docs"), ("nextcloud\\1.0", "nextcloud"),
+                              # absolute, which the CLI accepts: taking the FIRST
+                              # component returned "Users" and skipped the rule
+                              ("/home/me/catalog/docs/1.0", "docs"),
+                              ("../catalog/nextcloud/1.0", "nextcloud")):
+            with self.subTest(rel=rel):
+                self.assertEqual(_app_of(rel), expected)
+
+    def test_a_spec_with_only_a_separator_does_not_crash(self):
+        """The README and add-greffon.md invite people to add entries to the map.
+        A missing optional key raised KeyError, which aborts --all for the entire
+        catalog: a documented extension path must not contain a crash."""
+        from validate_catalog import _HOST_ALLOWLISTS, _host_allowlist_problem
+        key = ("regtest", "DJANGO_ALLOWED_HOSTS")
+        _HOST_ALLOWLISTS[key] = {"split": ","}
+        try:
+            self.assertEqual(
+                _host_allowlist_problem("regtest", "DJANGO_ALLOWED_HOSTS",
+                                        f"{self.HOSTPORT},localhost"),
+                "no-bare-host")
+        finally:
+            del _HOST_ALLOWLISTS[key]
+
+    def test_non_ifs_whitespace_is_not_trimmed_off_an_entry(self):
+        """Python's str.strip() discards CR, vertical tab and NBSP; the shell that
+        parses trusted_domains does not. So `{{ instance_host }}\\r` validated as a
+        clean bare host while Nextcloud received `host\\r` and matched nothing."""
+        for name, ch in (("carriage return", chr(13)), ("non-breaking space", chr(160)),
+                         ("vertical tab", chr(11))):
+            with self.subTest(ch=name):
+                val = f"{self.HOSTPORT} {{{{ instance_host }}}}{ch}"
+                self.assertTrue(self._run(compose=self._compose(
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"),
+                    f"{name} is not trimmed by the app")
+
+    def test_ifs_whitespace_around_an_entry_is_fine(self):
+        """The other direction, so the trim set is not simply empty: space, tab and
+        newline ARE discarded by the shell, so they must not fail the entry."""
+        for name, ch in (("space", " "), ("tab", chr(9)), ("newline", chr(10))):
+            with self.subTest(ch=name):
+                val = f"{self.HOSTPORT} {{{{ instance_host }}}}{ch}"
+                self.assertEqual(self._run(compose=self._compose(
+                    "NEXTCLOUD_TRUSTED_DOMAINS", val), app="nextcloud"), [])
+
+    # --- malformed input must not abort the run --------------------------
+    # `--all` validates the whole catalog in one process, so a crash here reports
+    # NOTHING for any entry, which is strictly worse than the error it replaces.
+
+    def test_scalar_environment_does_not_crash(self):
+        for shape in ("environment: 1", "environment: true", "environment: hello"):
+            with self.subTest(shape=shape):
+                compose = textwrap.dedent(f"""\
+                    services:
+                      app:
+                        image: nginx
+                        ports:
+                          - "8080:8080"
+                        {shape}
+                    """)
+                self._run(compose=compose)  # must return, not raise
+
+    def test_scalar_configurations_does_not_crash(self):
+        meta = _base_metadata()
+        meta["configurations"] = 1
+        self._run(metadata=meta)  # must return, not raise
+
+    def test_scalar_default_value_does_not_crash(self):
+        meta = _base_metadata()
+        meta["configurations"] = [{
+            "title": "X",
+            "schema": {"properties": {"value": {"type": "string"}}},
+            "default_value": "not-a-mapping",
+            "destinations": [{"type": "env", "container": "app", "key": "DJANGO_ALLOWED_HOSTS"}],
+        }]
+        self._run(metadata=meta)  # must return, not raise
+
+    def test_scalar_destinations_does_not_crash(self):
+        meta = _base_metadata()
+        meta["configurations"] = [{
+            "title": "X",
+            "schema": {"properties": {"value": {"type": "string"}}},
+            "default_value": {"value": "x"},
+            "destinations": 7,
+        }]
+        self._run(metadata=meta)  # must return, not raise
+
+    def test_literal_allowlist_is_not_flagged(self):
+        """No instance_url idiom at all: nothing to say."""
+        errs = self._run(compose=self._compose("DJANGO_ALLOWED_HOSTS", "example.com,localhost"))
+        self.assertEqual(errs, [])
 
 
 class BackupPairingTest(unittest.TestCase):

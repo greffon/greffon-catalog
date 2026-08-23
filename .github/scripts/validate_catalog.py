@@ -352,6 +352,178 @@ _BUSYBOX_SHELLS = {"sh", "ash"}
 _NGINX_VOLUME_SUFFIX = "_nginx_volume"
 
 
+# Host allowlists this rule understands, mapped to the separator the APP parses.
+# An explicit map, not a name pattern. A pattern matched DISALLOWED_HOSTS (a
+# denylist, where the advice would be backwards) and OIDC_REDIRECT_ALLOWED_HOSTS
+# (URLs), and it could not know each app's encoding, which produced a false result
+# in one direction or the other every time a new encoding turned up: JSON arrays,
+# semicolons, whitespace inside JSON strings. Keyed on the exact setting, the
+# separator is a fact rather than a guess.
+#
+# The cost is honest and small: a new app's allowlist is unchecked until it is
+# added here, one line. The prevention that scales is the documentation, which now
+# names the right idiom in the catalog README and in add-greffon.md.
+# Per setting: how the APP splits entries, and any prefix it treats as part of a
+# host pattern. Both are properties of that app's parser, which is the whole reason
+# this is a map. Only settings whose parser is verifiable from an entry in this
+# catalog are listed; SECURITY_ALLOWED_HOSTS was dropped for that reason, since
+# nothing here uses it and its separator would have been a guess, which is the
+# behaviour this map exists to remove.
+# Keyed by (app, setting), not by setting alone. The README says parsing is a
+# property of the app, and keying on the name alone contradicted that: two Django
+# apps can both read DJANGO_ALLOWED_HOSTS and cast it differently (a plain
+# os.environ split, django-environ's Env.list, a JSON cast), so the name does not
+# determine the parser even when it looks app-specific.
+_HOST_ALLOWLISTS = {
+    # Django reads ALLOWED_HOSTS comma separated, and treats a leading dot as its
+    # documented subdomain pattern (".example.com" matches example.com and any
+    # subdomain), which carries no scheme or port.
+    # `*` disables Django's host check entirely, so it matches the bare host too.
+    # Whether that is wise is a different question from the one this rule asks.
+    ("docs", "DJANGO_ALLOWED_HOSTS"): {
+        "split": r"[ \t]*,[ \t]*", "trim": " \t",
+        "prefixes": (".",), "wildcards": ("*",)},
+    ("visio", "DJANGO_ALLOWED_HOSTS"): {
+        "split": r"[ \t]*,[ \t]*", "trim": " \t",
+        "prefixes": (".",), "wildcards": ("*",)},
+    # Nextcloud's entrypoint reads trusted_domains through shell word splitting, so
+    # entries are separated by the DEFAULT IFS characters and only those. `\s+`
+    # was too generous: it also matches \r, \v, \f and unicode spaces, none of
+    # which the shell splits on, so a value the app sees as one broken token would
+    # have validated as two good ones.
+    # No wildcard listed for Nextcloud: it does support wildcard entries, but the
+    # exact semantics of a bare `*` there are not something this catalog can
+    # demonstrate, and a guess is what this map exists to avoid.
+    ("nextcloud", "NEXTCLOUD_TRUSTED_DOMAINS"): {
+        "split": r"[ \t\n]+", "trim": " \t\n",
+        "prefixes": (), "wildcards": ()},
+}
+_JINJA_EXPR_RE = re.compile(r"\{\{(.*?)\}\}", re.S)
+_JINJA_STATEMENT_RE = re.compile(r"\{%")
+_MASK = "__GREFFON_EXPR_{}__"
+_MASK_RE = re.compile(r"__GREFFON_EXPR_(\d+)__")
+
+# Each entry must be one of these, or a plain literal. Everything else is refused:
+# the validator cannot evaluate Jinja, and five separate bypasses came from trying
+# to decide what arbitrary template text renders by matching its source.
+_EXPR_PORTED_RE = re.compile(
+    r"""^\s*instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]\s*$""")
+_EXPR_BARE_RE = re.compile(
+    r"""^\s*(?:instance_host"""
+    r"""|instance_url\s*\.\s*split\(\s*['"]://['"]\s*\)\s*\[\s*1\s*\]"""
+    r"""\s*\.\s*split\(\s*['"]:['"]\s*\)\s*\[\s*0\s*\])\s*$""")
+_INSTANCE_VAR_RE = re.compile(r"\binstance_(?:url|host|port|id)\b")
+
+
+def _is_standalone_literal(expr):
+    """True only when the expression is ONE quoted string and nothing else."""
+    s = (expr or "").strip()
+    if s[:1] not in ("'", '"'):
+        return False
+    quote, i = s[0], 1
+    while i < len(s):
+        if s[i] == "\\":
+            i += 2
+            continue
+        if s[i] == quote:
+            return not s[i + 1:].strip()
+        i += 1
+    return False
+
+
+def _classify_expr(expr):
+    if _EXPR_BARE_RE.match(expr):
+        return "bare"
+    if _EXPR_PORTED_RE.match(expr):
+        return "ported"
+    if _is_standalone_literal(expr) and not _INSTANCE_VAR_RE.search(expr):
+        return "const"
+    return None
+
+
+def _app_of(rel_dir):
+    """The entry's app name from its relative dir, whatever shape the caller used.
+
+    Splitting the raw string on "/" returned "." for `--dir ./docs/1.0`, and the
+    whole path on Windows, where find_all_greffon_dirs builds a backslash path.
+    Either way the map lookup missed and the rule silently did nothing while
+    reporting success, which is the failure mode a validator can least afford."""
+    norm = os.path.normpath(str(rel_dir)).replace("\\", "/")
+    parts = [part for part in norm.split("/") if part not in ("", ".", "..")]
+    # The app is the VERSION directory's parent, counted from the end. Taking the
+    # first component worked for "docs/1.0" and returned "Users" for the absolute
+    # path the CLI also accepts, which missed the map and skipped the rule in
+    # silence. Counting from the right is independent of what precedes the entry.
+    return parts[-2] if len(parts) >= 2 else ""
+
+
+def _host_allowlist_problem(app, key, value):
+    """None when fine, else a short reason code. `app` is the entry's directory
+    name, since the parser belongs to the app rather than to the setting name."""
+    if not isinstance(key, str) or not isinstance(value, str):
+        return None
+    spec = _HOST_ALLOWLISTS.get((app, key))
+    if spec is None:
+        return None
+    if "{#" in value or "#}" in value or _JINJA_STATEMENT_RE.search(value):
+        return "control-flow"
+    if "__GREFFON_EXPR_" in value:
+        return "unrecognised"  # would collide with the masking below
+    if "{{" not in value:
+        return None  # a literal allowlist; nothing derived from the instance
+
+    exprs = []
+
+    def stash(m):
+        exprs.append(m.group(1))
+        return _MASK.format(len(exprs) - 1)
+
+    masked = _JINJA_EXPR_RE.sub(stash, value)
+    # Any delimiter still standing means the template is malformed. Counting `{{`
+    # against `}}` passed `localhost }} {{ instance_host`, where the counts match
+    # and the order does not; masking well-formed pairs first leaves the strays.
+    if "{{" in masked or "}}" in masked:
+        return "control-flow"
+
+    kinds = set()
+    # Only "split" is required. Everything else defaults, because the README and
+    # add-greffon.md invite people to add entries here and a missing key would
+    # raise KeyError and abort `--all` for the whole catalog: a documented
+    # extension path must not have a crash in it.
+    trim = spec.get("trim", "")
+    for token in re.split(spec.get("split", ","), masked.strip(trim)):
+        token = token.strip(trim)
+        if not token:
+            continue
+        marks = _MASK_RE.findall(token)
+        if not marks:
+            # A literal entry the app treats as matching ANY host satisfies the
+            # requirement on its own. Rejecting it was also inconsistent: an
+            # allowlist of only `*` was already accepted, since it contains no
+            # expression at all and never reached this check.
+            kinds.add("bare" if token in spec.get("wildcards", ()) else "const")
+            continue
+        # A prefix the app treats as part of the host pattern is not "embedded in
+        # other text": Django's ".{{ instance_host }}" is a subdomain wildcard and
+        # carries no scheme or port.
+        bare_token = token
+        for prefix in spec.get("prefixes", ()):
+            if bare_token.startswith(prefix):
+                bare_token = bare_token[len(prefix):]
+                break
+        if not _MASK_RE.fullmatch(bare_token):
+            # `https://{{ instance_host }}` renders a URL, not a host.
+            return "embedded"
+        token = bare_token
+        kind = _classify_expr(exprs[int(marks[0])])
+        if kind is None:
+            return "unrecognised"
+        kinds.add(kind)
+    if "ported" in kinds and "bare" not in kinds:
+        return "no-bare-host"
+    return None
+
+
 def _service_named_volumes(svc_def):
     """Named volumes a service mounts, from both the short and long compose forms.
 
@@ -1000,6 +1172,97 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     f"healthcheck is DISABLED ({'disable: true' if _compose_bool(hc.get('disable')) else 'test: NONE'}). "
                     f"Docker then reports no health state at all, so the hot restore waits for "
                     f"a 'healthy' that never arrives and times out")
+
+    # Host-allowlist settings must accept the port-less host (see the note on
+    # _HOST_ALLOWLISTS): the sidecar's `Host $host` drops the port.
+    if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
+        for svc_name, svc_def in compose["services"].items():
+            if not isinstance(svc_def, dict):
+                continue
+            # Branch on the two shapes compose actually accepts and ignore
+            # anything else. `env or []` looked like a guard but only covers
+            # falsey values: `environment: 1` is truthy and not iterable, and
+            # iterating it raises, which aborts `--all` for the WHOLE catalog and
+            # discards every diagnostic collected so far. Malformed compose is
+            # reported by the shape checks elsewhere; it must not crash this one.
+            env = svc_def.get("environment")
+            if isinstance(env, dict):
+                items = list(env.items())
+            elif isinstance(env, list):
+                items = [(e.split("=", 1) + [""])[:2] for e in env if isinstance(e, str)]
+            else:
+                items = []
+            for key, value in items:
+                why = _host_allowlist_problem(_app_of(rel_dir), key, value)
+                if why == "embedded":
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} embeds a host expression inside a "
+                        f"larger {key} entry. The entry has to BE the host: something like "
+                        f"https://{{{{ instance_host }}}} renders a URL, and the app compares a "
+                        f"bare host, so it matches nothing")
+                elif why == "unrecognised":
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} builds {key} from a Jinja expression "
+                        f"this validator does not recognise. A host allowlist accepts only "
+                        f"{{{{ instance_url.split(\"://\")[1] }}}} (the ported host), "
+                        f"{{{{ instance_host }}}} or its split equivalent (the bare host), and "
+                        f"plain literals. Notably {{{{ instance_url }}}} is NOT one of them: it "
+                        f"renders a scheme and possibly a port, and the app compares a bare host")
+                elif why == "control-flow":
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} builds {key} with Jinja control "
+                        f"flow ({{% ... %}}). Whether the bare host survives depends on what "
+                        f"the greffer renders, which CI cannot decide by reading the template, "
+                        f"so the allowlist has to be written without it")
+                elif why:
+                    errors.append(
+                        f"{rel_dir}: service {svc_name!r} sets {key} from "
+                        f"instance_url WITH its port and never the bare host. The greffer's "
+                        f"sidecar proxies with `Host $host`, which drops the port, so this "
+                        f"allowlist cannot match and the app rejects every request on any "
+                        f"deployment whose URL has a port. Add "
+                        f"{{{{ instance_url.split(\"://\")[1].split(\":\")[0] }}}} alongside it")
+    # Same reasoning: `configurations: 1` is truthy and not iterable, and a
+    # configuration whose default_value is a scalar has no .get. Both are ordinary
+    # validation failures reported elsewhere, so guard the shapes rather than
+    # letting them terminate the run.
+    meta_configs = meta.get("configurations")
+    for cfg in (meta_configs if isinstance(meta_configs, list) else []):
+        if not isinstance(cfg, dict):
+            continue
+        raw_default = cfg.get("default_value")
+        default = raw_default.get("value") if isinstance(raw_default, dict) else None
+        dests = cfg.get("destinations")
+        if not isinstance(dests, list):
+            continue
+        for dest in dests:
+            if not isinstance(dest, dict):
+                continue
+            why = _host_allowlist_problem(_app_of(rel_dir), dest.get("key"), default)
+            if why == "embedded":
+                errors.append(
+                    f"{rel_dir}: configuration {cfg.get('title')!r} embeds a host expression "
+                    f"inside a larger {dest.get('key')} entry. The entry has to BE the host; a "
+                    f"URL around it matches no Host header")
+            elif why == "unrecognised":
+                errors.append(
+                    f"{rel_dir}: configuration {cfg.get('title')!r} builds {dest.get('key')} "
+                    f"from a Jinja expression this validator does not recognise. Use the ported "
+                    f"host, the bare host ({{{{ instance_host }}}}), or plain literals. "
+                    f"{{{{ instance_url }}}} renders a scheme and cannot match a Host header")
+            elif why == "control-flow":
+                errors.append(
+                    f"{rel_dir}: configuration {cfg.get('title')!r} builds "
+                    f"{dest.get('key')} with Jinja control flow ({{% ... %}}). What it renders "
+                    f"cannot be decided by reading the template, so write the allowlist "
+                    f"without it")
+            elif why:
+                errors.append(
+                    f"{rel_dir}: configuration {cfg.get('title')!r} defaults "
+                    f"{dest.get('key')} to instance_url WITH its port and never the bare "
+                    f"host. The sidecar's `Host $host` drops the port, so the app rejects "
+                    f"every request on a ported URL. Add "
+                    f"{{{{ instance_url.split(\"://\")[1].split(\":\")[0] }}}} alongside it")
 
     # L4 per-port declarations (optional `ports` list). Mirrors the structural
     # checks in the manager's import_catalog._validate_meta (the importer is

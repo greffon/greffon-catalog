@@ -48,13 +48,53 @@ The greffer renders each catalog `docker-compose.yml` as a Jinja2 template at de
 |---------------------|------------------------------------------------------------|-------------------------------------------------------------|
 | `{{ instance_id }}` | Short UUID of this greffon instance (e.g. `e71c060d`)      | Per-instance keys, filenames                                |
 | `{{ instance_url }}` | Full public URL where browsers reach this instance (e.g. `https://abc.my.greffon.local`). | OAuth callback base, app-self-URL env vars, anywhere a full URL is needed. |
+| `{{ instance_host }}` | Host only, no scheme and **no port** (e.g. `abc.my.greffon.local`). | Anything matched against the `Host:` header the app receives, such as a trusted-domain or allowed-hosts list. |
+| `{{ instance_port }}` | The port, or empty when the URL uses the default. | Rarely needed on its own; prefer `instance_url`. |
 
-If a catalog template needs the host portion (or `host:port`) of the URL rather than the full URL, use Jinja string ops on `instance_url` at the call site rather than expecting a separate variable. The most common pattern:
+`instance_url` is the source of truth and the greffer's own guidance prefers deriving
+from it at the call site. `instance_host` and `instance_port` are parsed from it and
+are kept for the cases where a bare host is what the app wants. This table previously
+listed only the first two, while `add-greffon.md` and the baked-file render context
+both listed all four, so the same variable was documented as available in one place
+and absent in another.
+
+To take the host portion from `instance_url` directly, the common pattern is:
 
 ```jinja
-# Just the host[:port] part — what a browser sends in the `Host:` header.
+# The host[:port] part, for BUILDING a URL or a WebSocket origin.
 {{ instance_url.split('://')[1] }}
+
+# The bare host, for anything MATCHED AGAINST the Host header the app receives.
+{{ instance_url.split('://')[1].split(':')[0] }}
 ```
+
+**Pick by what consumes the value, not by what the browser sends.** The browser does
+send `host:port`, but the per-instance sidecar proxies with `proxy_set_header Host
+$host`, and nginx's `$host` carries no port. So an app validating an incoming Host
+sees the bare host, and a host allowlist built from the first form matches nothing
+and rejects every request, on any deployment whose URL has a port.
+
+| Setting | Form | Why |
+|---|---|---|
+| `DJANGO_ALLOWED_HOSTS`, `NEXTCLOUD_TRUSTED_DOMAINS` | bare host | compared against the Host the app receives |
+| `N8N_HOST`, `FORGEJO__server__DOMAIN` | `host[:port]` | used to generate URLs |
+| `COLLABORATION_WS_URL`, `LIVEKIT_API_URL` | full URL | they are URLs |
+
+Declaring both forms is fine and is the safest default for an allowlist, since it
+holds whichever arrives.
+
+CI checks this for a deliberately short list of settings it knows by name
+(`DJANGO_ALLOWED_HOSTS`, `NEXTCLOUD_TRUSTED_DOMAINS`), because how an allowlist is
+parsed is a property of the app, not something a rule can infer. Django splits on
+commas and treats a leading dot as a subdomain pattern; Nextcloud splits on any
+shell whitespace and has no such pattern. **Adding a new app's allowlist means
+adding one entry to `_HOST_ALLOWLISTS` in `validate_catalog.py`**, keyed by
+`(<app>, <ENV_KEY>)`. Only `split` is required; `trim`, `prefixes` and `wildcards`
+describe what else that app's parser does and each defaults to nothing when
+omitted.
+Until it is there, the setting is not checked, which is why the guidance above
+matters more than the check: three entries shipped the port-only form and rejected
+every request until it was found.
 
 This works whether the URL has an explicit port (`https://example.com:8443`) or uses the default (`https://abc.my.greffon.local`). The catalog stays declarative, with a single source-of-truth Jinja variable, and there's no cross-PR contract about pre-parsed pieces for a reviewer to track. The `_template/` reference compose has an example.
 

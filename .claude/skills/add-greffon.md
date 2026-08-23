@@ -68,7 +68,9 @@ Start from `_template/<version>/docker-compose.yml`. Apply the rules from [docs/
 - Strip every `container_name`.
 - Keep `ports:` lists — greffer reads, then strips them.
 - Convert anonymous volumes to named volumes; declare them at top level.
-- For env vars holding a public URL (callback bases, `*_BASE_URL`, `*_TRUSTED_DOMAINS`), substitute `{{ instance_url }}` or `{{ instance_host }}`.
+- For env vars holding a public URL (callback bases, `*_BASE_URL`), substitute `{{ instance_url }}`.
+- For host **allowlists** (`*_TRUSTED_DOMAINS`, `*_ALLOWED_HOSTS`, `*_TRUSTED_HOSTS`) do NOT use `{{ instance_url }}`: it renders a scheme and possibly a port, while the sidecar proxies with `Host $host` and the app compares a bare host, so the allowlist matches nothing and every request is rejected. Use `{{ instance_host }}` (the bare host), optionally alongside `{{ instance_url.split("://")[1] }}` if a ported form may also arrive. See the catalog `README.md` table.
+- **If you added a host allowlist, register it.** CI can only check settings it knows: add an entry to `_HOST_ALLOWLISTS` in `.github/scripts/validate_catalog.py` keyed by `(<app>, <ENV_KEY>)`. Only `split` is required; `trim`, `prefixes` and `wildcards` are optional and default to nothing. Without that line the rule does not run for your entry, and a port-only allowlist passes CI while rejecting every request at runtime. Three entries shipped exactly that way.
 - For SMTP-related env vars (`SMTP_*`, `MAIL_*`, `MAILER_*`), use the `{{ smtp.* }}` Jinja context. The `environment:` block on any service with SMTP must be **mapping form**, not list form. See the catalog `README.md` § "SMTP destinations" for shaping examples.
 - Do NOT use Jinja vars outside the allowed set: `instance_id`, `instance_url`, `instance_host`, `instance_port`, `smtp.*`.
 - **Hardcode operational defaults that aren't user knobs.** Vars with a single sensible value — `NODE_ENV=production`, `database__client=mysql`, fixed image flags, internal hostnames matching the service name (`DB_HOST=db`) — go in the compose `environment:` block as literal strings with NO matching configuration in `metadata.json`. A configuration is for things the user might reasonably want to change; everything else stays inline.
@@ -127,6 +129,12 @@ Write all three files to `<app-name>/<version>/`:
 - `docker-compose.yml`
 - `metadata.json`
 - `smoke_test.spec.ts`
+
+**Plus one file outside the entry, if it applies.** If the compose declares a host
+allowlist (Phase 3), add its `(<app>, <ENV_KEY>)` entry to `_HOST_ALLOWLISTS` in
+`.github/scripts/validate_catalog.py`. That rule matches on exact app and setting,
+so without the entry it does not run and a port-only allowlist passes CI while the
+app rejects every request.
 
 ### Phase 7: Validate (three passes)
 
