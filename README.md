@@ -132,8 +132,47 @@ Nginx-internal template vars like `{{ports[i].port_host}}` are reserved for the 
 | `json` | `volume`, `name`, *(opt)* `x-greffon-render` | Write JSON file into a named volume      |
 | `file` | `volume`, `name`, *(opt)* `x-greffon-render` | Write uploaded/baked file into a named volume |
 | `smtp` | `container`, `key`              | Mark an env key as SMTP-integration-managed (value comes from the operator's SMTP integration, not user input) |
+| `oidc` | `container`, `key`              | Mark an env key as OIDC-integration-managed (same, for the operator's OIDC provider) |
 
 The optional **`x-greffon-render: true`** on a `file`/`json` destination Jinja-renders the file contents at deploy time. See [Baked config files](#baked-config-files-visibility--render-time-templating).
+
+#### Integration-managed destinations (`smtp`, `oidc`)
+
+These two carry **no user value**. The operator configures the integration once
+on the Integrations page, and the greffer fills the env key from that blob at
+deploy time. Your `metadata.json` declares which env key is managed; the value
+never comes from the install form.
+
+The blob is also exposed to `docker-compose.yml` as a Jinja variable, so you can
+build a value out of several fields:
+
+| Variable | Fields available today |
+|----------|------------------------|
+| `{{ smtp.* }}` | `host`, `port`, `username`, `password`, `from_address`, `tls_mode` |
+| `{{ oidc.* }}` | `issuer` |
+
+`oidc` is issuer-only on purpose right now; per-instance client credentials
+arrive with the client-registration work and are not available yet. Do not
+write an entry that needs `oidc.client_id`.
+
+**When the operator has NOT linked an integration**, the greffer removes every
+env key that reads it, so the container starts without the variable rather than
+with an empty one. That matters: a half-interpolated `smtp://:@:` is worse than
+an absent `EMAIL_URL`, because the app parses it at boot.
+
+Two consequences for how you write the template:
+
+- A value that only *tests* the integration is kept, and renders its unset
+  branch. `{{ "true" if smtp.host else "false" }}` gives `false` with no
+  integration linked, which is usually what you want for an `*_ENABLED` flag.
+- A value that *reads* a field is removed entirely.
+  `{% if smtp %}{{ smtp.host }}{% else %}localhost{% endif %}` does **not** fall
+  back to `localhost` -- the whole key goes. Put the fallback in the image, or
+  in a separate non-integration config.
+
+`|default` behaves differently on the blob than on a field: the blob is defined
+but empty, so `{{ oidc|default('x') }}` renders `{}`, while
+`{{ oidc.issuer|default('x') }}` renders `x`.
 
 ### Port Exposure Tiers (L4)
 
