@@ -70,12 +70,17 @@ VALID_VISIBILITIES = {"visible", "advanced", "hidden"}
 
 # Integration namespaces a render-flagged `file` MUST NOT reference: an unset
 # integration renders to `{}` and the greffer's StrictUndefined file env would
-# hard-abort the deploy. This set MUST stay in sync with the greffer's
-# ``KNOWN_INTEGRATION_TYPES`` (greffer/apps/utils/docker/compose.py) — the two
-# repos are coupled. ``tests_validate_catalog.py`` asserts this exact value so a
-# greffer-side change can't silently drift the validator open. When a new
-# integration type is added to the greffer, add it here too.
-KNOWN_INTEGRATION_NAMESPACES = ("smtp",)
+# hard-abort the deploy.
+#
+# This tuple does NOT drive the check. `_RENDER_ALLOWED_BARE` does, and it is an
+# allowlist, so it already rejects `oidc` (and any other namespace) as an
+# unknown reference without being told the name. The tuple survives as a
+# TRIPWIRE: it MUST stay in sync with the greffer's ``KNOWN_INTEGRATION_TYPES``
+# (greffer/apps/utils/docker/compose.py), and ``tests_validate_catalog.py``
+# asserts this exact value, so adding a type on the greffer side forces a
+# deliberate, reviewed edit here rather than passing unnoticed. Adding a type
+# to it is a review prompt, not a behaviour change.
+KNOWN_INTEGRATION_NAMESPACES = ("smtp", "oidc")
 
 # dict built-ins a `config.<name>` scan would falsely flag.
 _CONFIG_DICT_BUILTINS = {

@@ -21,6 +21,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from validate_catalog import (
     KNOWN_INTEGRATION_NAMESPACES,
+    _render_block_problem,
     _value_references_smtp,
     validate_greffon_dir,
 )
@@ -1153,7 +1154,19 @@ class IntegrationNamespaceParityTest(unittest.TestCase):
     silently fail open for the new namespace."""
 
     def test_known_namespaces_pinned(self):
-        self.assertEqual(KNOWN_INTEGRATION_NAMESPACES, ("smtp",))
+        self.assertEqual(KNOWN_INTEGRATION_NAMESPACES, ("smtp", "oidc"))
+
+
+    def test_the_allowlist_is_what_actually_rejects_a_namespace(self):
+        # The tuple is a tripwire, not the enforcement: `_RENDER_ALLOWED_BARE`
+        # is an allowlist and refuses any unknown name without being told it.
+        # Pin that, so the comment on KNOWN_INTEGRATION_NAMESPACES cannot
+        # quietly become a lie -- every listed namespace must be refused in a
+        # render-flagged baked file, and refused BY NAME.
+        for ns in KNOWN_INTEGRATION_NAMESPACES:
+            problem = _render_block_problem("{{ %s.field }}" % ns)
+            self.assertIsNotNone(problem, ns)
+            self.assertIn(ns, problem)
 
 
 class OneShotStatusLabelTest(unittest.TestCase):
