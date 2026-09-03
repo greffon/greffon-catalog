@@ -1145,6 +1145,59 @@ class RenderFlagTest(unittest.TestCase):
         self.assertTrue(any("config.MISSING" in e for e in errs), errs)
 
 
+class OidcDestinationTypeTest(unittest.TestCase):
+    """An `oidc` destination must be declarable, like `smtp`.
+
+    The greffer's pass 1 pops env keys by `destination.type`, so without
+    this the oidc half of the feature had no way to be declared: an
+    author writing `type: oidc` was rejected by the validator, and the
+    type could only ever be reached through the template scan.
+    """
+
+    def _errors(self, dest):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [
+                {"name": "c", "type": "text", "destinations": [dest]}
+            ]
+            rel = _write_greffon(
+                tmp, metadata=md,
+                compose_yaml="services:\n  app:\n    image: nginx\n")
+            return validate_greffon_dir(tmp, rel)
+
+    def test_an_oidc_destination_is_accepted(self):
+        errs = self._errors(
+            {"type": "oidc", "container": "app", "key": "OIDC_ISSUER"})
+        self.assertFalse([e for e in errs if "invalid type" in e], errs)
+
+    def test_an_oidc_destination_must_target_a_real_service(self):
+        errs = self._errors(
+            {"type": "oidc", "container": "nope", "key": "OIDC_ISSUER"})
+        self.assertTrue(
+            any("not found in docker-compose.yml" in e for e in errs), errs)
+
+    def test_an_unknown_type_is_still_rejected(self):
+        errs = self._errors({"type": "ldap", "container": "app", "key": "K"})
+        self.assertTrue(any("invalid type" in e for e in errs), errs)
+
+    def test_oidc_does_not_feed_the_smtp_bidirectional_rule(self):
+        # Rule 5.3 cross-checks declared smtp destinations against
+        # `{{ smtp.* }}` env values. An oidc destination must not be
+        # counted there, or it would demand a matching smtp reference.
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [
+                    {"type": "oidc", "container": "app", "key": "OIDC_ISSUER"}],
+            }]
+            rel = _write_greffon(
+                tmp, metadata=md,
+                compose_yaml="services:\n  app:\n    image: nginx\n")
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertFalse([e for e in errs if "smtp" in e.lower()], errs)
+
+
 class IntegrationNamespaceParityTest(unittest.TestCase):
     """Tripwire: pin the validator's integration-namespace list. It is a copy of
     the greffer's KNOWN_INTEGRATION_TYPES (separate repo — this test can't import

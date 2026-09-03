@@ -190,12 +190,13 @@ REQUIRED_FILES = ["metadata.json", "docker-compose.yml", "smoke_test.spec.ts"]
 
 METADATA_REQUIRED_FIELDS = ["name", "description", "configurations"]
 
-VALID_DESTINATION_TYPES = {"env", "json", "file", "smtp"}
+VALID_DESTINATION_TYPES = {"env", "json", "file", "smtp", "oidc"}
 DESTINATION_REQUIRED_KEYS = {
     "env": {"type", "container", "key"},
     "json": {"type", "volume", "name"},
     "file": {"type", "volume", "name"},
     "smtp": {"type", "container", "key"},
+    "oidc": {"type", "container", "key"},
 }
 
 
@@ -1538,7 +1539,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 # --- Rule 5.2: smtp destinations must target a real service ---
                 # Also accumulate declared keys per service for the bidirectional
                 # match in Rule 5.3 below.
-                if dtype == "smtp":
+                if dtype in ("smtp", "oidc"):
                     container = dest.get("container", "")
                     key = dest.get("key", "")
                     if container and compose_services and container not in compose_services:
@@ -1547,7 +1548,10 @@ def validate_greffon_dir(catalog_root, rel_dir):
                             f"not found in docker-compose.yml services: "
                             f"{sorted(compose_services)}"
                         )
-                    if container and key:
+                    # Only smtp feeds the bidirectional match in Rule 5.3;
+                    # that rule cross-checks against `{{ smtp.* }}` env
+                    # values and knows nothing about oidc.
+                    if dtype == "smtp" and container and key:
                         metadata_smtp_keys.setdefault(container, set()).add(key)
 
             # --- Per-config rules that need all destinations + schema in scope ---
