@@ -1145,6 +1145,60 @@ class RenderFlagTest(unittest.TestCase):
         self.assertTrue(any("config.MISSING" in e for e in errs), errs)
 
 
+class OidcBidirectionalKeyMatchTest(unittest.TestCase):
+    """Rule 5.3, for oidc as well as smtp.
+
+    The rule was smtp-only, so an `oidc` destination naming a mistyped or
+    absent env key passed validation -- the destination is only the
+    marker for a value rendered from `oidc.*`, and nothing checked the
+    two agreed. The entry would ship and the app would never receive its
+    issuer.
+    """
+
+    DEST = {"type": "oidc", "container": "app", "key": "OIDC_ISSUER"}
+
+    def _errors(self, compose_env, dest=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [dest] if dest else [],
+            }]
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n" + compose_env)
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            return validate_greffon_dir(tmp, rel)
+
+    def test_a_matching_pair_is_accepted(self):
+        errs = self._errors("      OIDC_ISSUER: '{{ oidc.issuer }}'\n", self.DEST)
+        self.assertFalse([e for e in errs if "oidc" in e.lower()], errs)
+
+    def test_a_mistyped_compose_key_is_caught(self):
+        errs = self._errors("      OIDC_ISUER: '{{ oidc.issuer }}'\n", self.DEST)
+        self.assertTrue(any("not present in docker-compose" in e for e in errs), errs)
+
+    def test_a_value_that_does_not_reference_oidc_is_caught(self):
+        errs = self._errors("      OIDC_ISSUER: 'literal'\n", self.DEST)
+        self.assertTrue(
+            any("does not reference the 'oidc' Jinja context" in e for e in errs),
+            errs)
+
+    def test_a_reference_with_no_destination_is_caught(self):
+        errs = self._errors("      OIDC_ISSUER: '{{ oidc.issuer }}'\n", None)
+        self.assertTrue(
+            any("has no oidc destination for it" in e for e in errs), errs)
+
+    def test_the_smtp_rule_is_unaffected(self):
+        errs = self._errors("      SMTP_HOST: '{{ smtp.host }}'\n", None)
+        self.assertTrue(
+            any("has no smtp destination for it" in e for e in errs), errs)
+
+    def test_a_greffon_using_neither_is_untouched(self):
+        errs = self._errors("      PLAIN: 'x'\n", None)
+        self.assertFalse(
+            [e for e in errs if "smtp" in e.lower() or "oidc" in e.lower()], errs)
+
+
 class OidcDestinationTypeTest(unittest.TestCase):
     """An `oidc` destination must be declarable, like `smtp`.
 

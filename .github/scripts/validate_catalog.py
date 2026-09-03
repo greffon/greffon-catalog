@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import functools
 import re
 import shlex
 import sys
@@ -44,9 +45,15 @@ RESERVED_TLDS = {"local", "localhost", "test", "example", "invalid", "internal"}
 # start of `}}`, so dict literals inside the expression (e.g. Nextcloud's
 # `{{ {'tls': 'ssl', ...}[smtp.tls_mode] }}`) are admitted while the match
 # still can't cross an expression boundary.
-_SMTP_JINJA_RE = re.compile(
-    r"\{\{(?:(?!\}\}).)*?\bsmtp\.[a-z_][a-z0-9_]*(?:(?!\}\}).)*?\}\}"
-)
+@functools.lru_cache(maxsize=None)
+def _integration_jinja_re(namespace):
+    return re.compile(
+        r"\{\{(?:(?!\}\}).)*?\b" + namespace
+        + r"\.[a-z_][a-z0-9_]*(?:(?!\}\}).)*?\}\}"
+    )
+
+
+_SMTP_JINJA_RE = _integration_jinja_re("smtp")
 
 
 def _value_references_smtp(value) -> bool:
@@ -61,7 +68,21 @@ def _value_references_smtp(value) -> bool:
     case-sensitive; `{{ SMTP.host }}` would render undefined, so the
     validator rejects it.
     """
-    return isinstance(value, str) and bool(_SMTP_JINJA_RE.search(value))
+    return _value_references_integration(value, "smtp")
+
+
+def _value_references_integration(value, namespace) -> bool:
+    """`_value_references_smtp`, for any known integration namespace.
+
+    Rule 5.3 was smtp-only, so an `oidc` destination naming a mistyped
+    or absent env key passed validation: the destination is only the
+    marker for a value rendered from `oidc.*`, and nothing checked that
+    the two agreed. The app would then never receive its issuer.
+    """
+    if namespace not in KNOWN_INTEGRATION_NAMESPACES:
+        return False
+    return isinstance(value, str) and bool(
+        _integration_jinja_re(namespace).search(value))
 
 
 # --- baked-config-files feature ----------------------------------------------
@@ -1393,7 +1414,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
 
     # Accumulators for the bidirectional SMTP metadata-to-compose match (Rule 5.3).
     # Keyed by service name; values are sets of env keys.
-    metadata_smtp_keys: dict = {}
+    metadata_integration_keys: dict = {ns: {} for ns in KNOWN_INTEGRATION_NAMESPACES}
     # baked-config-files: every env-destination key across the greffon (for the
     # `{{ config.X }}` bidirectional check), and the decoded text of each
     # render-flagged file (checked after all env keys are known).
@@ -1548,11 +1569,11 @@ def validate_greffon_dir(catalog_root, rel_dir):
                             f"not found in docker-compose.yml services: "
                             f"{sorted(compose_services)}"
                         )
-                    # Only smtp feeds the bidirectional match in Rule 5.3;
-                    # that rule cross-checks against `{{ smtp.* }}` env
-                    # values and knows nothing about oidc.
-                    if dtype == "smtp" and container and key:
-                        metadata_smtp_keys.setdefault(container, set()).add(key)
+                    # Rule 5.3 runs per namespace, so each type only ever
+                    # cross-checks against its own `{{ <ns>.* }}` values.
+                    if container and key:
+                        metadata_integration_keys[dtype].setdefault(
+                            container, set()).add(key)
 
             # --- Per-config rules that need all destinations + schema in scope ---
             schema_required_set = set(schema_required)
@@ -1717,79 +1738,85 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # block is list-form (["KEY=value", ...]), we cannot cleanly inspect the
     # value — error and require mapping form.
     #
-    # Rule 5.5: non-SMTP greffons are untouched. Every check below is gated on
-    # "at least one smtp destination OR at least one `{{ smtp.* }}` env value"
-    # so existing catalog entries pass unchanged.
-    compose_smtp_env_keys: dict = {}
-    list_form_smtp_services: set = set()
-    if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
-        for svc_name, svc_def in compose["services"].items():
-            if not isinstance(svc_def, dict):
-                continue
-            env = svc_def.get("environment")
-            if isinstance(env, dict):
-                for k, v in env.items():
-                    if _value_references_smtp(v):
-                        compose_smtp_env_keys.setdefault(svc_name, set()).add(k)
-            elif isinstance(env, list):
-                # List form: KEY=value strings. If the service has any smtp
-                # destination on the metadata side, flag it — we require
-                # mapping form for SMTP-aware services (Rule 5.4). Also scan
-                # list entries for an obvious `{{ smtp.` reference so a
-                # maintainer who wrote list-form Jinja still trips Rule 5.3.
-                for entry in env:
-                    if _value_references_smtp(entry):
-                        # Best-effort key extraction for Rule 5.3 parity;
-                        # the Rule 5.4 error below is the real fix.
-                        if isinstance(entry, str) and "=" in entry:
-                            key = entry.split("=", 1)[0].strip()
-                            compose_smtp_env_keys.setdefault(svc_name, set()).add(key)
-                if svc_name in metadata_smtp_keys:
-                    list_form_smtp_services.add(svc_name)
+    # Rules 5.3/5.4/5.5, once per known integration namespace. They were
+    # smtp-only, so an `oidc` destination naming a mistyped or absent env
+    # key passed validation while the app never received its issuer.
+    #
+    # Rule 5.5 still holds: every check is gated on "at least one
+    # destination of this type OR at least one `{{ <ns>.* }}` env value",
+    # so a greffon that uses neither is untouched.
+    for ns in sorted(KNOWN_INTEGRATION_NAMESPACES):
+        label = ns.upper()
+        metadata_keys = metadata_integration_keys.get(ns, {})
+        compose_env_keys: dict = {}
+        list_form_services: set = set()
+        if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
+            for svc_name, svc_def in compose["services"].items():
+                if not isinstance(svc_def, dict):
+                    continue
+                env = svc_def.get("environment")
+                if isinstance(env, dict):
+                    for k, v in env.items():
+                        if _value_references_integration(v, ns):
+                            compose_env_keys.setdefault(svc_name, set()).add(k)
+                elif isinstance(env, list):
+                    # List form: KEY=value strings. If the service has any
+                    # destination of this type on the metadata side, flag it --
+                    # mapping form is required so the Jinja values can be
+                    # validated (Rule 5.4). Also scan list entries for an
+                    # obvious reference so a maintainer who wrote list-form
+                    # Jinja still trips Rule 5.3.
+                    for entry in env:
+                        if _value_references_integration(entry, ns):
+                            if isinstance(entry, str) and "=" in entry:
+                                key = entry.split("=", 1)[0].strip()
+                                compose_env_keys.setdefault(svc_name, set()).add(key)
+                    if svc_name in metadata_keys:
+                        list_form_services.add(svc_name)
 
-    for svc_name in sorted(list_form_smtp_services):
-        errors.append(
-            f"{rel_dir}: service '{svc_name}' has smtp destination(s) but its "
-            "'environment' is list-form; convert to mapping form "
-            "(KEY: value) so SMTP Jinja values can be validated"
-        )
-
-    # Bidirectional match (Rule 5.3).
-    affected_services = set(metadata_smtp_keys) | set(compose_smtp_env_keys)
-    for svc in sorted(affected_services):
-        meta_keys = metadata_smtp_keys.get(svc, set())
-        compose_keys = compose_smtp_env_keys.get(svc, set())
-
-        compose_env = {}
-        _services = compose.get("services") if isinstance(compose, dict) else None
-        if isinstance(_services, dict):
-            svc_def = _services.get(svc)
-            if isinstance(svc_def, dict) and isinstance(svc_def.get("environment"), dict):
-                compose_env = svc_def["environment"]
-
-        for key in sorted(meta_keys - compose_keys):
-            if key in compose_env:
-                # Key is present in compose but its value doesn't reference smtp.*
-                errors.append(
-                    f"{rel_dir}: metadata.json declares SMTP env key '{key}' for "
-                    f"service '{svc}' but its compose value does not reference the "
-                    f"'smtp' Jinja context (got: '{compose_env[key]}'). "
-                    "SMTP-managed keys must render from 'smtp.*'"
-                )
-            else:
-                errors.append(
-                    f"{rel_dir}: metadata.json declares SMTP env key '{key}' for "
-                    f"service '{svc}' but it is not present in docker-compose.yml's "
-                    f"environment for that service"
-                )
-
-        for key in sorted(compose_keys - meta_keys):
+        for svc_name in sorted(list_form_services):
             errors.append(
-                f"{rel_dir}: docker-compose.yml env '{key}' on service '{svc}' "
-                "references the smtp Jinja context but metadata.json has no smtp "
-                f"destination for it. Add a destination of type 'smtp' with "
-                f"container='{svc}' key='{key}', or remove the Jinja reference"
+                f"{rel_dir}: service '{svc_name}' has {ns} destination(s) but its "
+                "'environment' is list-form; convert to mapping form "
+                f"(KEY: value) so {label} Jinja values can be validated"
             )
+
+        for svc in sorted(set(metadata_keys) | set(compose_env_keys)):
+            meta_keys = metadata_keys.get(svc, set())
+            compose_keys = compose_env_keys.get(svc, set())
+
+            compose_env = {}
+            _services = compose.get("services") if isinstance(compose, dict) else None
+            if isinstance(_services, dict):
+                svc_def = _services.get(svc)
+                if isinstance(svc_def, dict) and isinstance(
+                        svc_def.get("environment"), dict):
+                    compose_env = svc_def["environment"]
+
+            for key in sorted(meta_keys - compose_keys):
+                if key in compose_env:
+                    errors.append(
+                        f"{rel_dir}: metadata.json declares {label} env key "
+                        f"'{key}' for service '{svc}' but its compose value does "
+                        f"not reference the '{ns}' Jinja context "
+                        f"(got: '{compose_env[key]}'). {label}-managed keys must "
+                        f"render from '{ns}.*'"
+                    )
+                else:
+                    errors.append(
+                        f"{rel_dir}: metadata.json declares {label} env key "
+                        f"'{key}' for service '{svc}' but it is not present in "
+                        "docker-compose.yml's environment for that service"
+                    )
+
+            for key in sorted(compose_keys - meta_keys):
+                errors.append(
+                    f"{rel_dir}: docker-compose.yml env '{key}' on service "
+                    f"'{svc}' references the {ns} Jinja context but metadata.json "
+                    f"has no {ns} destination for it. Add a destination of type "
+                    f"'{ns}' with container='{svc}' key='{key}', or remove the "
+                    "Jinja reference"
+                )
 
     # Smoke test (separate file, optional but validated if present)
     smoke_path = os.path.join(abs_dir, "smoke_test.json")
