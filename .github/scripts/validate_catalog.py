@@ -52,6 +52,24 @@ _INTEGRATION_FIELDS = {"oidc": {"issuer"}}
 # whitespace around the dot (`oidc . client_id`) -- and each one closed
 # a form the next review replaced with another. The grammar already
 # knows every form, so ask it.
+# Nodes that bind the namespace to another name. `Assign` is `{% set %}`;
+# `With` and `For` bind too, and each was a separate way past the scan.
+_ALIAS_BINDING_NODES = (
+    jinja2.nodes.Assign,
+    jinja2.nodes.AssignBlock,
+    jinja2.nodes.With,
+    jinja2.nodes.For,
+)
+
+
+def _reads_anywhere(node, namespace):
+    """Does this subtree mention the namespace at all?"""
+    if isinstance(node, jinja2.nodes.Name):
+        return node.name == namespace
+    return any(_reads_anywhere(child, namespace)
+               for child in node.iter_child_nodes())
+
+
 def _integration_field_refs(value, namespace):
     """Field names `value` reads from `<namespace>`, per Jinja's parser.
 
@@ -70,20 +88,34 @@ def _integration_field_refs(value, namespace):
         return set()
 
     def _reads(node):
-        # The receiver need not BE the name: `dict(oidc)['client_id']`
-        # wraps it in a call, and the field is read all the same. Any
-        # receiver expression that mentions the namespace counts.
-        # `find_all` yields descendants only, so test the node itself.
+        """Does this expression still evaluate to the namespace MAPPING?
+
+        Only the first access off the mapping names a field. Anything
+        applied to the RESULT is an operation on the field's value:
+        `{{ oidc.issuer.rstrip('/') }}` reads `issuer` and then calls a
+        string method, and reporting `rstrip` as a field rejected valid
+        entries -- the catalog already does exactly this with
+        `smtp.from_address.split('@')` in nextcloud.
+
+        A wrapper keeps the mapping, though: `dict(oidc)['client_id']`
+        reads a field through a call, so anything that is not itself a
+        field access is followed into its children.
+        """
         if isinstance(node, jinja2.nodes.Name):
             return node.name == namespace
-        return any(n.name == namespace
-                   for n in node.find_all(jinja2.nodes.Name))
+        if isinstance(node, (jinja2.nodes.Getattr, jinja2.nodes.Getitem)):
+            return False
+        if isinstance(node, jinja2.nodes.Filter) and node.name == "attr":
+            return False
+        return any(_reads(child) for child in node.iter_child_nodes())
 
     fields = set()
-    for node in tree.find_all(jinja2.nodes.Assign):
-        # `{% set x = oidc %}` moves the reads onto a name this scan
-        # does not follow. Refuse rather than pretend to have read it.
-        if _reads(node.node):
+    for node in tree.find_all(_ALIAS_BINDING_NODES):
+        # `{% set x = oidc %}` / `{% with x = oidc %}` / `{% for x in
+        # [oidc] %}` move the reads onto a name this scan does not
+        # follow. Refuse rather than pretend to have read them.
+        if any(_reads_anywhere(child, namespace)
+               for child in node.iter_child_nodes()):
             fields.add("<dynamic>")
     for node in tree.find_all(jinja2.nodes.Getattr):
         if _reads(node.node):

@@ -1204,6 +1204,24 @@ class OidcSupportedFieldsTest(unittest.TestCase):
         self.assertTrue(self._errors(
             "{{ oidc.issuer }}{% if oidc . client_id %}:enabled{% endif %}"))
 
+    def test_operations_on_the_field_value_are_not_fields(self):
+        # Only the FIRST access off the mapping names a field. A string
+        # method applied to the result is an operation on the issuer,
+        # and reporting it rejected valid entries -- the catalog already
+        # does this with `smtp.from_address.split('@')` in nextcloud.
+        for value in ("{{ oidc.issuer.rstrip('/') }}",
+                      "{{ oidc.issuer.split('://')[1] }}"):
+            with self.subTest(value=value):
+                self.assertFalse(self._errors(value))
+
+    def test_a_with_block_alias_is_refused(self):
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{% with x=oidc %}{{ x.client_id }}{% endwith %}"))
+
+    def test_a_loop_alias_is_refused(self):
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{% for x in [oidc] %}{{ x.client_id }}{% endfor %}"))
+
     def test_a_lookup_through_a_wrapper_is_still_a_field_read(self):
         # The receiver need not BE the name: `dict(oidc)['client_id']`
         # wraps it in a call and reads the field all the same.
