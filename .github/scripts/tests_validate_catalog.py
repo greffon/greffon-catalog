@@ -1198,6 +1198,17 @@ class OidcSupportedFieldsTest(unittest.TestCase):
         self.assertTrue(
             self._errors("{{ oidc.issuer }}{{ oidc|attr(\"client_id\") }}"))
 
+    def test_a_field_read_in_a_statement_block_counts(self):
+        # A compose value can read a field in `{% ... %}` too. Scanning
+        # expressions alone reported only `issuer` here, so the
+        # unsupported lookup passed.
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{% if oidc.client_id %}:enabled{% endif %}"))
+
+    def test_a_supported_field_read_in_a_statement_block_is_accepted(self):
+        self.assertFalse(self._errors(
+            "{{ oidc.issuer }}{% if oidc.issuer %}:enabled{% endif %}"))
+
     def test_a_supported_field_read_by_bracket_is_accepted(self):
         self.assertFalse(
             self._errors("{{ oidc.issuer }}:{{ oidc[\"issuer\"] }}"))
@@ -1277,6 +1288,16 @@ class OidcBidirectionalKeyMatchTest(unittest.TestCase):
                     "      OIDC_ISSUER: '" + value + "'\n", self.DEST)
                 self.assertFalse(
                     [e for e in errs if "oidc" in e.lower()], errs)
+
+    def test_a_name_inside_a_string_literal_is_not_a_reference(self):
+        # `{{ "oidc.issuer" }}` renders the literal text, so the app
+        # gets `oidc.issuer` where the issuer URL belongs. Counting it
+        # as a read let the destination look satisfied.
+        errs = self._errors(
+            "      OIDC_ISSUER: '{{ \"oidc.issuer\" }}'\n", self.DEST)
+        self.assertTrue(
+            any("does not reference the 'oidc' Jinja context" in e
+                for e in errs), errs)
 
     def test_a_bracket_only_reference_with_no_destination_is_caught(self):
         # Without this it slipped past BOTH checks: no dotted match here,

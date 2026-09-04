@@ -85,12 +85,21 @@ def _subscript_ref_re(namespace):
     )
 
 
-# A Jinja expression block, and the string literals inside one. Field names
-# are read from blocks with literals removed: in
+# A Jinja block -- expression OR statement -- and the string literals
+# inside one. Field names are read from blocks with literals removed: in
 # `{{ oidc.issuer | default('https://oidc.client_id') }}` the hostname is
 # data, not a context lookup, and scanning the raw scalar would reject a
 # valid issuer-only value.
-_JINJA_BLOCK_RE = re.compile(r"\{\{.*?\}\}", re.S)
+#
+# `{% ... %}` counts. A compose value can read a field in a statement --
+# `{{ oidc.issuer }}{% if oidc.client_id %}:enabled{% endif %}` -- and
+# scanning expressions alone reported only `issuer`, so the unsupported
+# lookup passed.
+#
+# NOT named `_JINJA_BLOCK_RE`: this module already binds that name below,
+# to a capturing variant the render-flagged-file checks use. Two
+# definitions of one name meant the later won and this one was dead.
+_INTEGRATION_BLOCK_RE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
 _STRING_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
 
 
@@ -101,7 +110,7 @@ def _integration_field_refs(value, namespace):
     dotted = _field_ref_re(namespace)
     subscript = _subscript_ref_re(namespace)
     fields = set()
-    for block in _JINJA_BLOCK_RE.findall(value):
+    for block in _INTEGRATION_BLOCK_RE.findall(value):
         # Subscript first: its field name IS a string literal, so it has
         # to be read before the literals are stripped for the dotted scan.
         fields.update(name for _quote, name in subscript.findall(block))
@@ -138,13 +147,18 @@ def _value_references_integration(value, namespace) -> bool:
     against its own destination, and, with no destination declared,
     `{{ oidc["client_id"] }}` skipped both this check and the
     supported-field one that runs behind it.
+
+    `_integration_field_refs` is the whole answer, not one half of an
+    `or`. The raw regex counted a name inside a STRING literal as a
+    read, so `{{ "oidc.issuer" }}` satisfied its destination while
+    Jinja renders the literal text and the app gets `oidc.issuer` where
+    the issuer URL belongs.
     """
     if namespace not in KNOWN_INTEGRATION_NAMESPACES:
         return False
     if not isinstance(value, str):
         return False
-    return bool(_integration_jinja_re(namespace).search(value)
-                or _integration_field_refs(value, namespace))
+    return bool(_integration_field_refs(value, namespace))
 
 
 # --- baked-config-files feature ----------------------------------------------
