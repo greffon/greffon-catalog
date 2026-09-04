@@ -160,15 +160,20 @@ env key that reads it, so the container starts without the variable rather than
 with an empty one. That matters: a half-interpolated `smtp://:@:` is worse than
 an absent `EMAIL_URL`, because the app parses it at boot.
 
-Two consequences for how you write the template:
+**Do not rely on the unset branch rendering.** A key you declare a destination
+for may be removed outright, whatever its value: the greffer strips
+metadata-declared keys by destination, before it looks at the template at
+all. So `{% if smtp %}{{ smtp.host }}{% else %}localhost{% endif %}` is not a
+way to get `localhost` -- the whole key can go. Put a fallback in the image,
+or in a separate non-integration config.
 
-- A value that only *tests* the integration is kept, and renders its unset
-  branch. `{{ "true" if smtp.host else "false" }}` gives `false` with no
-  integration linked, which is usually what you want for an `*_ENABLED` flag.
-- A value that *reads* a field is removed entirely.
-  `{% if smtp %}{{ smtp.host }}{% else %}localhost{% endif %}` does **not** fall
-  back to `localhost` -- the whole key goes. Put the fallback in the image, or
-  in a separate non-integration config.
+Several shipping entries do use a test-only value for an `*_ENABLED` flag
+(`{{ "true" if smtp.host else "false" }}`), and it does currently survive and
+render `false`. That works because the manager materialises no config row for
+an empty-schema integration config, so there is nothing for the
+destination-driven strip to act on. It is a consequence of two components'
+current behaviour rather than a contract, so treat a rendered fallback as a
+bonus, not something to design around.
 
 `|default` behaves differently on the blob than on a field: the blob is defined
 but empty, so `{{ oidc|default('x') }}` renders `{}`, while

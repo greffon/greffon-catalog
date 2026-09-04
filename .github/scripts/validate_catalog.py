@@ -55,6 +55,19 @@ def _integration_jinja_re(namespace):
 
 _SMTP_JINJA_RE = _integration_jinja_re("smtp")
 
+# Fields the greffer can actually supply, per namespace. `oidc` is
+# issuer-only today -- per-instance client credentials do not exist yet --
+# so `{{ oidc.client_id }}` or a typo like `{{ oidc.isssuer }}` renders
+# empty at deploy while satisfying the shape check below. `smtp` is
+# deliberately absent: its field set is long-established and enforcing it
+# here would reject shipping entries for no new safety.
+_INTEGRATION_FIELDS = {"oidc": {"issuer"}}
+
+
+@functools.lru_cache(maxsize=None)
+def _field_ref_re(namespace):
+    return re.compile(r"\b" + namespace + r"\.([a-z_][a-z0-9_]*)")
+
 
 def _value_references_smtp(value) -> bool:
     """Returns True iff the compose value contains a `{{ smtp.<field> }}`
@@ -1759,6 +1772,17 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     for k, v in env.items():
                         if _value_references_integration(v, ns):
                             compose_env_keys.setdefault(svc_name, set()).add(k)
+                            for field in sorted(set(
+                                    _field_ref_re(ns).findall(v))):
+                                supported = _INTEGRATION_FIELDS.get(ns)
+                                if supported and field not in supported:
+                                    errors.append(
+                                        f"{rel_dir}: docker-compose.yml env "
+                                        f"'{k}' on service '{svc_name}' reads "
+                                        f"'{ns}.{field}', which the greffer does "
+                                        f"not supply. {ns} provides only: "
+                                        f"{sorted(supported)}"
+                                    )
                 elif isinstance(env, list):
                     # List form: KEY=value strings. If the service has any
                     # destination of this type on the metadata side, flag it --

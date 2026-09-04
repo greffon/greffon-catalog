@@ -1145,6 +1145,55 @@ class RenderFlagTest(unittest.TestCase):
         self.assertTrue(any("config.MISSING" in e for e in errs), errs)
 
 
+class OidcSupportedFieldsTest(unittest.TestCase):
+    """`oidc` supplies only `issuer` today.
+
+    The shape matcher accepts any syntactically valid field, so
+    `{{ oidc.client_id }}` -- which does not exist yet -- and a typo like
+    `{{ oidc.isssuer }}` both satisfied the bidirectional check while
+    rendering empty at deploy.
+    """
+
+    def _errors(self, value):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [
+                    {"type": "oidc", "container": "app", "key": "K"}],
+            }]
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: '" + value + "'\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            return [e for e in validate_greffon_dir(tmp, rel)
+                    if "does not supply" in e]
+
+    def test_the_supported_field_is_accepted(self):
+        self.assertFalse(self._errors("{{ oidc.issuer }}"))
+
+    def test_a_field_that_does_not_exist_yet_is_rejected(self):
+        self.assertTrue(self._errors("{{ oidc.client_id }}"))
+
+    def test_a_typo_is_rejected(self):
+        self.assertTrue(self._errors("{{ oidc.isssuer }}"))
+
+    def test_smtp_is_not_field_checked(self):
+        # Its field set is long-established; enforcing it here would
+        # reject shipping entries for no new safety.
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [
+                    {"type": "smtp", "container": "app", "key": "K"}],
+            }]
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: '{{ smtp.anything }}'\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            self.assertFalse([e for e in validate_greffon_dir(tmp, rel)
+                              if "does not supply" in e])
+
+
 class OidcBidirectionalKeyMatchTest(unittest.TestCase):
     """Rule 5.3, for oidc as well as smtp.
 
