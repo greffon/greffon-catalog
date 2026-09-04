@@ -69,6 +69,22 @@ def _field_ref_re(namespace):
     return re.compile(r"\b" + namespace + r"\.([a-z_][a-z0-9_]*)")
 
 
+@functools.lru_cache(maxsize=None)
+def _subscript_ref_re(namespace):
+    """`oidc['client_id']`, `oidc["x"]` and `oidc|attr('x')`.
+
+    Jinja reads a field three ways, and the dotted form is only the most
+    common one. A value mixing them -- `{{ oidc.issuer }}:{{
+    oidc['client_id'] }}` -- passed the supported-field scan on its
+    dotted half while the bracket half read a field the greffer does
+    not supply.
+    """
+    return re.compile(
+        r"\b" + namespace + r"(?:\s*\[\s*|\s*\|\s*attr\(\s*)"
+        r"(['\"])([a-z_][a-z0-9_]*)\1"
+    )
+
+
 # A Jinja expression block, and the string literals inside one. Field names
 # are read from blocks with literals removed: in
 # `{{ oidc.issuer | default('https://oidc.client_id') }}` the hostname is
@@ -82,10 +98,14 @@ def _integration_field_refs(value, namespace):
     """Field names read from `<namespace>.<field>` inside Jinja blocks only."""
     if not isinstance(value, str):
         return set()
-    pattern = _field_ref_re(namespace)
+    dotted = _field_ref_re(namespace)
+    subscript = _subscript_ref_re(namespace)
     fields = set()
     for block in _JINJA_BLOCK_RE.findall(value):
-        fields.update(pattern.findall(_STRING_LITERAL_RE.sub("", block)))
+        # Subscript first: its field name IS a string literal, so it has
+        # to be read before the literals are stripped for the dotted scan.
+        fields.update(name for _quote, name in subscript.findall(block))
+        fields.update(dotted.findall(_STRING_LITERAL_RE.sub("", block)))
     return fields
 
 

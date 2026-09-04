@@ -1186,6 +1186,22 @@ class OidcSupportedFieldsTest(unittest.TestCase):
     def test_a_field_name_outside_a_jinja_block_is_data_not_a_lookup(self):
         self.assertFalse(self._errors("{{ oidc.issuer }}#oidc.client_id"))
 
+    def test_a_bracket_lookup_is_a_field_read_too(self):
+        # Jinja reads a field three ways. Scanning only the dotted form
+        # let `{{ oidc.issuer }}:{{ oidc['client_id'] }}` through: the
+        # dotted half marked the value OIDC-managed while the bracket
+        # half read a field the greffer does not supply.
+        self.assertTrue(
+            self._errors("{{ oidc.issuer }}:{{ oidc[\"client_id\"] }}"))
+
+    def test_an_attr_lookup_is_a_field_read_too(self):
+        self.assertTrue(
+            self._errors("{{ oidc.issuer }}{{ oidc|attr(\"client_id\") }}"))
+
+    def test_a_supported_field_read_by_bracket_is_accepted(self):
+        self.assertFalse(
+            self._errors("{{ oidc.issuer }}:{{ oidc[\"issuer\"] }}"))
+
     def test_smtp_is_not_field_checked(self):
         # Its field set is long-established; enforcing it here would
         # reject shipping entries for no new safety.
