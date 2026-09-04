@@ -1177,6 +1177,15 @@ class OidcSupportedFieldsTest(unittest.TestCase):
     def test_a_typo_is_rejected(self):
         self.assertTrue(self._errors("{{ oidc.isssuer }}"))
 
+    def test_a_field_name_inside_a_string_literal_is_data_not_a_lookup(self):
+        # `default("https://oidc.client_id")` is a hostname, not a context
+        # read. Scanning the raw scalar rejected this valid issuer-only value.
+        self.assertFalse(
+            self._errors('{{ oidc.issuer | default("https://oidc.client_id") }}'))
+
+    def test_a_field_name_outside_a_jinja_block_is_data_not_a_lookup(self):
+        self.assertFalse(self._errors("{{ oidc.issuer }}#oidc.client_id"))
+
     def test_smtp_is_not_field_checked(self):
         # Its field set is long-established; enforcing it here would
         # reject shipping entries for no new safety.

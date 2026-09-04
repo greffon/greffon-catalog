@@ -69,6 +69,26 @@ def _field_ref_re(namespace):
     return re.compile(r"\b" + namespace + r"\.([a-z_][a-z0-9_]*)")
 
 
+# A Jinja expression block, and the string literals inside one. Field names
+# are read from blocks with literals removed: in
+# `{{ oidc.issuer | default('https://oidc.client_id') }}` the hostname is
+# data, not a context lookup, and scanning the raw scalar would reject a
+# valid issuer-only value.
+_JINJA_BLOCK_RE = re.compile(r"\{\{.*?\}\}", re.S)
+_STRING_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _integration_field_refs(value, namespace):
+    """Field names read from `<namespace>.<field>` inside Jinja blocks only."""
+    if not isinstance(value, str):
+        return set()
+    pattern = _field_ref_re(namespace)
+    fields = set()
+    for block in _JINJA_BLOCK_RE.findall(value):
+        fields.update(pattern.findall(_STRING_LITERAL_RE.sub("", block)))
+    return fields
+
+
 def _value_references_smtp(value) -> bool:
     """Returns True iff the compose value contains a `{{ smtp.<field> }}`
     Jinja expression that reads from the SMTP integration context.
@@ -1772,8 +1792,8 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     for k, v in env.items():
                         if _value_references_integration(v, ns):
                             compose_env_keys.setdefault(svc_name, set()).add(k)
-                            for field in sorted(set(
-                                    _field_ref_re(ns).findall(v))):
+                            for field in sorted(
+                                    _integration_field_refs(v, ns)):
                                 supported = _INTEGRATION_FIELDS.get(ns)
                                 if supported and field not in supported:
                                     errors.append(
