@@ -70,9 +70,21 @@ def _integration_field_refs(value, namespace):
         return set()
 
     def _reads(node):
-        return isinstance(node, jinja2.nodes.Name) and node.name == namespace
+        # The receiver need not BE the name: `dict(oidc)['client_id']`
+        # wraps it in a call, and the field is read all the same. Any
+        # receiver expression that mentions the namespace counts.
+        # `find_all` yields descendants only, so test the node itself.
+        if isinstance(node, jinja2.nodes.Name):
+            return node.name == namespace
+        return any(n.name == namespace
+                   for n in node.find_all(jinja2.nodes.Name))
 
     fields = set()
+    for node in tree.find_all(jinja2.nodes.Assign):
+        # `{% set x = oidc %}` moves the reads onto a name this scan
+        # does not follow. Refuse rather than pretend to have read it.
+        if _reads(node.node):
+            fields.add("<dynamic>")
     for node in tree.find_all(jinja2.nodes.Getattr):
         if _reads(node.node):
             fields.add(node.attr)

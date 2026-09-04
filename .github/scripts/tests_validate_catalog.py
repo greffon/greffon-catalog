@@ -1204,6 +1204,18 @@ class OidcSupportedFieldsTest(unittest.TestCase):
         self.assertTrue(self._errors(
             "{{ oidc.issuer }}{% if oidc . client_id %}:enabled{% endif %}"))
 
+    def test_a_lookup_through_a_wrapper_is_still_a_field_read(self):
+        # The receiver need not BE the name: `dict(oidc)['client_id']`
+        # wraps it in a call and reads the field all the same.
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{{ dict(oidc)[\"client_id\"] }}"))
+
+    def test_aliasing_the_namespace_is_refused(self):
+        # `{% set x = oidc %}` moves the reads onto a name this scan
+        # does not follow, so the entry is refused rather than guessed at.
+        self.assertTrue(self._errors(
+            "{% set x = oidc %}{{ x.client_id }}"))
+
     def test_a_subscript_the_validator_cannot_resolve_is_refused(self):
         # `oidc[var]` names a field only at render time. Refuse what
         # cannot be read rather than wave it through.
