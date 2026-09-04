@@ -1198,6 +1198,17 @@ class OidcSupportedFieldsTest(unittest.TestCase):
         self.assertTrue(
             self._errors("{{ oidc.issuer }}{{ oidc|attr(\"client_id\") }}"))
 
+    def test_whitespace_around_the_dot_is_still_a_field_read(self):
+        # Jinja allows it; a text scan required `oidc.` with nothing
+        # between. Parsing sees the same Getattr either way.
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{% if oidc . client_id %}:enabled{% endif %}"))
+
+    def test_a_subscript_the_validator_cannot_resolve_is_refused(self):
+        # `oidc[var]` names a field only at render time. Refuse what
+        # cannot be read rather than wave it through.
+        self.assertTrue(self._errors("{{ oidc.issuer }}{{ oidc[var] }}"))
+
     def test_a_field_read_in_a_statement_block_counts(self):
         # A compose value can read a field in `{% ... %}` too. Scanning
         # expressions alone reported only `issuer` here, so the

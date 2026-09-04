@@ -15,6 +15,8 @@ import json
 import os
 import functools
 import re
+
+import jinja2
 import shlex
 import sys
 
@@ -29,31 +31,11 @@ SECRET_NAME_RE = re.compile(r"(?i)password|secret(?!_id)|token|api[_-]?key|priv(
 # Catches the GlitchTip-style `admin@greffon.local` regression.
 RESERVED_TLDS = {"local", "localhost", "test", "example", "invalid", "internal"}
 
-# Detects a Jinja fragment that references the `smtp` context variable — the
-# signal that a compose env value is SMTP-managed. The match is scoped to the
-# *inside of a `{{ ... }}` expression block* and is *case-sensitive*:
-#
-#   - A reference must appear INSIDE a `{{ ... }}`: the value
-#     `"{{ instance_url }} smtp.host"` is rejected because `smtp.host` sits
-#     outside any Jinja expression and would render literally.
-#   - The identifier must be lowercase `smtp.<field>`: Jinja variable lookup
-#     is case-sensitive, so `{{ SMTP.host }}` would render undefined and is
-#     rejected at lint time.
-#   - A word boundary before `smtp` prevents `{{ notsmtp.host }}` from matching.
-#
-# The `(?:(?!\}\}).)*?` tempered-greedy token matches any char that isn't the
-# start of `}}`, so dict literals inside the expression (e.g. Nextcloud's
-# `{{ {'tls': 'ssl', ...}[smtp.tls_mode] }}`) are admitted while the match
-# still can't cross an expression boundary.
-@functools.lru_cache(maxsize=None)
-def _integration_jinja_re(namespace):
-    return re.compile(
-        r"\{\{(?:(?!\}\}).)*?\b" + namespace
-        + r"\.[a-z_][a-z0-9_]*(?:(?!\}\}).)*?\}\}"
-    )
-
-
-_SMTP_JINJA_RE = _integration_jinja_re("smtp")
+# One environment, reused: parsing is what decides whether a compose
+# value reads an integration context, so the checks below all go
+# through it. The regexes this replaced -- one per access form, each
+# added after a review found the form it missed -- are gone.
+_JINJA_ENV = jinja2.Environment()
 
 # Fields the greffer can actually supply, per namespace. `oidc` is
 # issuer-only today -- per-instance client credentials do not exist yet --
@@ -64,57 +46,50 @@ _SMTP_JINJA_RE = _integration_jinja_re("smtp")
 _INTEGRATION_FIELDS = {"oidc": {"issuer"}}
 
 
-@functools.lru_cache(maxsize=None)
-def _field_ref_re(namespace):
-    return re.compile(r"\b" + namespace + r"\.([a-z_][a-z0-9_]*)")
-
-
-@functools.lru_cache(maxsize=None)
-def _subscript_ref_re(namespace):
-    """`oidc['client_id']`, `oidc["x"]` and `oidc|attr('x')`.
-
-    Jinja reads a field three ways, and the dotted form is only the most
-    common one. A value mixing them -- `{{ oidc.issuer }}:{{
-    oidc['client_id'] }}` -- passed the supported-field scan on its
-    dotted half while the bracket half read a field the greffer does
-    not supply.
-    """
-    return re.compile(
-        r"\b" + namespace + r"(?:\s*\[\s*|\s*\|\s*attr\(\s*)"
-        r"(['\"])([a-z_][a-z0-9_]*)\1"
-    )
-
-
-# A Jinja block -- expression OR statement -- and the string literals
-# inside one. Field names are read from blocks with literals removed: in
-# `{{ oidc.issuer | default('https://oidc.client_id') }}` the hostname is
-# data, not a context lookup, and scanning the raw scalar would reject a
-# valid issuer-only value.
-#
-# `{% ... %}` counts. A compose value can read a field in a statement --
-# `{{ oidc.issuer }}{% if oidc.client_id %}:enabled{% endif %}` -- and
-# scanning expressions alone reported only `issuer`, so the unsupported
-# lookup passed.
-#
-# NOT named `_JINJA_BLOCK_RE`: this module already binds that name below,
-# to a capturing variant the render-flagged-file checks use. Two
-# definitions of one name meant the later won and this one was dead.
-_INTEGRATION_BLOCK_RE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
-_STRING_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
-
-
+# Field extraction parses the value as a Jinja template rather than
+# matching text. Five rounds of review were spent on the regex -- string
+# literals, `{% %}` statements, bracket access, `|attr()`, then
+# whitespace around the dot (`oidc . client_id`) -- and each one closed
+# a form the next review replaced with another. The grammar already
+# knows every form, so ask it.
 def _integration_field_refs(value, namespace):
-    """Field names read from `<namespace>.<field>` inside Jinja blocks only."""
+    """Field names `value` reads from `<namespace>`, per Jinja's parser.
+
+    A subscript the parser cannot resolve to a literal (`oidc[var]`) is
+    reported as `<dynamic>`, which no supported-field set contains: an
+    entry the validator cannot read is refused rather than waved
+    through.
+    """
     if not isinstance(value, str):
         return set()
-    dotted = _field_ref_re(namespace)
-    subscript = _subscript_ref_re(namespace)
+    try:
+        tree = _JINJA_ENV.parse(value)
+    except jinja2.TemplateSyntaxError:
+        # Not a template this validator can read. Other rules report
+        # the syntax error; claiming references here would be a guess.
+        return set()
+
+    def _reads(node):
+        return isinstance(node, jinja2.nodes.Name) and node.name == namespace
+
     fields = set()
-    for block in _INTEGRATION_BLOCK_RE.findall(value):
-        # Subscript first: its field name IS a string literal, so it has
-        # to be read before the literals are stripped for the dotted scan.
-        fields.update(name for _quote, name in subscript.findall(block))
-        fields.update(dotted.findall(_STRING_LITERAL_RE.sub("", block)))
+    for node in tree.find_all(jinja2.nodes.Getattr):
+        if _reads(node.node):
+            fields.add(node.attr)
+    for node in tree.find_all(jinja2.nodes.Getitem):
+        if _reads(node.node):
+            arg = node.arg
+            fields.add(arg.value
+                       if isinstance(arg, jinja2.nodes.Const)
+                       and isinstance(arg.value, str)
+                       else "<dynamic>")
+    for node in tree.find_all(jinja2.nodes.Filter):
+        if node.name == "attr" and _reads(node.node):
+            arg = node.args[0] if node.args else None
+            fields.add(arg.value
+                       if isinstance(arg, jinja2.nodes.Const)
+                       and isinstance(arg.value, str)
+                       else "<dynamic>")
     return fields
 
 
