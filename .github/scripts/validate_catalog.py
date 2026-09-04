@@ -131,11 +131,20 @@ def _value_references_integration(value, namespace) -> bool:
     or absent env key passed validation: the destination is only the
     marker for a value rendered from `oidc.*`, and nothing checked that
     the two agreed. The app would then never receive its issuer.
+
+    Bracket and `attr` access count as references too. Requiring the
+    dotted form meant `{{ oidc["issuer"] }}` -- valid Jinja that reads
+    the same field -- was reported as "does not reference the context"
+    against its own destination, and, with no destination declared,
+    `{{ oidc["client_id"] }}` skipped both this check and the
+    supported-field one that runs behind it.
     """
     if namespace not in KNOWN_INTEGRATION_NAMESPACES:
         return False
-    return isinstance(value, str) and bool(
-        _integration_jinja_re(namespace).search(value))
+    if not isinstance(value, str):
+        return False
+    return bool(_integration_jinja_re(namespace).search(value)
+                or _integration_field_refs(value, namespace))
 
 
 # --- baked-config-files feature ----------------------------------------------

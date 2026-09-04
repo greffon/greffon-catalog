@@ -1267,6 +1267,25 @@ class OidcBidirectionalKeyMatchTest(unittest.TestCase):
         self.assertTrue(
             any("has no smtp destination for it" in e for e in errs), errs)
 
+    def test_a_bracket_only_reference_is_a_reference(self):
+        # Valid Jinja reading the same field. Requiring the dotted form
+        # reported this as "does not reference the context" against its
+        # own destination.
+        for value in ('{{ oidc[\"issuer\"] }}', "{{ oidc|attr('issuer') }}"):
+            with self.subTest(value=value):
+                errs = self._errors(
+                    "      OIDC_ISSUER: '" + value + "'\n", self.DEST)
+                self.assertFalse(
+                    [e for e in errs if "oidc" in e.lower()], errs)
+
+    def test_a_bracket_only_reference_with_no_destination_is_caught(self):
+        # Without this it slipped past BOTH checks: no dotted match here,
+        # so the supported-field scan behind it never ran either.
+        errs = self._errors(
+            "      OIDC_ISSUER: '{{ oidc[\"client_id\"] }}'\n", None)
+        self.assertTrue(
+            any("has no oidc destination for it" in e for e in errs), errs)
+
     def test_a_greffon_using_neither_is_untouched(self):
         errs = self._errors("      PLAIN: 'x'\n", None)
         self.assertFalse(
