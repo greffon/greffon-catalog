@@ -91,6 +91,45 @@ def _alias_bindings(node):
     return []
 
 
+# The greffer's guard positions, copied from its `_GUARD_SLOTS`. A value
+# that only GUARDS on an integration renders correctly when it is unset
+# (the binding is a falsy empty mapping, so `{% if oidc %}a{% else %}b`
+# gives `b`), so the greffer keeps it and it needs no destination.
+# Anything else that uses the name is a read.
+_GUARD_SLOTS = (
+    (jinja2.nodes.If, "test"),
+    (jinja2.nodes.CondExpr, "test"),
+    (jinja2.nodes.For, "test"),
+    (jinja2.nodes.Test, "node"),
+)
+
+
+def _reads_outside_a_guard(node, namespace, guarded=False):
+    """Does this subtree USE the namespace somewhere that is not a guard?
+
+    Mirrors the greffer's `_reads`, because the two must agree: the
+    validator asks "does this value reference the integration" to decide
+    whether a destination is required, and the greffer asks the same
+    question to decide whether to strip the key. Where they disagreed,
+    a value using the whole mapping -- `{{ oidc|tojson }}`,
+    `{{ oidc.items()|list }}`, `{{ oidc }}` -- was stripped at deploy
+    while the validator said it referenced nothing, so it was rejected
+    WITH a destination and accepted WITHOUT one. Both wrong, and
+    opposite ways round.
+    """
+    if isinstance(node, jinja2.nodes.Name):
+        return node.name == namespace and not guarded
+    for field, child in node.iter_fields():
+        in_guard = guarded or any(isinstance(node, cls) and field == slot
+                                  for cls, slot in _GUARD_SLOTS)
+        children = child if isinstance(child, list) else [child]
+        for item in children:
+            if isinstance(item, jinja2.nodes.Node) and _reads_outside_a_guard(
+                    item, namespace, in_guard):
+                return True
+    return False
+
+
 def _integration_field_refs(value, namespace):
     """Field names `value` reads from `<namespace>`, per Jinja's parser.
 
@@ -182,6 +221,36 @@ def _value_references_smtp(value) -> bool:
     return _value_references_integration(value, "smtp")
 
 
+def _value_uses_integration(value, namespace) -> bool:
+    """Does this value mention the integration AT ALL, guard included?
+
+    The two directions of Rule 5.3 ask different questions.
+
+    metadata -> compose: a declared destination is satisfied by ANY use,
+    including a guard. `visio/1.0` ships
+    `{{ "true" if smtp.tls_mode == "starttls" else "false" }}` with an
+    SMTP destination: the greffer keeps it (a guard renders correctly
+    when the integration is unset) and the destination is what marks the
+    key as SMTP-managed for the manager. Requiring a non-guard read here
+    rejected a shipping entry.
+
+    compose -> metadata: only a NON-guard read needs a destination,
+    because that is the read the greffer strips. A guard needs none.
+    """
+    if namespace not in KNOWN_INTEGRATION_NAMESPACES:
+        return False
+    if not isinstance(value, str):
+        return False
+    if _integration_field_refs(value, namespace):
+        return True
+    try:
+        tree = _JINJA_ENV.parse(value)
+    except jinja2.TemplateSyntaxError:
+        return False
+    return any(n.name == namespace
+               for n in tree.find_all(jinja2.nodes.Name))
+
+
 def _value_references_integration(value, namespace) -> bool:
     """`_value_references_smtp`, for any known integration namespace.
 
@@ -207,7 +276,11 @@ def _value_references_integration(value, namespace) -> bool:
         return False
     if not isinstance(value, str):
         return False
-    return bool(_integration_field_refs(value, namespace))
+    try:
+        tree = _JINJA_ENV.parse(value)
+    except jinja2.TemplateSyntaxError:
+        return False
+    return _reads_outside_a_guard(tree, namespace)
 
 
 # --- baked-config-files feature ----------------------------------------------
@@ -1874,6 +1947,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
         label = ns.upper()
         metadata_keys = metadata_integration_keys.get(ns, {})
         compose_env_keys: dict = {}
+        compose_uses_keys: dict = {}
         list_form_services: set = set()
         if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
             for svc_name, svc_def in compose["services"].items():
@@ -1884,17 +1958,23 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     for k, v in env.items():
                         if _value_references_integration(v, ns):
                             compose_env_keys.setdefault(svc_name, set()).add(k)
-                            for field in sorted(
-                                    _integration_field_refs(v, ns)):
-                                supported = _INTEGRATION_FIELDS.get(ns)
-                                if supported and field not in supported:
-                                    errors.append(
-                                        f"{rel_dir}: docker-compose.yml env "
-                                        f"'{k}' on service '{svc_name}' reads "
-                                        f"'{ns}.{field}', which the greffer does "
-                                        f"not supply. {ns} provides only: "
-                                        f"{sorted(supported)}"
-                                    )
+                        if _value_uses_integration(v, ns):
+                            compose_uses_keys.setdefault(svc_name, set()).add(k)
+                        # Field names are checked whether or not the read
+                        # is a guard. `{% if oidc.client_id %}` needs no
+                        # destination -- the greffer keeps it -- but the
+                        # field still does not exist, and the author
+                        # should hear about it either way.
+                        for field in sorted(_integration_field_refs(v, ns)):
+                            supported = _INTEGRATION_FIELDS.get(ns)
+                            if supported and field not in supported:
+                                errors.append(
+                                    f"{rel_dir}: docker-compose.yml env "
+                                    f"'{k}' on service '{svc_name}' reads "
+                                    f"'{ns}.{field}', which the greffer does "
+                                    f"not supply. {ns} provides only: "
+                                    f"{sorted(supported)}"
+                                )
                 elif isinstance(env, list):
                     # List form: KEY=value strings. If the service has any
                     # destination of this type on the metadata side, flag it --
@@ -1907,6 +1987,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                             if isinstance(entry, str) and "=" in entry:
                                 key = entry.split("=", 1)[0].strip()
                                 compose_env_keys.setdefault(svc_name, set()).add(key)
+                                compose_uses_keys.setdefault(svc_name, set()).add(key)
                     if svc_name in metadata_keys:
                         list_form_services.add(svc_name)
 
@@ -1920,6 +2001,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
         for svc in sorted(set(metadata_keys) | set(compose_env_keys)):
             meta_keys = metadata_keys.get(svc, set())
             compose_keys = compose_env_keys.get(svc, set())
+            uses_keys = compose_uses_keys.get(svc, set())
 
             compose_env = {}
             _services = compose.get("services") if isinstance(compose, dict) else None
@@ -1929,7 +2011,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         svc_def.get("environment"), dict):
                     compose_env = svc_def["environment"]
 
-            for key in sorted(meta_keys - compose_keys):
+            for key in sorted(meta_keys - uses_keys):
                 if key in compose_env:
                     errors.append(
                         f"{rel_dir}: metadata.json declares {label} env key "

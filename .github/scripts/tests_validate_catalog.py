@@ -23,6 +23,7 @@ from validate_catalog import (
     KNOWN_INTEGRATION_NAMESPACES,
     _render_block_problem,
     _value_references_smtp,
+    _value_uses_integration,
     validate_greffon_dir,
 )
 
@@ -572,9 +573,16 @@ class SmtpJinjaRegexTest(unittest.TestCase):
         # Plausible's boolean expression — uses double-quoted string
         # literals inside Jinja so the value survives yaml.dump's
         # single-quote-escape round-trip in the greffer.
-        self.assertTrue(_value_references_smtp(
-            '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
-        ))
+        #
+        # It is a GUARD (a conditional test), so the two directions of
+        # Rule 5.3 answer differently, and both answers are load-bearing:
+        # the declared destination is satisfied (`_value_uses_integration`),
+        # while the value needs no destination on its own account
+        # (`_value_references_integration`) because the greffer keeps a
+        # guard rather than stripping it. visio/1.0 ships this shape.
+        value = '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+        self.assertTrue(_value_uses_integration(value, 'smtp'))
+        self.assertFalse(_value_references_smtp(value))
 
     def test_glitchtip_composed_url_matches(self):
         # GlitchTip's multi-expression URL: at least one `{{ ... smtp.* ... }}`
@@ -1342,6 +1350,33 @@ class OidcBidirectionalKeyMatchTest(unittest.TestCase):
         errs = self._errors("      SMTP_HOST: '{{ smtp.host }}'\n", None)
         self.assertTrue(
             any("has no smtp destination for it" in e for e in errs), errs)
+
+    def test_a_whole_mapping_read_is_a_reference(self):
+        # The greffer's rule is "any non-guard USE", not "a field
+        # lookup". These read the mapping itself, are stripped at deploy
+        # when the integration is unset, and were invisible here: with a
+        # destination they were rejected, without one they passed.
+        for value in ('{{ oidc|tojson }}', '{{ oidc }}',
+                      '{{ oidc.items()|list }}', '{{ oidc.copy().issuer }}'):
+            with self.subTest(value=value):
+                errs = self._errors(
+                    "      OIDC_ISSUER: '" + value + "'\n", self.DEST)
+                self.assertFalse([e for e in errs if 'oidc' in e.lower()], errs)
+
+    def test_a_whole_mapping_read_without_a_destination_is_caught(self):
+        errs = self._errors("      OIDC_ISSUER: '{{ oidc|tojson }}'\n", None)
+        self.assertTrue(
+            any('has no oidc destination for it' in e for e in errs), errs)
+
+    def test_a_guard_needs_no_destination(self):
+        # A guard renders correctly with the integration unset, so the
+        # greffer keeps it and no destination is required.
+        for value in ('{% if oidc %}on{% else %}off{% endif %}',
+                      '{{ "y" if oidc.issuer else "n" }}'):
+            with self.subTest(value=value):
+                errs = self._errors(
+                    "      SOMETHING: '" + value + "'\n", None)
+                self.assertFalse([e for e in errs if 'oidc' in e.lower()], errs)
 
     def test_a_bracket_only_reference_is_a_reference(self):
         # Valid Jinja reading the same field. Requiring the dotted form
