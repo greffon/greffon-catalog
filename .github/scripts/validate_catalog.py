@@ -1943,6 +1943,53 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # Rule 5.5 still holds: every check is gated on "at least one
     # destination of this type OR at least one `{{ <ns>.* }}` env value",
     # so a greffon that uses neither is untouched.
+    # Rule 5.6: an env value must survive the greffer's dump-then-render.
+    #
+    # The greffer renders `yaml.dump(compose)`, and `yaml.dump` re-emits
+    # a scalar in SINGLE-quote style by doubling any single quote in it.
+    # So `{{ 'true' if x else 'false' }}` becomes `{{ ''true'' ... }}`,
+    # which is not valid Jinja, and the deploy fails at /start/ -- with
+    # the integration CONFIGURED, which is the path least likely to be
+    # tested. This README taught that exact spelling until it was fixed.
+    #
+    # Asked by doing it, not by pattern: dump the value the way the
+    # greffer will and parse the result. That also catches a value that
+    # was never valid Jinja, which previously surfaced only as the
+    # confusing "does not reference the context".
+    if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
+        for svc_name, svc_def in compose["services"].items():
+            if not isinstance(svc_def, dict):
+                continue
+            env = svc_def.get("environment")
+            if isinstance(env, dict):
+                pairs = list(env.items())
+            elif isinstance(env, list):
+                pairs = [(str(i), e) for i, e in enumerate(env)]
+            else:
+                pairs = []
+            for k, v in pairs:
+                if not isinstance(v, str) or ("{{" not in v and "{%" not in v):
+                    continue
+                try:
+                    _JINJA_ENV.parse(v)
+                except jinja2.TemplateSyntaxError as exc:
+                    errors.append(
+                        f"{rel_dir}: docker-compose.yml env '{k}' on service "
+                        f"'{svc_name}' is not valid Jinja: {exc.message}"
+                    )
+                    continue
+                try:
+                    _JINJA_ENV.parse(yaml.dump({k: v}))
+                except jinja2.TemplateSyntaxError:
+                    errors.append(
+                        f"{rel_dir}: docker-compose.yml env '{k}' on service "
+                        f"'{svc_name}' does not survive the greffer's "
+                        f"yaml.dump round-trip (got: '{v}'). Single quotes "
+                        "inside a Jinja expression are doubled by the dump "
+                        'and break the render -- use double quotes: '
+                        '{{ "a" if x else "b" }}'
+                    )
+
     for ns in sorted(KNOWN_INTEGRATION_NAMESPACES):
         label = ns.upper()
         metadata_keys = metadata_integration_keys.get(ns, {})

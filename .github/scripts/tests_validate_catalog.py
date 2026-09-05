@@ -1153,6 +1153,41 @@ class RenderFlagTest(unittest.TestCase):
         self.assertTrue(any("config.MISSING" in e for e in errs), errs)
 
 
+class ValuesMustSurviveTheDumpRoundTripTest(unittest.TestCase):
+    """The greffer renders `yaml.dump(compose)`, and the dump doubles
+    single quotes, so a single-quoted Jinja literal stops being valid
+    Jinja by the time it is rendered -- with the integration CONFIGURED,
+    the path least likely to be tested. This README taught that exact
+    spelling.
+    """
+
+    def _errors(self, value):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: " + value + "\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            return validate_greffon_dir(tmp, rel)
+
+    def test_single_quoted_jinja_literals_are_rejected(self):
+        # json.dumps gives a correctly DOUBLE-quoted YAML scalar, so the
+        # single quotes inside reach the validator intact. Quoting this
+        # by hand produced invalid YAML and the test passed on the wrong
+        # error.
+        errs = self._errors(json.dumps(
+            "{{ 'X' if smtp.tls_mode == 'tls' else 'Y' }}"))
+        self.assertTrue(any('round-trip' in e for e in errs), errs)
+
+    def test_double_quoted_jinja_literals_are_accepted(self):
+        errs = self._errors(json.dumps(
+            '{{ "X" if smtp.tls_mode == "tls" else "Y" }}'))
+        self.assertFalse(any('round-trip' in e for e in errs), errs)
+
+    def test_a_value_that_is_not_valid_jinja_says_so(self):
+        errs = self._errors(json.dumps('{{ oidc. }}'))
+        self.assertTrue(any('is not valid Jinja' in e for e in errs), errs)
+
+
 class OidcSupportedFieldsTest(unittest.TestCase):
     """`oidc` supplies only `issuer` today.
 

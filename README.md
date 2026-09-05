@@ -335,7 +335,7 @@ services:
       SMTP_USER_NAME: "{{ smtp.username }}"
       SMTP_USER_PWD: "{{ smtp.password }}"
       MAILER_EMAIL: "{{ smtp.from_address }}"
-      SMTP_HOST_SSL_ENABLED: "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}"
+      SMTP_HOST_SSL_ENABLED: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
 ```
 
 The `metadata.json` entry for the same config section:
