@@ -144,5 +144,46 @@ class CookieSecurityTest(unittest.TestCase):
         self.assertIn("still redirecting on the same host", out)
 
 
+class OidcConfigPayloadShapeTest(unittest.TestCase):
+    """An integration-managed config carries no user value.
+
+    `build_configurations` treated only `{"smtp"}` as integration-managed,
+    so once the validator allowed `type: oidc` an oidc-only config fell
+    through to the scalar branch and was posted as a fabricated string.
+    The first greffon using an oidc destination would have been smoked
+    with the wrong shape instead of exercising the no-integration path --
+    and, like the cookie checks above, the integration job only smokes
+    CHANGED entries, so nothing existing would have gone red.
+    """
+
+    def _build(self, dest_types, required=None):
+        metadata = {"configurations": [{
+            "title": "C",
+            "destinations": [
+                {"type": t, "container": "app", "key": "K"}
+                for t in dest_types
+            ],
+        }]}
+        return smoke.build_configurations(metadata, required or {})
+
+    def test_an_oidc_only_config_has_no_user_value(self):
+        self.assertEqual(self._build(["oidc"])[0]["value"], {})
+
+    def test_an_smtp_only_config_is_unchanged(self):
+        self.assertEqual(self._build(["smtp"])[0]["value"], {})
+
+    def test_a_mixed_integration_config_has_no_user_value(self):
+        self.assertEqual(self._build(["smtp", "oidc"])[0]["value"], {})
+
+    def test_a_scalar_config_still_gets_a_value(self):
+        self.assertIn("value", self._build(["env"])[0]["value"])
+
+    def test_an_oidc_config_cannot_be_pinned(self):
+        # Only a scalar config can be pinned; an integration-managed
+        # value has a different shape entirely.
+        with self.assertRaises(SystemExit):
+            self._build(["oidc"], {"C": "x"})
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main()

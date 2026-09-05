@@ -132,8 +132,52 @@ Nginx-internal template vars like `{{ports[i].port_host}}` are reserved for the 
 | `json` | `volume`, `name`, *(opt)* `x-greffon-render` | Write JSON file into a named volume      |
 | `file` | `volume`, `name`, *(opt)* `x-greffon-render` | Write uploaded/baked file into a named volume |
 | `smtp` | `container`, `key`              | Mark an env key as SMTP-integration-managed (value comes from the operator's SMTP integration, not user input) |
+| `oidc` | `container`, `key`              | Mark an env key as OIDC-integration-managed (same, for the operator's OIDC provider) |
 
 The optional **`x-greffon-render: true`** on a `file`/`json` destination Jinja-renders the file contents at deploy time. See [Baked config files](#baked-config-files-visibility--render-time-templating).
+
+#### Integration-managed destinations (`smtp`, `oidc`)
+
+These two carry **no user value**. The operator configures the integration once
+on the Integrations page, and the greffer fills the env key from that blob at
+deploy time. Your `metadata.json` declares which env key is managed; the value
+never comes from the install form.
+
+The blob is also exposed to `docker-compose.yml` as a Jinja variable, so you can
+build a value out of several fields:
+
+| Variable | Fields available today |
+|----------|------------------------|
+| `{{ smtp.* }}` | `host`, `port`, `username`, `password`, `from_address`, `tls_mode` |
+| `{{ oidc.* }}` | `issuer` |
+
+`oidc` is issuer-only on purpose right now; per-instance client credentials
+arrive with the client-registration work and are not available yet. Do not
+write an entry that needs `oidc.client_id`.
+
+**When the operator has NOT linked an integration**, the greffer removes every
+env key that reads it, so the container starts without the variable rather than
+with an empty one. That matters: a half-interpolated `smtp://:@:` is worse than
+an absent `EMAIL_URL`, because the app parses it at boot.
+
+**Do not rely on the unset branch rendering.** A key you declare a destination
+for may be removed outright, whatever its value: the greffer strips
+metadata-declared keys by destination, before it looks at the template at
+all. So `{% if smtp %}{{ smtp.host }}{% else %}localhost{% endif %}` is not a
+way to get `localhost` -- the whole key can go. Put a fallback in the image,
+or in a separate non-integration config.
+
+Several shipping entries do use a test-only value for an `*_ENABLED` flag
+(`{{ "true" if smtp.host else "false" }}`), and it does currently survive and
+render `false`. That works because the manager materialises no config row for
+an empty-schema integration config, so there is nothing for the
+destination-driven strip to act on. It is a consequence of two components'
+current behaviour rather than a contract, so treat a rendered fallback as a
+bonus, not something to design around.
+
+`|default` behaves differently on the blob than on a field: the blob is defined
+but empty, so `{{ oidc|default('x') }}` renders `{}`, while
+`{{ oidc.issuer|default('x') }}` renders `x`.
 
 ### Port Exposure Tiers (L4)
 
@@ -291,7 +335,7 @@ services:
       SMTP_USER_NAME: "{{ smtp.username }}"
       SMTP_USER_PWD: "{{ smtp.password }}"
       MAILER_EMAIL: "{{ smtp.from_address }}"
-      SMTP_HOST_SSL_ENABLED: "{{ 'true' if smtp.tls_mode == 'tls' else 'false' }}"
+      SMTP_HOST_SSL_ENABLED: '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
 ```
 
 The `metadata.json` entry for the same config section:
