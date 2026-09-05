@@ -1559,6 +1559,65 @@ class FieldScanEdgeShapesTest(unittest.TestCase):
         self.assertEqual(self._fields('{% set oidc = 1 %}{{ oidc }}'), set())
 
 
+class GuardSlotsAndPredicateCallSitesTest(unittest.TestCase):
+    """Gaps a mutation audit found: each of these is one edit from
+    regressing, and each regression is a FALSE REJECT whose prescribed
+    fix destroys the value (declaring a destination makes the greffer's
+    metadata pass delete the key)."""
+
+    DEST = {"type": "oidc", "container": "app", "key": "K"}
+
+    def _errors(self, value, dest=None, list_form=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [dest] if dest else [],
+            }]
+            if list_form:
+                env = "      - " + value + "\n"
+            else:
+                env = "      K: " + value + "\n"
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n" + env)
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            return [e for e in validate_greffon_dir(tmp, rel)
+                    if 'oidc' in e.lower()]
+
+    def test_a_loop_FILTER_guard_needs_no_destination(self):
+        # `For.test` -- the slot the greffer's own comment says was
+        # missed once already.
+        self.assertFalse(self._errors(
+            '\'{% for x in ["a"] if oidc %}{{ x }}{% endfor %}\''))
+
+    def test_a_TEST_node_guard_needs_no_destination(self):
+        self.assertFalse(self._errors("'{{ oidc is mapping }}'"))
+
+    def test_a_list_form_guard_needs_no_destination(self):
+        # The list-form call site is the only one of the three with no
+        # guard-vs-read coverage.
+        self.assertFalse(self._errors(
+            '\'X={% if oidc %}a{% else %}b{% endif %}\'', list_form=True))
+
+    def test_an_unparseable_value_fabricates_no_reference(self):
+        # It reports invalid Jinja; it must not ALSO claim a missing
+        # destination for a reference it could not read.
+        errs = self._errors("'{{ 0.１ }}'")
+        self.assertFalse([e for e in errs if 'destination' in e], errs)
+
+    def test_an_unterminated_comment_is_reported(self):
+        # `{#` is a Jinja delimiter too: `hello {# oops` raises
+        # "Missing end of comment tag" at deploy, and the prefilter
+        # spelled out only `{{` and `{%`.
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: 'hello {# oops'\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertTrue(any('is not valid Jinja' in e for e in errs), errs)
+
+
 class ValidatorAgreesWithTheGrefferOnShapeTest(unittest.TestCase):
     """The greffer is the authority: what it strips at deploy is what
     the validator must be able to see."""

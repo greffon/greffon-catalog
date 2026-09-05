@@ -1829,7 +1829,13 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 # --- Rule 5.2: smtp destinations must target a real service ---
                 # Also accumulate declared keys per service for the bidirectional
                 # match in Rule 5.3 below.
-                if dtype in ("smtp", "oidc"):
+                # KNOWN_INTEGRATION_NAMESPACES, not a second hardcoded
+                # copy of it: Rule 5.3's loop below iterates the tuple,
+                # so a third type added there would have its keys
+                # collected by nobody and the rule would report a
+                # destination that IS declared as missing -- an error
+                # the author cannot fix.
+                if dtype in KNOWN_INTEGRATION_NAMESPACES:
                     container = dest.get("container", "")
                     key = dest.get("key", "")
                     if container and compose_services and container not in compose_services:
@@ -2039,7 +2045,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
             else:
                 pairs = []
             for k, v in pairs:
-                if not isinstance(v, str) or ("{{" not in v and "{%" not in v):
+                # `_JINJA_RE`, which includes `{#`. Spelling the
+                # delimiters out here missed comments: `hello {# oops`
+                # raises `Missing end of comment tag` at deploy, and
+                # this loop skipped it. The suite already asserts
+                # elsewhere that `{#` counts.
+                if not isinstance(v, str) or not _JINJA_RE.search(v):
                     continue
                 try:
                     _JINJA_ENV.parse(v)
