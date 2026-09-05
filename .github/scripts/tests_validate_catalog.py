@@ -1214,6 +1214,30 @@ class OidcSupportedFieldsTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(self._errors(value))
 
+    def test_binding_a_FIELD_VALUE_is_not_aliasing(self):
+        # `{% set base = oidc.issuer %}` binds the field's VALUE, which
+        # is readable and already counted. Only binding the MAPPING
+        # moves reads out of sight. Testing every child of the binding
+        # node conflated the two and refused a valid entry.
+        for value in ('{% set base = oidc.issuer %}{{ base }}/realms/x',
+                      '{% with b = oidc.issuer %}{{ b }}{% endwith %}',
+                      '{% for p in oidc.issuer.split("/") %}{{ p }}{% endfor %}'):
+            with self.subTest(value=value):
+                self.assertFalse(self._errors(value))
+
+    def test_a_dict_method_is_not_a_field(self):
+        # An integration is bound to a dict, so `oidc.get` is the
+        # built-in. The greffer documents `.get(k, default)` as safe
+        # when the integration is unset; reporting `get` as a missing
+        # field rejected it.
+        # DOUBLE quotes inside: `_errors` wraps the value in a
+        # single-quoted YAML scalar, so single quotes here break the
+        # parse and the check never runs.
+        self.assertFalse(self._errors('{{ oidc.get("issuer", "") }}'))
+
+    def test_get_names_its_field_in_the_argument(self):
+        self.assertTrue(self._errors('{{ oidc.get("client_id") }}'))
+
     def test_a_with_block_alias_is_refused(self):
         self.assertTrue(self._errors(
             "{{ oidc.issuer }}{% with x=oidc %}{{ x.client_id }}{% endwith %}"))

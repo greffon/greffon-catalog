@@ -13,7 +13,6 @@ Usage:
 import argparse
 import json
 import os
-import functools
 import re
 
 import jinja2
@@ -62,12 +61,34 @@ _ALIAS_BINDING_NODES = (
 )
 
 
-def _reads_anywhere(node, namespace):
-    """Does this subtree mention the namespace at all?"""
-    if isinstance(node, jinja2.nodes.Name):
-        return node.name == namespace
-    return any(_reads_anywhere(child, namespace)
-               for child in node.iter_child_nodes())
+# `dict` methods, which shadow a field of the same name: an integration
+# is bound to a dict, so `oidc.get` is the BUILT-IN, not a field. The
+# greffer documents `.get(k, default)` as a shape that survives an unset
+# integration, and reporting `get` as a missing field rejected it.
+_MAPPING_METHODS = frozenset({
+    'get', 'items', 'keys', 'values', 'copy', 'pop', 'popitem',
+    'setdefault', 'update', 'clear', 'fromkeys',
+})
+
+
+def _alias_bindings(node):
+    """The expressions a binding statement binds a name TO.
+
+    The bound expression only, never the whole node: `{% set base =
+    oidc.issuer %}` binds a FIELD VALUE -- readable, and already counted
+    by the Getattr pass -- while `{% set x = oidc %}` binds the mapping
+    and moves later reads out of sight. Testing every child conflated
+    them and refused the readable one.
+    """
+    if isinstance(node, jinja2.nodes.Assign):
+        return [node.node]
+    if isinstance(node, jinja2.nodes.AssignBlock):
+        return list(node.body)
+    if isinstance(node, jinja2.nodes.With):
+        return list(node.values)
+    if isinstance(node, jinja2.nodes.For):
+        return [node.iter]
+    return []
 
 
 def _integration_field_refs(value, namespace):
@@ -114,11 +135,20 @@ def _integration_field_refs(value, namespace):
         # `{% set x = oidc %}` / `{% with x = oidc %}` / `{% for x in
         # [oidc] %}` move the reads onto a name this scan does not
         # follow. Refuse rather than pretend to have read them.
-        if any(_reads_anywhere(child, namespace)
-               for child in node.iter_child_nodes()):
+        if any(_reads(bound) for bound in _alias_bindings(node)):
             fields.add("<dynamic>")
+    for node in tree.find_all(jinja2.nodes.Call):
+        # `oidc.get('issuer')` names its field in the ARGUMENT.
+        callee = node.node
+        if (isinstance(callee, jinja2.nodes.Getattr)
+                and callee.attr == 'get' and _reads(callee.node)):
+            arg = node.args[0] if node.args else None
+            fields.add(arg.value
+                       if isinstance(arg, jinja2.nodes.Const)
+                       and isinstance(arg.value, str)
+                       else "<dynamic>")
     for node in tree.find_all(jinja2.nodes.Getattr):
-        if _reads(node.node):
+        if _reads(node.node) and node.attr not in _MAPPING_METHODS:
             fields.add(node.attr)
     for node in tree.find_all(jinja2.nodes.Getitem):
         if _reads(node.node):
