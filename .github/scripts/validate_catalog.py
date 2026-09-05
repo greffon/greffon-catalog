@@ -91,8 +91,69 @@ def _alias_bindings(node):
     return []
 
 
+# The greffer's guard positions, copied from its `_GUARD_SLOTS`. A value
+# that only GUARDS on an integration renders correctly when it is unset
+# (the binding is a falsy empty mapping, so `{% if oidc %}a{% else %}b`
+# gives `b`), so the greffer keeps it and it needs no destination.
+# Anything else that uses the name is a read.
+_GUARD_SLOTS = (
+    (jinja2.nodes.If, "test"),
+    (jinja2.nodes.CondExpr, "test"),
+    (jinja2.nodes.For, "test"),
+    (jinja2.nodes.Test, "node"),
+)
+
+
+def _reads_outside_a_guard(node, namespace, guarded=False):
+    """Does this subtree USE the namespace somewhere that is not a guard?
+
+    Mirrors the greffer's `_reads`, because the two must agree: the
+    validator asks "does this value reference the integration" to decide
+    whether a destination is required, and the greffer asks the same
+    question to decide whether to strip the key. Where they disagreed,
+    a value using the whole mapping -- `{{ oidc|tojson }}`,
+    `{{ oidc.items()|list }}`, `{{ oidc }}` -- was stripped at deploy
+    while the validator said it referenced nothing, so it was rejected
+    WITH a destination and accepted WITHOUT one. Both wrong, and
+    opposite ways round.
+    """
+    if isinstance(node, jinja2.nodes.Name):
+        return node.name == namespace and not guarded
+    for field, child in node.iter_fields():
+        in_guard = guarded or any(isinstance(node, cls) and field == slot
+                                  for cls, slot in _GUARD_SLOTS)
+        children = child if isinstance(child, list) else [child]
+        for item in children:
+            if isinstance(item, jinja2.nodes.Node) and _reads_outside_a_guard(
+                    item, namespace, in_guard):
+                return True
+    return False
+
+
+def _strings_in(value):
+    """Every string inside `value`, however nested.
+
+    A compose env value is usually a scalar, but YAML permits a list or
+    a mapping, and the greffer's own `_strings_in` walks into them and
+    strips what it finds. Looking only at `str` values here left the
+    validator blind to exactly the shape the greffer acts on:
+    `K: ["{{ oidc.issuer }}"]` is stripped at deploy and was reported by
+    nothing.
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for nested in value.values():
+            yield from _strings_in(nested)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            yield from _strings_in(nested)
+
+
 def _integration_field_refs(value, namespace):
     """Field names `value` reads from `<namespace>`, per Jinja's parser.
+
+    Walks nested containers, because the greffer does.
 
     A subscript the parser cannot resolve to a literal (`oidc[var]`) is
     reported as `<dynamic>`, which no supported-field set contains: an
@@ -100,10 +161,19 @@ def _integration_field_refs(value, namespace):
     through.
     """
     if not isinstance(value, str):
-        return set()
+        fields = set()
+        for text in _strings_in(value):
+            fields |= _integration_field_refs(text, namespace)
+        return fields
     try:
         tree = _JINJA_ENV.parse(value)
-    except jinja2.TemplateSyntaxError:
+    except Exception:
+        # NOT just TemplateSyntaxError. Jinja's number lexer calls
+        # `ast.literal_eval`, so a fullwidth digit -- `{{ 0.１ }}` --
+        # escapes as CPython's bare SyntaxError and crashed the whole
+        # validator run: no ERROR line, no exit code, the rest of the
+        # entry never checked. The greffer hit the same class and
+        # documents the same deliberately broad catch.
         # Not a template this validator can read. Other rules report
         # the syntax error; claiming references here would be a guess.
         return set()
@@ -179,42 +249,109 @@ def _value_references_smtp(value) -> bool:
     case-sensitive; `{{ SMTP.host }}` would render undefined, so the
     validator rejects it.
     """
-    return _value_uses_integration(value, "smtp")
+    return _value_references_integration(value, "smtp")
 
 
 def _value_uses_integration(value, namespace) -> bool:
-    """Does this value mention the integration at all, guard included?
+    """Does this value mention the integration AT ALL, guard included?
 
-    ONE predicate for both directions of Rule 5.3, deliberately.
+    The two directions of Rule 5.3 ask different questions.
 
-    A guard-aware version was tried, mirroring the greffer's `_reads` so
-    a guard-only value would need no destination. It drifted within the
-    day: the greffer added `_guard_coerces` (a guard that COERCES a
-    field IS stripped after all) and `_call_consumes`, the mirror did
-    not, and CI then told authors a key was fine while the greffer
-    silently dropped it. Two copies of one rule in two repos, with no
-    test that can see both, is the defect -- not either copy.
+    metadata -> compose: a declared destination is satisfied by ANY use,
+    including a guard. `visio/1.0` ships
+    `{{ "true" if smtp.tls_mode == "starttls" else "false" }}` with an
+    SMTP destination: the greffer keeps it (a guard renders correctly
+    when the integration is unset) and the destination is what marks the
+    key as SMTP-managed for the manager. Requiring a non-guard read here
+    rejected a shipping entry.
 
-    So this asks the looser question and requires a destination for any
-    use. That is the safe direction (over-declaring marks a key
-    integration-managed, which it is), and it is what the catalog
-    already does: all 29 entries pass, and the 8 that guard on smtp --
-    `{{ "true" if smtp.tls_mode == "starttls" else "false" }}` for
-    GF_SMTP_ENABLED and friends -- already declare destinations for
-    those keys.
+    compose -> metadata: only a NON-guard read needs a destination,
+    because that is the read the greffer strips. A guard needs none.
     """
     if namespace not in KNOWN_INTEGRATION_NAMESPACES:
         return False
     if not isinstance(value, str):
-        return False
+        return any(_value_uses_integration(text, namespace)
+                   for text in _strings_in(value))
     if _integration_field_refs(value, namespace):
         return True
     try:
         tree = _JINJA_ENV.parse(value)
-    except jinja2.TemplateSyntaxError:
+    except Exception:
+        # NOT just TemplateSyntaxError. Jinja's number lexer calls
+        # `ast.literal_eval`, so a fullwidth digit -- `{{ 0.１ }}` --
+        # escapes as CPython's bare SyntaxError and crashed the whole
+        # validator run: no ERROR line, no exit code, the rest of the
+        # entry never checked. The greffer hit the same class and
+        # documents the same deliberately broad catch.
         return False
     return any(n.name == namespace
                for n in tree.find_all(jinja2.nodes.Name))
+
+
+def _value_references_integration(value, namespace) -> bool:
+    """Does the value read the integration OUTSIDE a guard?
+
+    This is the compose -> metadata direction: which values oblige the
+    author to declare a destination. It deliberately exempts guards, and
+    that exemption is not a nicety -- requiring a destination for a
+    guard-only value prescribes a fix that DESTROYS it:
+
+        LOG_LEVEL: '{% if smtp %}debug{% else %}info{% endif %}'
+
+    renders `info` with smtp unset and keeps working. Told to add an
+    smtp destination, the author gets the key removed outright by the
+    destination-driven pass, because that pass pops by destination
+    without looking at the value. Measured on the greffer: kept=True
+    rendering `info` without a destination, kept=False with one.
+
+    KNOWN DIVERGENCE, accepted. The greffer additionally strips a guard
+    that COERCES a field (`{% if smtp.port|int > 0 %}` -- its
+    `_guard_coerces`), and this does not know that, so such a value
+    needs no destination here while the greffer drops it. The author
+    gets no CI warning. That is a missing WARNING, not a wrong action:
+    the greffer strips that key whether or not a destination is
+    declared, so demanding one would not save it. Mirroring
+    `_guard_coerces` here was tried and is what created the drift in
+    the first place -- two copies of one rule in two repos, with no test
+    that can see both.
+
+    `_value_references_smtp`, for any known integration namespace.
+
+    Rule 5.3 was smtp-only, so an `oidc` destination naming a mistyped
+    or absent env key passed validation: the destination is only the
+    marker for a value rendered from `oidc.*`, and nothing checked that
+    the two agreed. The app would then never receive its issuer.
+
+    Bracket and `attr` access count as references too. Requiring the
+    dotted form meant `{{ oidc["issuer"] }}` -- valid Jinja that reads
+    the same field -- was reported as "does not reference the context"
+    against its own destination, and, with no destination declared,
+    `{{ oidc["client_id"] }}` skipped both this check and the
+    supported-field one that runs behind it.
+
+    `_integration_field_refs` is the whole answer, not one half of an
+    `or`. The raw regex counted a name inside a STRING literal as a
+    read, so `{{ "oidc.issuer" }}` satisfied its destination while
+    Jinja renders the literal text and the app gets `oidc.issuer` where
+    the issuer URL belongs.
+    """
+    if namespace not in KNOWN_INTEGRATION_NAMESPACES:
+        return False
+    if not isinstance(value, str):
+        return any(_value_references_integration(text, namespace)
+                   for text in _strings_in(value))
+    try:
+        tree = _JINJA_ENV.parse(value)
+    except Exception:
+        # NOT just TemplateSyntaxError. Jinja's number lexer calls
+        # `ast.literal_eval`, so a fullwidth digit -- `{{ 0.１ }}` --
+        # escapes as CPython's bare SyntaxError and crashed the whole
+        # validator run: no ERROR line, no exit code, the rest of the
+        # entry never checked. The greffer hit the same class and
+        # documents the same deliberately broad catch.
+        return False
+    return _reads_outside_a_guard(tree, namespace)
 
 
 # --- baked-config-files feature ----------------------------------------------
@@ -1906,15 +2043,18 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     continue
                 try:
                     _JINJA_ENV.parse(v)
-                except jinja2.TemplateSyntaxError as exc:
+                except Exception as exc:
+                    # `Exception`, and `message` defensively: a bare
+                    # SyntaxError has no `.message`.
+                    message = getattr(exc, 'message', None) or str(exc)
                     errors.append(
                         f"{rel_dir}: docker-compose.yml env '{k}' on service "
-                        f"'{svc_name}' is not valid Jinja: {exc.message}"
+                        f"'{svc_name}' is not valid Jinja: {message}"
                     )
                     continue
                 try:
                     _JINJA_ENV.parse(yaml.dump({k: v}))
-                except jinja2.TemplateSyntaxError:
+                except Exception:
                     errors.append(
                         f"{rel_dir}: docker-compose.yml env '{k}' on service "
                         f"'{svc_name}' does not survive the greffer's "
@@ -1928,6 +2068,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
         label = ns.upper()
         metadata_keys = metadata_integration_keys.get(ns, {})
         compose_env_keys: dict = {}
+        compose_uses_keys: dict = {}
         list_form_services: set = set()
         if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
             for svc_name, svc_def in compose["services"].items():
@@ -1936,8 +2077,10 @@ def validate_greffon_dir(catalog_root, rel_dir):
                 env = svc_def.get("environment")
                 if isinstance(env, dict):
                     for k, v in env.items():
-                        if _value_uses_integration(v, ns):
+                        if _value_references_integration(v, ns):
                             compose_env_keys.setdefault(svc_name, set()).add(k)
+                        if _value_uses_integration(v, ns):
+                            compose_uses_keys.setdefault(svc_name, set()).add(k)
                         # Field names are checked whether or not the read
                         # is a guard. `{% if oidc.client_id %}` needs no
                         # destination -- the greffer keeps it -- but the
@@ -1961,10 +2104,11 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     # obvious reference so a maintainer who wrote list-form
                     # Jinja still trips Rule 5.3.
                     for entry in env:
-                        if _value_uses_integration(entry, ns):
+                        if _value_references_integration(entry, ns):
                             if isinstance(entry, str) and "=" in entry:
                                 key = entry.split("=", 1)[0].strip()
                                 compose_env_keys.setdefault(svc_name, set()).add(key)
+                                compose_uses_keys.setdefault(svc_name, set()).add(key)
                     if svc_name in metadata_keys:
                         list_form_services.add(svc_name)
 
@@ -1978,6 +2122,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
         for svc in sorted(set(metadata_keys) | set(compose_env_keys)):
             meta_keys = metadata_keys.get(svc, set())
             compose_keys = compose_env_keys.get(svc, set())
+            uses_keys = compose_uses_keys.get(svc, set())
 
             compose_env = {}
             _services = compose.get("services") if isinstance(compose, dict) else None
@@ -1987,7 +2132,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         svc_def.get("environment"), dict):
                     compose_env = svc_def["environment"]
 
-            for key in sorted(meta_keys - compose_keys):
+            for key in sorted(meta_keys - uses_keys):
                 if key in compose_env:
                     errors.append(
                         f"{rel_dir}: metadata.json declares {label} env key "

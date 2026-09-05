@@ -24,6 +24,7 @@ from validate_catalog import (
     _render_block_problem,
     _value_references_smtp,
     _value_uses_integration,
+    _value_references_integration,
     _integration_field_refs,
     validate_greffon_dir,
 )
@@ -583,9 +584,7 @@ class SmtpJinjaRegexTest(unittest.TestCase):
         # guard rather than stripping it. visio/1.0 ships this shape.
         value = '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
         self.assertTrue(_value_uses_integration(value, 'smtp'))
-        # `_value_references_smtp` is now an alias for the same loose
-        # question; the guard-aware predicate it used to name is gone.
-        self.assertTrue(_value_references_smtp(value))
+        self.assertFalse(_value_references_smtp(value))
 
     def test_glitchtip_composed_url_matches(self):
         # GlitchTip's multi-expression URL: at least one `{{ ... smtp.* ... }}`
@@ -1156,51 +1155,6 @@ class RenderFlagTest(unittest.TestCase):
         self.assertTrue(any("config.MISSING" in e for e in errs), errs)
 
 
-class FieldScanEdgeShapesTest(unittest.TestCase):
-    """Shapes a mutation audit found unpinned. Each already behaves
-    correctly; nothing pinned it, so each was one edit from regressing.
-    """
-
-    def _fields(self, value):
-        return _integration_field_refs(value, 'oidc')
-
-    def test_a_non_string_get_argument_does_not_crash_the_validator(self):
-        # `{{ oidc.get(5) }}` -- the caller does `sorted(fields)`, so a
-        # non-string field name raises TypeError comparing int to str
-        # and the validator dies instead of reporting.
-        self.assertEqual(self._fields('{{ oidc.get(5) }}{{ oidc.issuer }}'),
-                         {'<dynamic>', 'issuer'})
-        self.assertEqual(sorted(self._fields('{{ oidc.get(5) }}')),
-                         ['<dynamic>'])
-
-    def test_a_set_block_alias_is_refused(self):
-        # `{% set x %}...{% endset %}` is an AssignBlock, a different
-        # node from `{% set x = ... %}`, and binds the mapping just as
-        # effectively.
-        self.assertEqual(
-            self._fields('{% set x %}{{ oidc }}{% endset %}{{ x }}'),
-            {'<dynamic>'})
-
-    def test_a_parse_failure_contributes_no_fields(self):
-        # Rule 5.6 reports the syntax error. Guessing field names out of
-        # a template nobody can parse would add a second, bogus error.
-        self.assertEqual(self._fields('{{ oidc['), set())
-
-    def test_a_loop_that_SHADOWS_the_name_is_not_the_integration(self):
-        # `{% for oidc in xs %}` rebinds the name locally, so `oidc.a`
-        # inside is the loop variable. Refusing it would reject a valid
-        # entry; the greffer agrees and keeps such a value.
-        self.assertEqual(self._fields(
-            '{% for oidc in xs %}{{ oidc.a }}{% endfor %}'), {'a'})
-
-    def test_binding_an_attr_lookup_is_binding_a_FIELD(self):
-        # `oidc|attr("issuer")` evaluates to the field's value, not the
-        # mapping, so aliasing it is readable rather than `<dynamic>`.
-        self.assertEqual(
-            self._fields('{% set y = oidc|attr("issuer") %}{{ y }}'),
-            {'issuer'})
-
-
 class ValuesMustSurviveTheDumpRoundTripTest(unittest.TestCase):
     """The greffer renders `yaml.dump(compose)`, and the dump doubles
     single quotes, so a single-quoted Jinja literal stops being valid
@@ -1451,30 +1405,15 @@ class OidcBidirectionalKeyMatchTest(unittest.TestCase):
         self.assertTrue(
             any('has no oidc destination for it' in e for e in errs), errs)
 
-    def test_a_guard_needs_a_destination_TOO(self):
-        # Deliberately looser than the greffer, which KEEPS a guard-only
-        # value. A guard-aware mirror of the greffer's rule drifted from
-        # it within a day, and CI then told authors a key was fine while
-        # the greffer dropped it. Requiring a destination for any use is
-        # the safe direction, and it is what shipping entries already do
-        # -- plausible, grafana and visio all declare destinations for
-        # their `{{ "true" if smtp... }}` flags.
+    def test_a_guard_needs_no_destination(self):
+        # A guard renders correctly with the integration unset, so the
+        # greffer keeps it and no destination is required.
         for value in ('{% if oidc %}on{% else %}off{% endif %}',
                       '{{ "y" if oidc.issuer else "n" }}'):
             with self.subTest(value=value):
                 errs = self._errors(
                     "      SOMETHING: '" + value + "'\n", None)
-                self.assertTrue(
-                    any('has no oidc destination for it' in e for e in errs),
-                    errs)
-
-    def test_a_guard_satisfies_a_declared_destination(self):
-        # The other direction, and the reason the loose predicate is the
-        # one to keep: visio/1.0 ships exactly this with a destination.
-        errs = self._errors(
-            "      OIDC_ISSUER: '{% if oidc %}on{% else %}off{% endif %}'\n",
-            self.DEST)
-        self.assertFalse([e for e in errs if 'oidc' in e.lower()], errs)
+                self.assertFalse([e for e in errs if 'oidc' in e.lower()], errs)
 
     def test_a_bracket_only_reference_is_a_reference(self):
         # Valid Jinja reading the same field. Requiring the dotted form
@@ -1562,6 +1501,99 @@ class OidcDestinationTypeTest(unittest.TestCase):
                 compose_yaml="services:\n  app:\n    image: nginx\n")
             errs = validate_greffon_dir(tmp, rel)
         self.assertFalse([e for e in errs if "smtp" in e.lower()], errs)
+
+
+class FieldScanEdgeShapesTest(unittest.TestCase):
+    """Shapes a mutation audit found unpinned, all already correct."""
+
+    def _fields(self, value):
+        return _integration_field_refs(value, 'oidc')
+
+    def test_a_non_string_get_argument_does_not_crash_the_validator(self):
+        # The caller does `sorted(fields)`, so a non-string field name
+        # raises TypeError comparing int to str and the validator dies
+        # instead of reporting.
+        self.assertEqual(self._fields('{{ oidc.get(5) }}{{ oidc.issuer }}'),
+                         {'<dynamic>', 'issuer'})
+
+    def test_a_set_block_alias_is_refused(self):
+        self.assertEqual(
+            self._fields('{% set x %}{{ oidc }}{% endset %}{{ x }}'),
+            {'<dynamic>'})
+
+    def test_a_parse_failure_contributes_no_fields(self):
+        self.assertEqual(self._fields('{{ oidc['), set())
+
+    def test_a_loop_that_SHADOWS_the_name_is_not_the_integration(self):
+        # The greffer agrees and keeps such a value.
+        self.assertEqual(self._fields(
+            '{% for oidc in xs %}{{ oidc.a }}{% endfor %}'), {'a'})
+
+    def test_binding_an_attr_lookup_is_binding_a_FIELD(self):
+        self.assertEqual(
+            self._fields('{% set y = oidc|attr("issuer") %}{{ y }}'),
+            {'issuer'})
+
+    def test_a_dict_method_is_not_a_field(self):
+        # An integration is bound to a dict, so `oidc.keys` is the
+        # built-in, not a field. Each name in `_MAPPING_METHODS`.
+        for method in ('keys', 'values', 'update', 'setdefault', 'clear',
+                       'fromkeys', 'copy', 'pop', 'popitem', 'items'):
+            with self.subTest(method=method):
+                self.assertEqual(
+                    self._fields('{{ oidc.%s() }}' % method), set())
+
+    def test_get_reads_its_receiver_before_claiming_the_field(self):
+        # `params.get("a")` is a different mapping's method; attributing
+        # `a` to the integration would reject a valid entry.
+        self.assertEqual(
+            self._fields('{{ oidc.issuer }}{{ params.get("a") }}'),
+            {'issuer'})
+
+    def test_a_dynamic_attr_argument_is_refused(self):
+        self.assertEqual(self._fields('{{ oidc|attr(v) }}'), {'<dynamic>'})
+
+    def test_a_set_TARGET_named_like_the_namespace_is_not_a_read(self):
+        # `{% set oidc = 1 %}` binds the name; the target is not a use
+        # of the integration.
+        self.assertEqual(self._fields('{% set oidc = 1 %}{{ oidc }}'), set())
+
+
+class ValidatorAgreesWithTheGrefferOnShapeTest(unittest.TestCase):
+    """The greffer is the authority: what it strips at deploy is what
+    the validator must be able to see."""
+
+    def test_a_nested_env_value_is_walked_like_the_greffer_walks_it(self):
+        # `K: ["{{ oidc.issuer }}"]` IS stripped by the greffer (its
+        # `_strings_in` recurses). Looking only at `str` left CI blind
+        # to exactly the shape the greffer acts on.
+        for value in (['{{ oidc.issuer }}'],
+                      {'a': ['{{ oidc.client_id }}']},
+                      ['x', {'b': '{{ oidc.issuer }}'}]):
+            with self.subTest(value=value):
+                self.assertTrue(_value_uses_integration(value, 'oidc'))
+
+    def test_a_nested_value_without_the_namespace_is_still_clean(self):
+        for value in (['plain'], {'a': 'b'}, None, 123, []):
+            with self.subTest(value=value):
+                self.assertFalse(_value_uses_integration(value, 'oidc'))
+
+    def test_a_lexer_SyntaxError_does_not_crash_the_run(self):
+        # Jinja's number lexer calls `ast.literal_eval`, so a fullwidth
+        # digit escapes as CPython's bare SyntaxError -- not a
+        # TemplateSyntaxError. It crashed the whole validator run.
+        value = '{{ 0.１ }}'
+        self.assertEqual(_integration_field_refs(value, 'oidc'), set())
+        self.assertFalse(_value_uses_integration(value, 'oidc'))
+
+    def test_a_lexer_SyntaxError_is_REPORTED_as_invalid_jinja(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: '{{ 0.１ }}'\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertTrue(any('is not valid Jinja' in e for e in errs), errs)
 
 
 class IntegrationNamespaceParityTest(unittest.TestCase):
