@@ -58,5 +58,11 @@
         { "type": "smtp", "container": "ghost", "key": "mail__from" }
       ]
     }
-  ]
+  ],
+  "backup": {
+    "volumes": {
+      "ghost_content": "data",
+      "db_data": "database"
+    }
+  }
 }
