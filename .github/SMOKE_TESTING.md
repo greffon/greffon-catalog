@@ -18,7 +18,7 @@ PR that touches a greffon.
 
 ## Reading the spec
 
-Each spec reads `process.env.<GREFFON>_URL`:
+Most browser-facing specs read `process.env.<GREFFON>_URL`:
 
 | Greffon | Env var |
 |---|---|
@@ -28,6 +28,19 @@ Each spec reads `process.env.<GREFFON>_URL`:
 | OpenClaw | `OPENCLAW_URL` |
 | Plausible | `PLAUSIBLE_URL` |
 | VS Code | `VSCODE_URL` |
+
+The GitHub Actions Runner greffon is headless and does not expose an HTTP URL.
+Its spec is skipped by default. To verify a deployed runner through GitHub's
+API, set:
+
+| Variable | Description |
+|---|---|
+| `GITHUB_RUNNER_SMOKE_TOKEN` | PAT that can list self-hosted runners for the target repo or org |
+| `GITHUB_RUNNER_SMOKE_SCOPE` | `repo` or `org`; defaults to `repo` |
+| `GITHUB_RUNNER_SMOKE_REPO` | `owner/repo`, required for repo scope |
+| `GITHUB_RUNNER_SMOKE_ORG` | Organization name, required for org scope |
+| `GITHUB_RUNNER_SMOKE_NAME_PREFIX` | Required unique runner name prefix for the deployment under test |
+| `GITHUB_RUNNER_SMOKE_HOST` | GitHub host; defaults to `github.com` |
 
 The local dev workflow (greffon root `scripts/setup-dev.sh` + the install
 dialog or the API) deploys an instance, the greffer assigns a port, and
@@ -70,6 +83,36 @@ npx playwright test
 4. Run `npx playwright test <your-greffon>/<version>/smoke_test.spec.ts`
    against a local deploy until it passes.
 5. Add a row to the env-var table above.
+
+## GitHub Actions Runner notes
+
+Self-hosted GitHub Actions runners execute workflow code on your greffer host.
+Only attach them to trusted private repositories or controlled organizations,
+and avoid exposing them to untrusted pull requests.
+
+The catalog entry uses one grouped install form so the UI can validate the
+required auth and scope combinations before deployment. It supports two GitHub
+auth modes:
+
+- `RUNNER_TOKEN`: the short-lived registration token from GitHub's standard
+  `./config.sh --url ... --token ...` flow. This is convenient for manual
+  first-start testing, but it expires quickly and must be refreshed before a
+  later reconfigure or restart.
+- `ACCESS_TOKEN`: a PAT used by the container to mint fresh registration
+  tokens automatically. This is the recommended mode for durable catalog
+  installs.
+
+For repo scope PAT auto-registration, use a PAT from a user with admin access
+to the repository; fine-grained PATs need repository Administration
+read/write permission. Classic PATs typically need `repo` for private
+repositories or `public_repo` for public repositories. For org scope, use an
+organization owner/admin PAT with self-hosted runner management permission;
+classic PATs typically need `admin:org`.
+
+Runner jobs that use Docker are served by a Docker-in-Docker sidecar. The
+catalog intentionally does not mount the host Docker socket because greffer
+rewrites compose volumes and host socket mounts would also grant broad host
+control to jobs.
 
 ## CI infrastructure note
 
