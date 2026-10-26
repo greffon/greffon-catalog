@@ -54,7 +54,7 @@ For long files, ask WebFetch a focused question: *"List every environment variab
 
 - Name and target service.
 - Required vs optional, secret vs non-secret. Look for "must set", "secret", "do not share", `writeOnly`-style language.
-- Sensible default: URLs → `{{ instance_url }}`; SMTP → `{{ smtp.* }}`; everything else → upstream's documented default, or empty for required secrets.
+- Sensible default: URLs → `{{ instance_url }}`; SMTP → `{{ smtp.* }}`; OIDC → `{{ oidc.* }}`; everything else → upstream's documented default, or empty for required secrets.
 - One-line description for the schema `title`, paraphrased from upstream.
 
 **Show the user a summary table:** services found, env vars per service, which will become user configurations vs hardcoded defaults. Surface conflicts (compose says `DB_PASS`, README says `DATABASE_PASSWORD`) — don't silently pick one. Ask the user to confirm before continuing.
@@ -71,8 +71,8 @@ Start from `_template/<version>/docker-compose.yml`. Apply the rules from [docs/
 - For env vars holding a public URL (callback bases, `*_BASE_URL`), substitute `{{ instance_url }}`.
 - For host **allowlists** (`*_TRUSTED_DOMAINS`, `*_ALLOWED_HOSTS`, `*_TRUSTED_HOSTS`) do NOT use `{{ instance_url }}`: it renders a scheme and possibly a port, while the sidecar proxies with `Host $host` and the app compares a bare host, so the allowlist matches nothing and every request is rejected. Use `{{ instance_host }}` (the bare host), optionally alongside `{{ instance_url.split("://")[1] }}` if a ported form may also arrive. See the catalog `README.md` table.
 - **If you added a host allowlist, register it.** CI can only check settings it knows: add an entry to `_HOST_ALLOWLISTS` in `.github/scripts/validate_catalog.py` keyed by `(<app>, <ENV_KEY>)`. Only `split` is required; `trim`, `prefixes` and `wildcards` are optional and default to nothing. Without that line the rule does not run for your entry, and a port-only allowlist passes CI while rejecting every request at runtime. Three entries shipped exactly that way.
-- For SMTP-related env vars (`SMTP_*`, `MAIL_*`, `MAILER_*`), use the `{{ smtp.* }}` Jinja context. The `environment:` block on any service with SMTP must be **mapping form**, not list form. See the catalog `README.md` § "SMTP destinations" for shaping examples.
-- Do NOT use Jinja vars outside the allowed set: `instance_id`, `instance_url`, `instance_host`, `instance_port`, `smtp.*`.
+- For SMTP-related env vars (`SMTP_*`, `MAIL_*`, `MAILER_*`), use the `{{ smtp.* }}` Jinja context. For OIDC/SSO env vars (`OIDC_*`, `OAUTH_*`), use `{{ oidc.* }}` -- but note it exposes ONLY `oidc.issuer` today; per-instance client credentials do not exist yet, so do not write an entry that needs `oidc.client_id`. The `environment:` block on any service using either must be **mapping form**, not list form. See the catalog `README.md` § "Integration-managed destinations" for shaping examples.
+- Do NOT use Jinja vars outside the allowed set: `instance_id`, `instance_url`, `instance_host`, `instance_port`, `smtp.*`, `oidc.*`.
 - **Hardcode operational defaults that aren't user knobs.** Vars with a single sensible value — `NODE_ENV=production`, `database__client=mysql`, fixed image flags, internal hostnames matching the service name (`DB_HOST=db`) — go in the compose `environment:` block as literal strings with NO matching configuration in `metadata.json`. A configuration is for things the user might reasonably want to change; everything else stays inline.
 
 ### Phase 4: Infer configurations
@@ -85,11 +85,11 @@ For each user-relevant env var from the Phase 2b inventory, draft a `GreffonVers
   - File uploads → `format: "data-url"`.
 - `default_value`: `{ "value": "{{ instance_url }}" }` for URLs; `{ "value": "" }` for required secrets; documented upstream default otherwise.
 - `destinations`: typically `[{ "type": "env", "container": "<service>", "key": "<ENV_KEY>" }]`.
-  - `smtp` type for SMTP env keys.
+  - `smtp` type for SMTP env keys, `oidc` for OIDC env keys.
   - `json` type for config files written into a volume.
   - `file` type for binary uploads.
 
-For SMTP, emit ONE configuration with `title: "SMTP"`, empty schema/default, and one `smtp` destination per related env key. See `plausible/1.0/metadata.json` for the canonical shape.
+For SMTP, emit ONE configuration with `title: "SMTP"`, empty schema/default, and one `smtp` destination per related env key. See `plausible/1.0/metadata.json` for the canonical shape. OIDC works the same way: one configuration titled `"OIDC"`, empty schema/default, one `oidc` destination per env key.
 
 **Linked secrets — one configuration, multiple destinations.** When the same value must appear in multiple env vars (typical: a DB password is set on the app service AND as `MYSQL_ROOT_PASSWORD` on the db service), emit ONE configuration with multiple destinations, NOT two separate configs. The user fills the value once and it lands in every wired-up env var:
 
@@ -151,7 +151,7 @@ If it fails, parse error messages and self-correct:
 - *"looks like a secret but no default and not required"* → add `"required": ["value"]` at schema root, OR set `"x-greffon-allow-empty-secret": true` if intentional (e.g. any-of auth like OpenClaw).
 - *"top-level volume X declared but never mounted"* → add the mount to a service or remove the volume.
 - *"destination references container X not found"* → fix the container name in `destinations`.
-- *"SMTP env key declared in metadata but not in compose" / "compose env references smtp.* but metadata has no smtp destination"* → reconcile both sides.
+- *"SMTP env key declared in metadata but not in compose" / "compose env references smtp.* but metadata has no smtp destination"* → reconcile both sides. The same rule runs for `oidc`.
 - *"destination uses list-form environment"* → convert that service's `environment:` to mapping form.
 
 Loop up to 3 times. Surface remaining errors to the user.
@@ -160,7 +160,7 @@ Loop up to 3 times. Surface remaining errors to the user.
 
 - Every `destinations[].container` is a service in the compose file.
 - Every `destinations[].volume` is a top-level named volume.
-- Every Jinja `{{ var }}` outside `{{ smtp.* }}` references one of `instance_id`, `instance_url`, `instance_host`, `instance_port`.
+- Every Jinja `{{ var }}` outside `{{ smtp.* }}` and `{{ oidc.* }}` references one of `instance_id`, `instance_url`, `instance_host`, `instance_port`.
 - Every env-type destination's `key` is actually a key in the target service's `environment:` block (catches `DB_PASS` vs `DB_PASSWORD` typos).
 
 If anything fails, surface the offending line and stop.

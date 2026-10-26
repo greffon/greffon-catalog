@@ -159,15 +159,21 @@ def build_configurations(metadata: dict, required_config: dict | None = None) ->
         dests = cfg.get("destinations", []) or []
         types = {d.get("type") for d in dests}
         pinned = required_config.get(cfg.get("title"))
-        if pinned is not None and types & {"smtp", "file", "json"}:
-            # Only a scalar {"value": ...} config can be pinned; smtp/file/json
-            # values have a different shape entirely.
+        if pinned is not None and types & {"smtp", "oidc", "file", "json"}:
+            # Only a scalar {"value": ...} config can be pinned; the
+            # integration-managed and file/json values have a different shape
+            # entirely.
             raise SystemExit(
                 f"smoke_test.json required_config pins {cfg.get('title')!r}, but its "
                 f"destinations are {'/'.join(sorted(types))} — only scalar configs can be pinned")
-        # SMTP-only configs carry no user value; the greffer fills them from the
-        # integrations.smtp blob (or strips them when no integration is linked).
-        if types == {"smtp"}:
+        # Integration-only configs carry no user value; the greffer fills them
+        # from the matching integrations blob (or strips them when no
+        # integration is linked). `oidc` belongs here for the same reason
+        # `smtp` does -- without it an oidc-only config falls through to the
+        # scalar branch below and gets posted as a fabricated string, so the
+        # first greffon using an oidc destination would be smoked with the
+        # wrong shape instead of exercising the no-integration path.
+        if types and types <= {"smtp", "oidc"}:
             configs.append({"value": {}, "destinations": dests})
             continue
         # File configs (baked data-URI files: nginx confs, Keycloak realms, app

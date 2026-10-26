@@ -21,7 +21,12 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from validate_catalog import (
     KNOWN_INTEGRATION_NAMESPACES,
+    _render_block_problem,
     _value_references_smtp,
+    _value_uses_integration,
+    _value_references_integration,
+    _integration_field_refs,
+    _list_entry_key,
     validate_greffon_dir,
 )
 
@@ -571,9 +576,16 @@ class SmtpJinjaRegexTest(unittest.TestCase):
         # Plausible's boolean expression — uses double-quoted string
         # literals inside Jinja so the value survives yaml.dump's
         # single-quote-escape round-trip in the greffer.
-        self.assertTrue(_value_references_smtp(
-            '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
-        ))
+        #
+        # It is a GUARD (a conditional test), so the two directions of
+        # Rule 5.3 answer differently, and both answers are load-bearing:
+        # the declared destination is satisfied (`_value_uses_integration`),
+        # while the value needs no destination on its own account
+        # (`_value_references_integration`) because the greffer keeps a
+        # guard rather than stripping it. visio/1.0 ships this shape.
+        value = '{{ "true" if smtp.tls_mode == "tls" else "false" }}'
+        self.assertTrue(_value_uses_integration(value, 'smtp'))
+        self.assertFalse(_value_references_smtp(value))
 
     def test_glitchtip_composed_url_matches(self):
         # GlitchTip's multi-expression URL: at least one `{{ ... smtp.* ... }}`
@@ -1144,6 +1156,757 @@ class RenderFlagTest(unittest.TestCase):
         self.assertTrue(any("config.MISSING" in e for e in errs), errs)
 
 
+class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
+    """Rule 5.6: an env value must parse, and must survive the yaml.dump
+    every published greffer (0.12.0, 22a59fc, and older) renders through.
+
+    Each verdict below was measured by rendering the same value through
+    `create_compose` on 22a59fc with its integration set. greffer main
+    (#146) renders every value this class expects the dump half to
+    reject; nodes do not run main.
+    """
+
+    DUMP = 'does not survive the yaml.dump'
+    INVALID = 'is not valid Jinja'
+
+    @staticmethod
+    def _pad(n):
+        # Non-ASCII makes the dump double-quote the value, and the
+        # padding walks `{{ smtp.host }}` across the wrap column.
+        return 'Café ' + 'x' * (n - 5) + ' {{ smtp.host }} tail'
+
+    def _errors_for(self, compose):
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(),
+                                 compose_yaml=compose)
+            return validate_greffon_dir(tmp, rel)
+
+    def _errors(self, value, key="K"):
+        # json.dumps gives a correctly DOUBLE-quoted YAML scalar, so the
+        # quotes, tabs and non-ASCII inside reach the validator intact.
+        return self._errors_for(
+            "services:\n  app:\n    image: nginx\n"
+            "    environment:\n      " + key + ": " + json.dumps(value)
+            + "\n")
+
+    def _list_errors(self, item):
+        return self._errors_for(
+            "services:\n  app:\n    image: nginx\n"
+            "    environment:\n      - " + json.dumps(item) + "\n")
+
+    def _flagged(self, errs, phrase):
+        return any(phrase in e for e in errs)
+
+    def test_a_single_quoted_literal_is_rejected(self):
+        errs = self._errors("{{ 'X' if smtp.tls_mode == 'tls' else 'Y' }}")
+        self.assertTrue(self._flagged(errs, self.DUMP), errs)
+
+    def test_the_double_quoted_spelling_is_accepted(self):
+        errs = self._errors('{{ "X" if smtp.tls_mode == "tls" else "Y" }}')
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+        self.assertFalse(self._flagged(errs, self.INVALID), errs)
+
+    def test_a_single_quoted_subscript_is_rejected(self):
+        # The spelling an OIDC entry reaches for first. 22a59fc fails it
+        # with OIDC set; `oidc["issuer"]` renders the issuer.
+        self.assertTrue(self._flagged(
+            self._errors("{{ oidc['issuer'] }}"), self.DUMP))
+        self.assertFalse(self._flagged(
+            self._errors('{{ oidc["issuer"] }}'), self.DUMP))
+
+    def test_an_apostrophe_inside_a_double_quoted_literal_is_accepted(self):
+        # Doubled to `it''s` by the dump, which is still a valid Jinja
+        # string, and the YAML load undoes the doubling: renders `it's`.
+        errs = self._errors('{{ "it\'s" }}')
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+        self.assertFalse(self._flagged(errs, self.INVALID), errs)
+
+    def test_a_colon_space_forces_single_quotes_too(self):
+        # Not only a leading `{`: anything that cannot be emitted plain.
+        self.assertTrue(self._flagged(
+            self._errors("a: b {{ 'x' }}"), self.DUMP))
+
+    def test_non_ascii_inside_the_expression_is_rejected(self):
+        self.assertTrue(self._flagged(
+            self._errors('{{ "Café" }}'), self.DUMP))
+
+    def test_non_ascii_outside_the_expression_is_accepted(self):
+        errs = self._errors('Café {{ instance_url }}')
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+
+    def test_a_tab_forces_double_quotes_too(self):
+        self.assertTrue(self._flagged(
+            self._errors('\t{{ "a" if smtp.host else "b" }}'), self.DUMP))
+
+    def test_a_line_break_then_a_space_forces_double_quotes_too(self):
+        value = 'a\n  ' + 'x' * 53 + ' {{ smtp.host }} tail'
+        self.assertTrue(self._flagged(self._errors(value), self.DUMP))
+
+    def test_the_wrap_column_is_the_one_the_compose_gives(self):
+        # 22a59fc fails pad(55) to pad(67): the dump wraps INSIDE the
+        # expression. Both edges, both sides, so a column off by one in
+        # either direction fails here.
+        for n, rejected in ((54, False), (55, True), (67, True),
+                            (68, False)):
+            with self.subTest(n=n):
+                self.assertEqual(self._flagged(
+                    self._errors(self._pad(n)), self.DUMP), rejected)
+        self.assertIn("keep the value short", self._advice(self._pad(55)))
+
+    def test_the_key_length_moves_the_column(self):
+        # With a 20-character key 22a59fc fails pad(45) and renders
+        # pad(49); with `K` it renders both.
+        key = "K" * 20
+        self.assertTrue(self._flagged(
+            self._errors(self._pad(45), key=key), self.DUMP))
+        self.assertFalse(self._flagged(
+            self._errors(self._pad(49), key=key), self.DUMP))
+
+    def test_every_bad_key_in_a_service_is_reported(self):
+        errs = self._errors_for(
+            "services:\n  app:\n    image: nginx\n    environment:\n"
+            "      A: \"{{ 'a' }}\"\n      B: \"{{ 'b' }}\"\n")
+        self.assertEqual(sorted(e.split("env '")[1][0] for e in errs
+                                if self.DUMP in e), ['A', 'B'])
+
+    def test_every_invalid_key_in_a_service_is_reported(self):
+        errs = self._errors_for(
+            "services:\n  app:\n    image: nginx\n    environment:\n"
+            "      A: \"{{ oidc. }}\"\n      B: \"{{ oidc. }}\"\n")
+        self.assertEqual(sorted(e.split("env '")[1][0] for e in errs
+                                if self.INVALID in e), ['A', 'B'])
+
+    def _advice(self, value):
+        dump = [e for e in self._errors(value) if self.DUMP in e]
+        self.assertTrue(dump, value)
+        return dump[0]
+
+    def test_the_advice_offers_the_quote_that_survives(self):
+        # The commonest rejection is a single-quoted literal in a plain
+        # ASCII value: the advice must point it at double quotes.
+        self.assertIn("use double-quoted Jinja strings", self._advice(
+            "{{ 'X' if smtp.tls_mode == 'tls' else 'Y' }}"))
+        # A tab makes the dump double-quote the value, so there the
+        # double-quoted spelling is the one that breaks; 22a59fc renders
+        # the single-quoted one. The advice must not stop at "double".
+        self.assertIn("single-quoted in a value holding", self._advice(
+            '\t{{ "a" if smtp.host else "b" }}'))
+        self.assertFalse(self._flagged(
+            self._errors("\t{{ 'a' if smtp.host else 'b' }}"), self.DUMP))
+
+    def test_a_multi_line_expression_is_told_to_go_on_one_line(self):
+        # A space next to the break double-quotes the value, and the
+        # escaped break lands inside the expression: 22a59fc fails both
+        # quote spellings and renders only the one-line form.
+        for value in ('{{ "a" if smtp.host\n   else "b" }}',
+                      "{{ 'a' if smtp.host\n   else 'b' }}"):
+            with self.subTest(value=value):
+                self.assertIn("each expression on one line",
+                              self._advice(value))
+
+    def test_list_form_single_quotes_are_accepted(self):
+        # A list item is emitted plain, so the quotes are not doubled.
+        errs = self._list_errors("K={{ 'a' if smtp.host else 'b' }}")
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+
+    def test_list_form_non_ascii_beside_a_double_quoted_literal_is_rejected(
+            self):
+        # Non-ASCII forces the item double-quoted, as in mapping form,
+        # and the message names the entry by its key: the text before
+        # the FIRST `=`, not the index and not up to the `==`.
+        errs = self._list_errors(
+            'K=Café {{ "a" if smtp.tls_mode == "tls" else "b" }}')
+        self.assertTrue(any(self.DUMP in e and "env 'K'" in e
+                            for e in errs), errs)
+
+    def test_list_form_wraps_at_the_list_item_column(self):
+        # 22a59fc fails the list item at 56 to 68, one column off the
+        # mapping window: an item sits at its own column.
+        for n, rejected in ((55, False), (56, True), (68, True),
+                            (69, False)):
+            with self.subTest(n=n):
+                self.assertEqual(self._flagged(
+                    self._list_errors('K=' + self._pad(n)), self.DUMP),
+                    rejected)
+
+    def test_list_form_invalid_jinja_is_reported(self):
+        errs = self._list_errors("K={{ oidc. }}")
+        self.assertTrue(any(self.INVALID in e and "env 'K'" in e
+                            for e in errs), errs)
+
+    def test_a_non_string_list_entry_does_not_stop_the_check(self):
+        # `5` is not an env entry compose accepts, but the validator must
+        # report the next entry, not crash and abort the whole run.
+        errs = self._errors_for(
+            "services:\n  app:\n    image: nginx\n    environment:\n"
+            "      - 5\n      - " + json.dumps("K={{ oidc. }}") + "\n")
+        self.assertTrue(any(self.INVALID in e and "env 'K'" in e
+                            for e in errs), errs)
+
+    def test_every_service_is_checked(self):
+        errs = self._errors_for(
+            "services:\n  app:\n    image: nginx\n"
+            "  worker:\n    image: nginx\n    environment:\n"
+            "      K: \"{{ 'a' if smtp.host else 'b' }}\"\n")
+        self.assertTrue(any(self.DUMP in e and "'worker'" in e
+                            for e in errs), errs)
+
+    def test_a_value_that_is_not_valid_jinja_says_so(self):
+        # Once: the dump advice ("use double quotes") would be wrong here.
+        errs = self._errors('{{ oidc. }}')
+        self.assertTrue(self._flagged(errs, self.INVALID), errs)
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+
+
+class ListEntryKeyTest(unittest.TestCase):
+    """How Rules 5.3 and 5.6 and the field check name a list-form env
+    entry. One name per entry: an empty key stays empty in all three."""
+
+    def test_the_key_is_the_text_before_the_first_equals_sign(self):
+        for entry, key in (("K=v", "K"), (" K =v", "K"), ("K=a=b", "K"),
+                           ('K={{ x == "y" }}', "K"), ("=v", ""),
+                           (" =v", "")):
+            with self.subTest(entry=entry):
+                self.assertEqual(_list_entry_key(3, entry), key)
+
+    def test_the_index_when_there_is_no_equals_sign(self):
+        for entry in ("BARE", 5, None):
+            with self.subTest(entry=entry):
+                self.assertEqual(_list_entry_key(3, entry), "3")
+
+
+class OidcSupportedFieldsTest(unittest.TestCase):
+    """`oidc` supplies only `issuer` today.
+
+    The shape matcher accepts any syntactically valid field, so
+    `{{ oidc.client_id }}` -- which does not exist yet -- and a typo like
+    `{{ oidc.isssuer }}` both satisfied the bidirectional check while
+    rendering empty at deploy.
+    """
+
+    def _errors(self, value):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [
+                    {"type": "oidc", "container": "app", "key": "K"}],
+            }]
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: '" + value + "'\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            return [e for e in validate_greffon_dir(tmp, rel)
+                    if "does not supply" in e]
+
+    def test_the_supported_field_is_accepted(self):
+        self.assertFalse(self._errors("{{ oidc.issuer }}"))
+
+    def _compose_errors(self, compose):
+        # No destination: a guard-only value needs none, so the field
+        # check is the only thing left to catch a bad field.
+        with tempfile.TemporaryDirectory() as tmp:
+            rel = _write_greffon(tmp, metadata=_base_metadata(),
+                                 compose_yaml=compose)
+            return [e for e in validate_greffon_dir(tmp, rel)
+                    if "does not supply" in e]
+
+    def _list_errors(self, *entries):
+        return self._compose_errors(
+            "services:\n  app:\n    image: nginx\n    environment:\n"
+            + "".join("      - " + json.dumps(e) + "\n" for e in entries))
+
+    def test_a_guard_on_a_missing_field_is_rejected_in_list_form(self):
+        # The mapping-form twin was rejected and this one passed. With
+        # no `client_id` it always renders `disabled`, in either form.
+        errs = self._list_errors(
+            "K={% if oidc.client_id %}enabled{% else %}disabled{% endif %}")
+        self.assertTrue(errs)
+        self.assertIn("env 'K'", errs[0])
+
+    def test_a_guard_on_the_supported_field_is_accepted_in_list_form(self):
+        self.assertFalse(self._list_errors(
+            "K={% if oidc.issuer %}enabled{% else %}disabled{% endif %}"))
+
+    BAD_GUARD = "{% if oidc.client_id %}a{% else %}b{% endif %}"
+
+    def test_every_list_entry_is_field_checked(self):
+        errs = self._list_errors("A=1", "K=" + self.BAD_GUARD)
+        self.assertTrue(errs)
+        self.assertIn("env 'K'", errs[0])
+
+    def test_a_list_entry_in_a_second_service_is_field_checked(self):
+        errs = self._compose_errors(
+            "services:\n  app:\n    image: nginx\n"
+            "  worker:\n    image: nginx\n    environment:\n"
+            "      - " + json.dumps("K=" + self.BAD_GUARD) + "\n")
+        self.assertTrue(any("'worker'" in e for e in errs), errs)
+
+    def test_an_entry_has_one_name_in_every_message(self):
+        # Two rules report each of these (Rule 5.3 or 5.6, and the field
+        # check); they must name each entry alike.
+        # The third reaches Rule 5.6 (the dump) instead of Rule 5.3.
+        for entry, name in (("={{ oidc.client_id }}", ""),
+                            (" K ={{ oidc.client_id }}", "K"),
+                            ('=Café {{ "a" if oidc.client_id else "b" }}',
+                             "")):
+            with self.subTest(entry=entry), \
+                    tempfile.TemporaryDirectory() as tmp:
+                rel = _write_greffon(
+                    tmp, metadata=_base_metadata(),
+                    compose_yaml="services:\n  app:\n    image: nginx\n"
+                                 "    environment:\n      - "
+                                 + json.dumps(entry) + "\n")
+                errs = [e for e in validate_greffon_dir(tmp, rel)
+                        if "env '" in e]
+                self.assertEqual(len(errs), 2, errs)
+                self.assertEqual(
+                    {e.split("env '")[1].split("'")[0] for e in errs},
+                    {name})
+
+    def test_a_list_entry_is_named_by_its_key_without_spaces(self):
+        errs = self._list_errors(" K = " + self.BAD_GUARD)
+        self.assertTrue(errs)
+        self.assertIn("env 'K'", errs[0])
+
+    def test_a_field_that_does_not_exist_yet_is_rejected(self):
+        self.assertTrue(self._errors("{{ oidc.client_id }}"))
+
+    def test_a_typo_is_rejected(self):
+        self.assertTrue(self._errors("{{ oidc.isssuer }}"))
+
+    def test_a_field_name_inside_a_string_literal_is_data_not_a_lookup(self):
+        # `default("https://oidc.client_id")` is a hostname, not a context
+        # read. Scanning the raw scalar rejected this valid issuer-only value.
+        self.assertFalse(
+            self._errors('{{ oidc.issuer | default("https://oidc.client_id") }}'))
+
+    def test_a_field_name_outside_a_jinja_block_is_data_not_a_lookup(self):
+        self.assertFalse(self._errors("{{ oidc.issuer }}#oidc.client_id"))
+
+    def test_a_bracket_lookup_is_a_field_read_too(self):
+        # Jinja reads a field three ways. Scanning only the dotted form
+        # let `{{ oidc.issuer }}:{{ oidc['client_id'] }}` through: the
+        # dotted half marked the value OIDC-managed while the bracket
+        # half read a field the greffer does not supply.
+        self.assertTrue(
+            self._errors("{{ oidc.issuer }}:{{ oidc[\"client_id\"] }}"))
+
+    def test_an_attr_lookup_is_a_field_read_too(self):
+        self.assertTrue(
+            self._errors("{{ oidc.issuer }}{{ oidc|attr(\"client_id\") }}"))
+
+    def test_whitespace_around_the_dot_is_still_a_field_read(self):
+        # Jinja allows it; a text scan required `oidc.` with nothing
+        # between. Parsing sees the same Getattr either way.
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{% if oidc . client_id %}:enabled{% endif %}"))
+
+    def test_operations_on_the_field_value_are_not_fields(self):
+        # Only the FIRST access off the mapping names a field. A string
+        # method applied to the result is an operation on the issuer,
+        # and reporting it rejected valid entries -- the catalog already
+        # does this with `smtp.from_address.split('@')` in nextcloud.
+        for value in ("{{ oidc.issuer.rstrip('/') }}",
+                      "{{ oidc.issuer.split('://')[1] }}"):
+            with self.subTest(value=value):
+                self.assertFalse(self._errors(value))
+
+    def test_binding_a_FIELD_VALUE_is_not_aliasing(self):
+        # `{% set base = oidc.issuer %}` binds the field's VALUE, which
+        # is readable and already counted. Only binding the MAPPING
+        # moves reads out of sight. Testing every child of the binding
+        # node conflated the two and refused a valid entry.
+        for value in ('{% set base = oidc.issuer %}{{ base }}/realms/x',
+                      '{% with b = oidc.issuer %}{{ b }}{% endwith %}',
+                      '{% for p in oidc.issuer.split("/") %}{{ p }}{% endfor %}'):
+            with self.subTest(value=value):
+                self.assertFalse(self._errors(value))
+
+    def test_a_dict_method_is_not_a_field(self):
+        # An integration is bound to a dict, so `oidc.get` is the
+        # built-in. The greffer documents `.get(k, default)` as safe
+        # when the integration is unset; reporting `get` as a missing
+        # field rejected it.
+        # DOUBLE quotes inside: `_errors` wraps the value in a
+        # single-quoted YAML scalar, so single quotes here break the
+        # parse and the check never runs.
+        self.assertFalse(self._errors('{{ oidc.get("issuer", "") }}'))
+
+    def test_get_names_its_field_in_the_argument(self):
+        self.assertTrue(self._errors('{{ oidc.get("client_id") }}'))
+
+    def test_a_with_block_alias_is_refused(self):
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{% with x=oidc %}{{ x.client_id }}{% endwith %}"))
+
+    def test_a_loop_alias_is_refused(self):
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{% for x in [oidc] %}{{ x.client_id }}{% endfor %}"))
+
+    def test_a_lookup_through_a_wrapper_is_still_a_field_read(self):
+        # The receiver need not BE the name: `dict(oidc)['client_id']`
+        # wraps it in a call and reads the field all the same.
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{{ dict(oidc)[\"client_id\"] }}"))
+
+    def test_aliasing_the_namespace_is_refused(self):
+        # `{% set x = oidc %}` moves the reads onto a name this scan
+        # does not follow, so the entry is refused rather than guessed at.
+        self.assertTrue(self._errors(
+            "{% set x = oidc %}{{ x.client_id }}"))
+
+    def test_a_subscript_the_validator_cannot_resolve_is_refused(self):
+        # `oidc[var]` names a field only at render time. Refuse what
+        # cannot be read rather than wave it through.
+        self.assertTrue(self._errors("{{ oidc.issuer }}{{ oidc[var] }}"))
+
+    def test_a_field_read_in_a_statement_block_counts(self):
+        # A compose value can read a field in `{% ... %}` too. Scanning
+        # expressions alone reported only `issuer` here, so the
+        # unsupported lookup passed.
+        self.assertTrue(self._errors(
+            "{{ oidc.issuer }}{% if oidc.client_id %}:enabled{% endif %}"))
+
+    def test_a_supported_field_read_in_a_statement_block_is_accepted(self):
+        self.assertFalse(self._errors(
+            "{{ oidc.issuer }}{% if oidc.issuer %}:enabled{% endif %}"))
+
+    def test_a_supported_field_read_by_bracket_is_accepted(self):
+        self.assertFalse(
+            self._errors("{{ oidc.issuer }}:{{ oidc[\"issuer\"] }}"))
+
+    def test_smtp_is_not_field_checked(self):
+        # Its field set is long-established; enforcing it here would
+        # reject shipping entries for no new safety.
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [
+                    {"type": "smtp", "container": "app", "key": "K"}],
+            }]
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: '{{ smtp.anything }}'\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            self.assertFalse([e for e in validate_greffon_dir(tmp, rel)
+                              if "does not supply" in e])
+
+
+class OidcBidirectionalKeyMatchTest(unittest.TestCase):
+    """Rule 5.3, for oidc as well as smtp.
+
+    The rule was smtp-only, so an `oidc` destination naming a mistyped or
+    absent env key passed validation -- the destination is only the
+    marker for a value rendered from `oidc.*`, and nothing checked the
+    two agreed. The entry would ship and the app would never receive its
+    issuer.
+    """
+
+    DEST = {"type": "oidc", "container": "app", "key": "OIDC_ISSUER"}
+
+    def _errors(self, compose_env, dest=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [dest] if dest else [],
+            }]
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n" + compose_env)
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            return validate_greffon_dir(tmp, rel)
+
+    def test_a_matching_pair_is_accepted(self):
+        errs = self._errors("      OIDC_ISSUER: '{{ oidc.issuer }}'\n", self.DEST)
+        self.assertFalse([e for e in errs if "oidc" in e.lower()], errs)
+
+    def test_a_mistyped_compose_key_is_caught(self):
+        errs = self._errors("      OIDC_ISUER: '{{ oidc.issuer }}'\n", self.DEST)
+        self.assertTrue(any("not present in docker-compose" in e for e in errs), errs)
+
+    def test_a_value_that_does_not_reference_oidc_is_caught(self):
+        errs = self._errors("      OIDC_ISSUER: 'literal'\n", self.DEST)
+        self.assertTrue(
+            any("does not reference the 'oidc' Jinja context" in e for e in errs),
+            errs)
+
+    def test_a_reference_with_no_destination_is_caught(self):
+        errs = self._errors("      OIDC_ISSUER: '{{ oidc.issuer }}'\n", None)
+        self.assertTrue(
+            any("has no oidc destination for it" in e for e in errs), errs)
+
+    def test_the_smtp_rule_is_unaffected(self):
+        errs = self._errors("      SMTP_HOST: '{{ smtp.host }}'\n", None)
+        self.assertTrue(
+            any("has no smtp destination for it" in e for e in errs), errs)
+
+    def test_a_whole_mapping_read_is_a_reference(self):
+        # The greffer's rule is "any non-guard USE", not "a field
+        # lookup". These read the mapping itself, are stripped at deploy
+        # when the integration is unset, and were invisible here: with a
+        # destination they were rejected, without one they passed.
+        for value in ('{{ oidc|tojson }}', '{{ oidc }}',
+                      '{{ oidc.items()|list }}', '{{ oidc.copy().issuer }}'):
+            with self.subTest(value=value):
+                errs = self._errors(
+                    "      OIDC_ISSUER: '" + value + "'\n", self.DEST)
+                self.assertFalse([e for e in errs if 'oidc' in e.lower()], errs)
+
+    def test_a_whole_mapping_read_without_a_destination_is_caught(self):
+        errs = self._errors("      OIDC_ISSUER: '{{ oidc|tojson }}'\n", None)
+        self.assertTrue(
+            any('has no oidc destination for it' in e for e in errs), errs)
+
+    def test_a_guard_needs_no_destination(self):
+        # A guard renders correctly with the integration unset, so the
+        # greffer keeps it and no destination is required.
+        for value in ('{% if oidc %}on{% else %}off{% endif %}',
+                      '{{ "y" if oidc.issuer else "n" }}'):
+            with self.subTest(value=value):
+                errs = self._errors(
+                    "      SOMETHING: '" + value + "'\n", None)
+                self.assertFalse([e for e in errs if 'oidc' in e.lower()], errs)
+
+    def test_a_bracket_only_reference_is_a_reference(self):
+        # Valid Jinja reading the same field. Requiring the dotted form
+        # reported this as "does not reference the context" against its
+        # own destination.
+        for value in ('{{ oidc[\"issuer\"] }}', "{{ oidc|attr('issuer') }}"):
+            with self.subTest(value=value):
+                errs = self._errors(
+                    "      OIDC_ISSUER: '" + value + "'\n", self.DEST)
+                self.assertFalse(
+                    [e for e in errs if "oidc" in e.lower()], errs)
+
+    def test_a_name_inside_a_string_literal_is_not_a_reference(self):
+        # `{{ "oidc.issuer" }}` renders the literal text, so the app
+        # gets `oidc.issuer` where the issuer URL belongs. Counting it
+        # as a read let the destination look satisfied.
+        errs = self._errors(
+            "      OIDC_ISSUER: '{{ \"oidc.issuer\" }}'\n", self.DEST)
+        self.assertTrue(
+            any("does not reference the 'oidc' Jinja context" in e
+                for e in errs), errs)
+
+    def test_a_bracket_only_reference_with_no_destination_is_caught(self):
+        # Without this it slipped past BOTH checks: no dotted match here,
+        # so the supported-field scan behind it never ran either.
+        errs = self._errors(
+            "      OIDC_ISSUER: '{{ oidc[\"client_id\"] }}'\n", None)
+        self.assertTrue(
+            any("has no oidc destination for it" in e for e in errs), errs)
+
+    def test_a_greffon_using_neither_is_untouched(self):
+        errs = self._errors("      PLAIN: 'x'\n", None)
+        self.assertFalse(
+            [e for e in errs if "smtp" in e.lower() or "oidc" in e.lower()], errs)
+
+
+class OidcDestinationTypeTest(unittest.TestCase):
+    """An `oidc` destination must be declarable, like `smtp`.
+
+    The greffer's pass 1 pops env keys by `destination.type`, so without
+    this the oidc half of the feature had no way to be declared: an
+    author writing `type: oidc` was rejected by the validator, and the
+    type could only ever be reached through the template scan.
+    """
+
+    def _errors(self, dest):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [
+                {"name": "c", "type": "text", "destinations": [dest]}
+            ]
+            rel = _write_greffon(
+                tmp, metadata=md,
+                compose_yaml="services:\n  app:\n    image: nginx\n")
+            return validate_greffon_dir(tmp, rel)
+
+    def test_an_oidc_destination_is_accepted(self):
+        errs = self._errors(
+            {"type": "oidc", "container": "app", "key": "OIDC_ISSUER"})
+        self.assertFalse([e for e in errs if "invalid type" in e], errs)
+
+    def test_an_oidc_destination_must_target_a_real_service(self):
+        errs = self._errors(
+            {"type": "oidc", "container": "nope", "key": "OIDC_ISSUER"})
+        self.assertTrue(
+            any("not found in docker-compose.yml" in e for e in errs), errs)
+
+    def test_an_unknown_type_is_still_rejected(self):
+        errs = self._errors({"type": "ldap", "container": "app", "key": "K"})
+        self.assertTrue(any("invalid type" in e for e in errs), errs)
+
+    def test_oidc_does_not_feed_the_smtp_bidirectional_rule(self):
+        # Rule 5.3 cross-checks declared smtp destinations against
+        # `{{ smtp.* }}` env values. An oidc destination must not be
+        # counted there, or it would demand a matching smtp reference.
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [
+                    {"type": "oidc", "container": "app", "key": "OIDC_ISSUER"}],
+            }]
+            rel = _write_greffon(
+                tmp, metadata=md,
+                compose_yaml="services:\n  app:\n    image: nginx\n")
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertFalse([e for e in errs if "smtp" in e.lower()], errs)
+
+
+class FieldScanEdgeShapesTest(unittest.TestCase):
+    """Shapes a mutation audit found unpinned, all already correct."""
+
+    def _fields(self, value):
+        return _integration_field_refs(value, 'oidc')
+
+    def test_a_non_string_get_argument_does_not_crash_the_validator(self):
+        # The caller does `sorted(fields)`, so a non-string field name
+        # raises TypeError comparing int to str and the validator dies
+        # instead of reporting.
+        self.assertEqual(self._fields('{{ oidc.get(5) }}{{ oidc.issuer }}'),
+                         {'<dynamic>', 'issuer'})
+
+    def test_a_set_block_alias_is_refused(self):
+        self.assertEqual(
+            self._fields('{% set x %}{{ oidc }}{% endset %}{{ x }}'),
+            {'<dynamic>'})
+
+    def test_a_parse_failure_contributes_no_fields(self):
+        self.assertEqual(self._fields('{{ oidc['), set())
+
+    def test_a_loop_that_SHADOWS_the_name_is_not_the_integration(self):
+        # The greffer agrees and keeps such a value.
+        self.assertEqual(self._fields(
+            '{% for oidc in xs %}{{ oidc.a }}{% endfor %}'), {'a'})
+
+    def test_binding_an_attr_lookup_is_binding_a_FIELD(self):
+        self.assertEqual(
+            self._fields('{% set y = oidc|attr("issuer") %}{{ y }}'),
+            {'issuer'})
+
+    def test_a_dict_method_is_not_a_field(self):
+        # An integration is bound to a dict, so `oidc.keys` is the
+        # built-in, not a field. Each name in `_MAPPING_METHODS`.
+        for method in ('keys', 'values', 'update', 'setdefault', 'clear',
+                       'fromkeys', 'copy', 'pop', 'popitem', 'items'):
+            with self.subTest(method=method):
+                self.assertEqual(
+                    self._fields('{{ oidc.%s() }}' % method), set())
+
+    def test_get_reads_its_receiver_before_claiming_the_field(self):
+        # `params.get("a")` is a different mapping's method; attributing
+        # `a` to the integration would reject a valid entry.
+        self.assertEqual(
+            self._fields('{{ oidc.issuer }}{{ params.get("a") }}'),
+            {'issuer'})
+
+    def test_a_dynamic_attr_argument_is_refused(self):
+        self.assertEqual(self._fields('{{ oidc|attr(v) }}'), {'<dynamic>'})
+
+    def test_a_set_TARGET_named_like_the_namespace_is_not_a_read(self):
+        # `{% set oidc = 1 %}` binds the name; the target is not a use
+        # of the integration.
+        self.assertEqual(self._fields('{% set oidc = 1 %}{{ oidc }}'), set())
+
+
+class GuardSlotsAndPredicateCallSitesTest(unittest.TestCase):
+    """Gaps a mutation audit found: each of these is one edit from
+    regressing, and each regression is a FALSE REJECT whose prescribed
+    fix destroys the value (declaring a destination makes the greffer's
+    metadata pass delete the key)."""
+
+    DEST = {"type": "oidc", "container": "app", "key": "K"}
+
+    def _errors(self, value, dest=None, list_form=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            md["configurations"] = [{
+                "name": "c", "type": "text",
+                "destinations": [dest] if dest else [],
+            }]
+            if list_form:
+                env = "      - " + value + "\n"
+            else:
+                env = "      K: " + value + "\n"
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n" + env)
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            return [e for e in validate_greffon_dir(tmp, rel)
+                    if 'oidc' in e.lower()]
+
+    def test_a_loop_FILTER_guard_needs_no_destination(self):
+        # `For.test` -- the slot the greffer's own comment says was
+        # missed once already.
+        self.assertFalse(self._errors(
+            '\'{% for x in ["a"] if oidc %}{{ x }}{% endfor %}\''))
+
+    def test_a_TEST_node_guard_needs_no_destination(self):
+        self.assertFalse(self._errors("'{{ oidc is mapping }}'"))
+
+    def test_a_list_form_guard_needs_no_destination(self):
+        # The list-form call site is the only one of the three with no
+        # guard-vs-read coverage.
+        self.assertFalse(self._errors(
+            '\'X={% if oidc %}a{% else %}b{% endif %}\'', list_form=True))
+
+    def test_an_unparseable_value_fabricates_no_reference(self):
+        # It reports invalid Jinja; it must not ALSO claim a missing
+        # destination for a reference it could not read.
+        errs = self._errors("'{{ 0.１ }}'")
+        self.assertFalse([e for e in errs if 'destination' in e], errs)
+
+    def test_an_unterminated_comment_is_reported(self):
+        # `{#` is a Jinja delimiter too: `hello {# oops` raises
+        # "Missing end of comment tag" at deploy, and the prefilter
+        # spelled out only `{{` and `{%`.
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: 'hello {# oops'\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertTrue(any('is not valid Jinja' in e for e in errs), errs)
+
+
+class ValidatorAgreesWithTheGrefferOnShapeTest(unittest.TestCase):
+    """The greffer is the authority: what it strips at deploy is what
+    the validator must be able to see."""
+
+    def test_a_nested_env_value_is_walked_like_the_greffer_walks_it(self):
+        # `K: ["{{ oidc.issuer }}"]` IS stripped by the greffer (its
+        # `_strings_in` recurses). Looking only at `str` left CI blind
+        # to exactly the shape the greffer acts on.
+        for value in (['{{ oidc.issuer }}'],
+                      {'a': ['{{ oidc.client_id }}']},
+                      ['x', {'b': '{{ oidc.issuer }}'}]):
+            with self.subTest(value=value):
+                self.assertTrue(_value_uses_integration(value, 'oidc'))
+
+    def test_a_nested_value_without_the_namespace_is_still_clean(self):
+        for value in (['plain'], {'a': 'b'}, None, 123, []):
+            with self.subTest(value=value):
+                self.assertFalse(_value_uses_integration(value, 'oidc'))
+
+    def test_a_lexer_SyntaxError_does_not_crash_the_run(self):
+        # Jinja's number lexer calls `ast.literal_eval`, so a fullwidth
+        # digit escapes as CPython's bare SyntaxError -- not a
+        # TemplateSyntaxError. It crashed the whole validator run.
+        value = '{{ 0.１ }}'
+        self.assertEqual(_integration_field_refs(value, 'oidc'), set())
+        self.assertFalse(_value_uses_integration(value, 'oidc'))
+
+    def test_a_lexer_SyntaxError_is_REPORTED_as_invalid_jinja(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = _base_metadata()
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      K: '{{ 0.１ }}'\n")
+            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            errs = validate_greffon_dir(tmp, rel)
+        self.assertTrue(any('is not valid Jinja' in e for e in errs), errs)
+
+
 class IntegrationNamespaceParityTest(unittest.TestCase):
     """Tripwire: pin the validator's integration-namespace list. It is a copy of
     the greffer's KNOWN_INTEGRATION_TYPES (separate repo — this test can't import
@@ -1153,7 +1916,19 @@ class IntegrationNamespaceParityTest(unittest.TestCase):
     silently fail open for the new namespace."""
 
     def test_known_namespaces_pinned(self):
-        self.assertEqual(KNOWN_INTEGRATION_NAMESPACES, ("smtp",))
+        self.assertEqual(KNOWN_INTEGRATION_NAMESPACES, ("smtp", "oidc"))
+
+
+    def test_the_allowlist_is_what_actually_rejects_a_namespace(self):
+        # The tuple is a tripwire, not the enforcement: `_RENDER_ALLOWED_BARE`
+        # is an allowlist and refuses any unknown name without being told it.
+        # Pin that, so the comment on KNOWN_INTEGRATION_NAMESPACES cannot
+        # quietly become a lie -- every listed namespace must be refused in a
+        # render-flagged baked file, and refused BY NAME.
+        for ns in KNOWN_INTEGRATION_NAMESPACES:
+            problem = _render_block_problem("{{ %s.field }}" % ns)
+            self.assertIsNotNone(problem, ns)
+            self.assertIn(ns, problem)
 
 
 class OneShotStatusLabelTest(unittest.TestCase):
