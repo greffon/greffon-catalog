@@ -153,6 +153,27 @@ def _strings_in(value):
             yield from _strings_in(nested)
 
 
+def _unsupported_field_errors(rel_dir, svc_name, key, value, namespace):
+    """Errors for each `<namespace>.<field>` read the greffer does not supply.
+
+    Checked whether or not the read is a guard. `{% if oidc.client_id %}`
+    needs no destination, but the field still does not exist, so the
+    value always takes the same branch, and the author should hear about
+    it either way. In list form too: the greffer renders a list entry
+    the same way, so it picks the same wrong branch.
+    """
+    supported = _INTEGRATION_FIELDS.get(namespace)
+    if not supported:
+        return []
+    return [
+        f"{rel_dir}: docker-compose.yml env '{key}' on service "
+        f"'{svc_name}' reads '{namespace}.{field}', which the greffer does "
+        f"not supply. {namespace} provides only: {sorted(supported)}"
+        for field in sorted(_integration_field_refs(value, namespace))
+        if field not in supported
+    ]
+
+
 def _integration_field_refs(value, namespace):
     """Field names `value` reads from `<namespace>`, per Jinja's parser.
 
@@ -2117,21 +2138,8 @@ def validate_greffon_dir(catalog_root, rel_dir):
                             compose_env_keys.setdefault(svc_name, set()).add(k)
                         if _value_uses_integration(v, ns):
                             compose_uses_keys.setdefault(svc_name, set()).add(k)
-                        # Field names are checked whether or not the read
-                        # is a guard. `{% if oidc.client_id %}` needs no
-                        # destination, but the field still does not
-                        # exist, and the author should hear about it
-                        # either way.
-                        for field in sorted(_integration_field_refs(v, ns)):
-                            supported = _INTEGRATION_FIELDS.get(ns)
-                            if supported and field not in supported:
-                                errors.append(
-                                    f"{rel_dir}: docker-compose.yml env "
-                                    f"'{k}' on service '{svc_name}' reads "
-                                    f"'{ns}.{field}', which the greffer does "
-                                    f"not supply. {ns} provides only: "
-                                    f"{sorted(supported)}"
-                                )
+                        errors += _unsupported_field_errors(
+                            rel_dir, svc_name, k, v, ns)
                 elif isinstance(env, list):
                     # List form: KEY=value strings. If the service has any
                     # destination of this type on the metadata side, flag it --
@@ -2139,7 +2147,13 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     # validated (Rule 5.4). Also scan list entries for an
                     # obvious reference so a maintainer who wrote list-form
                     # Jinja still trips Rule 5.3.
-                    for entry in env:
+                    for i, entry in enumerate(env):
+                        if isinstance(entry, str) and "=" in entry:
+                            entry_key = entry.split("=", 1)[0].strip()
+                        else:
+                            entry_key = str(i)
+                        errors += _unsupported_field_errors(
+                            rel_dir, svc_name, entry_key, entry, ns)
                         if _value_references_integration(entry, ns):
                             if isinstance(entry, str) and "=" in entry:
                                 key = entry.split("=", 1)[0].strip()

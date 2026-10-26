@@ -1295,6 +1295,30 @@ class OidcSupportedFieldsTest(unittest.TestCase):
     def test_the_supported_field_is_accepted(self):
         self.assertFalse(self._errors("{{ oidc.issuer }}"))
 
+    def _list_errors(self, entry):
+        # List form, no destination: a guard-only value needs none, so
+        # the field check is the only thing left to catch a bad field.
+        with tempfile.TemporaryDirectory() as tmp:
+            compose = ("services:\n  app:\n    image: nginx\n"
+                       "    environment:\n      - " + json.dumps(entry)
+                       + "\n")
+            rel = _write_greffon(tmp, metadata=_base_metadata(),
+                                 compose_yaml=compose)
+            return [e for e in validate_greffon_dir(tmp, rel)
+                    if "does not supply" in e]
+
+    def test_a_guard_on_a_missing_field_is_rejected_in_list_form(self):
+        # The mapping-form twin was rejected and this one passed. With
+        # no `client_id` it always renders `disabled`, in either form.
+        errs = self._list_errors(
+            "K={% if oidc.client_id %}enabled{% else %}disabled{% endif %}")
+        self.assertTrue(errs)
+        self.assertIn("env 'K'", errs[0])
+
+    def test_a_guard_on_the_supported_field_is_accepted_in_list_form(self):
+        self.assertFalse(self._list_errors(
+            "K={% if oidc.issuer %}enabled{% else %}disabled{% endif %}"))
+
     def test_a_field_that_does_not_exist_yet_is_rejected(self):
         self.assertTrue(self._errors("{{ oidc.client_id }}"))
 
