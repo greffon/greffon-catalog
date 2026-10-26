@@ -1155,49 +1155,118 @@ class RenderFlagTest(unittest.TestCase):
         self.assertTrue(any("config.MISSING" in e for e in errs), errs)
 
 
-class EnvValuesMustBeValidJinjaTest(unittest.TestCase):
-    """Rule 5.6: an env value that contains Jinja must parse.
+class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
+    """Rule 5.6: an env value must parse, and must survive the yaml.dump
+    every published greffer (0.12.0 and older) renders through.
 
-    It used to also reject a single-quoted literal, because the greffer
-    rendered `yaml.dump(compose)` and the dump doubles single quotes.
-    greffer#146 renders each string leaf before the one dump, so the two
-    spellings now render identically (verified on greffer main), and the
-    validator must not treat them differently.
+    Each verdict below was measured by rendering the same value through
+    `create_compose` on 22a59fc, the published 0.12.0, with its
+    integration set. greffer main (#146) renders all of them; nodes do
+    not run main.
     """
 
-    def _errors(self, value):
+    DUMP = 'does not survive the yaml.dump'
+    INVALID = 'is not valid Jinja'
+
+    def _errors_for(self, compose):
         with tempfile.TemporaryDirectory() as tmp:
-            md = _base_metadata()
-            compose = ("services:\n  app:\n    image: nginx\n"
-                       "    environment:\n      K: " + value + "\n")
-            rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
+            rel = _write_greffon(tmp, metadata=_base_metadata(),
+                                 compose_yaml=compose)
             return validate_greffon_dir(tmp, rel)
 
-    def test_single_and_double_quoted_literals_are_treated_the_same(self):
-        # The whole claim, as one comparison: whatever the validator says
-        # about the double-quoted spelling, it says about the single-
-        # quoted one. Any check that still cared about quoting -- the old
-        # round-trip half, or a new one -- makes the two lists differ.
+    def _errors(self, value):
         # json.dumps gives a correctly DOUBLE-quoted YAML scalar, so the
-        # single quotes inside reach the validator intact; quoting by
-        # hand produced invalid YAML and passed on the wrong error.
-        single = self._errors(json.dumps(
-            "{{ 'X' if smtp.tls_mode == 'tls' else 'Y' }}"))
-        double = self._errors(json.dumps(
-            '{{ "X" if smtp.tls_mode == "tls" else "Y" }}'))
-        self.assertEqual(single, double)
+        # quotes and non-ASCII inside reach the validator intact.
+        return self._errors_for(
+            "services:\n  app:\n    image: nginx\n"
+            "    environment:\n      K: " + json.dumps(value) + "\n")
 
-    def test_a_single_quoted_subscript_is_valid_jinja(self):
-        # The spelling the old rule told authors to avoid, and the one an
-        # OIDC entry reaches for first. It may still need a destination
-        # (rule 5.3), but it is not invalid.
-        errs = self._errors(json.dumps("{{ oidc['issuer'] }}"))
-        self.assertFalse(any('is not valid Jinja' in e or 'round-trip' in e
-                             for e in errs), errs)
+    def _list_errors(self, item):
+        return self._errors_for(
+            "services:\n  app:\n    image: nginx\n"
+            "    environment:\n      - " + json.dumps(item) + "\n")
+
+    def _flagged(self, errs, phrase):
+        return any(phrase in e for e in errs)
+
+    def test_a_single_quoted_literal_is_rejected(self):
+        errs = self._errors("{{ 'X' if smtp.tls_mode == 'tls' else 'Y' }}")
+        self.assertTrue(self._flagged(errs, self.DUMP), errs)
+
+    def test_the_double_quoted_spelling_is_accepted(self):
+        errs = self._errors('{{ "X" if smtp.tls_mode == "tls" else "Y" }}')
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+        self.assertFalse(self._flagged(errs, self.INVALID), errs)
+
+    def test_a_single_quoted_subscript_is_rejected(self):
+        # The spelling an OIDC entry reaches for first. 22a59fc fails it
+        # with OIDC set; `oidc["issuer"]` renders the issuer.
+        self.assertTrue(self._flagged(
+            self._errors("{{ oidc['issuer'] }}"), self.DUMP))
+        self.assertFalse(self._flagged(
+            self._errors('{{ oidc["issuer"] }}'), self.DUMP))
+
+    def test_an_apostrophe_inside_a_double_quoted_literal_is_accepted(self):
+        # Doubled to `it''s` by the dump, which is still a valid Jinja
+        # string, and the YAML load undoes the doubling: renders `it's`.
+        errs = self._errors('{{ "it\'s" }}')
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+        self.assertFalse(self._flagged(errs, self.INVALID), errs)
+
+    def test_non_ascii_inside_the_expression_is_rejected(self):
+        self.assertTrue(self._flagged(
+            self._errors('{{ "Caf\u00e9" }}'), self.DUMP))
+
+    def test_non_ascii_outside_the_expression_is_accepted(self):
+        errs = self._errors('Caf\u00e9 {{ instance_url }}')
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+
+    def test_the_wrap_column_is_the_one_the_compose_gives(self):
+        # Same shape, two lengths: at 55 the dump wraps INSIDE the
+        # expression and 22a59fc fails, at 70 it wraps before it and
+        # 22a59fc renders. Dumping `{k: v}` alone gets both backwards.
+        def pad(n):
+            return 'Caf\u00e9 ' + 'x' * (n - 5) + ' {{ smtp.host }} tail'
+        self.assertTrue(self._flagged(self._errors(pad(55)), self.DUMP))
+        self.assertFalse(self._flagged(self._errors(pad(70)), self.DUMP))
+
+    def test_list_form_single_quotes_are_accepted(self):
+        # A list item is emitted plain, so the quotes are not doubled.
+        errs = self._list_errors("K={{ 'a' if smtp.host else 'b' }}")
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
+
+    def test_list_form_non_ascii_inside_the_expression_is_rejected(self):
+        # Non-ASCII forces the item double-quoted, as in mapping form.
+        self.assertTrue(self._flagged(
+            self._list_errors('K=Caf\u00e9 {{ "x" }}'), self.DUMP))
+
+    def test_list_form_wraps_at_the_list_item_column(self):
+        # A list item sits at a different column from a mapping value of
+        # the same depth. 22a59fc renders the 53 and fails the 66; dumping
+        # the item as a mapping value gets both backwards.
+        def pad(n):
+            return ('K=Caf\u00e9 ' + 'x' * (n - 5)
+                    + ' {{ smtp.host }} tail')
+        self.assertFalse(self._flagged(self._list_errors(pad(53)), self.DUMP))
+        self.assertTrue(self._flagged(self._list_errors(pad(66)), self.DUMP))
+
+    def test_list_form_invalid_jinja_is_reported(self):
+        errs = self._list_errors("K={{ oidc. }}")
+        self.assertTrue(self._flagged(errs, self.INVALID), errs)
+
+    def test_every_service_is_checked(self):
+        errs = self._errors_for(
+            "services:\n  app:\n    image: nginx\n"
+            "  worker:\n    image: nginx\n    environment:\n"
+            "      K: \"{{ 'a' if smtp.host else 'b' }}\"\n")
+        self.assertTrue(any(self.DUMP in e and "'worker'" in e
+                            for e in errs), errs)
 
     def test_a_value_that_is_not_valid_jinja_says_so(self):
-        errs = self._errors(json.dumps('{{ oidc. }}'))
-        self.assertTrue(any('is not valid Jinja' in e for e in errs), errs)
+        # Once: the dump advice ("use double quotes") would be wrong here.
+        errs = self._errors('{{ oidc. }}')
+        self.assertTrue(self._flagged(errs, self.INVALID), errs)
+        self.assertFalse(self._flagged(errs, self.DUMP), errs)
 
 
 class OidcSupportedFieldsTest(unittest.TestCase):

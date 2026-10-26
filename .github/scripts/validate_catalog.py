@@ -91,7 +91,9 @@ def _alias_bindings(node):
     return []
 
 
-# Jinja's guard positions: the slots whose value only DECIDES a branch.
+# Jinja's guard positions: the slots where a name is tested, never
+# printed (an `if`, a conditional expression, a `for` filter, the operand
+# of an `is` test; `{{ oidc is mapping }}` prints the test, not the mapping).
 # A value that only guards on an integration renders correctly when it is
 # unset (the binding is a falsy empty mapping, so `{% if oidc %}a{% else %}b`
 # gives `b`), so it must not be told to declare a destination: the
@@ -114,8 +116,9 @@ def _reads_outside_a_guard(node, namespace, guarded=False):
     those are invisible to the greffer's pattern pass, which only removes
     a `{{ }}` value matching `oidc.` or `oidc[`: with the integration
     unset and no destination declared, `{{ oidc }}` and
-    `{{ oidc|tojson }}` survive and render `{}` (measured on greffer
-    main). Requiring the destination is what gets them removed.
+    `{{ oidc|tojson }}` survive and render `{}` (measured on 22a59fc, the
+    published 0.12.0, and on greffer main: the two agree). Requiring the
+    destination is what gets them removed.
     """
     if isinstance(node, jinja2.nodes.Name):
         return node.name == namespace and not guarded
@@ -309,14 +312,15 @@ def _value_references_integration(value, namespace) -> bool:
     rendering `info` without a destination, kept=False with one.
 
     What the greffer does with a guard is narrower than "keeps it". Its
-    pattern pass removes any `{{ }}` value that reads a FIELD, guard or
-    not, so `{{ "a" if smtp.host else "b" }}` is absent at deploy when
+    pattern pass removes a `{{ }}` value that reads a field spelled
+    `smtp.x` or `smtp[`, guard or not, so
+    `{{ "a" if smtp.host else "b" }}` is absent at deploy when
     SMTP is unset even though no destination is required here. Demanding
     one would change nothing: that key is removed either way. The guards
     this exemption protects are the ones the pattern pass leaves alone,
     a bare-name test like the one above or a value with no `{{ }}` in
     it, and for those a destination is the only thing that would remove
-    a working value. (Measured on greffer main.)
+    a working value. (Measured on 22a59fc and on greffer main.)
 
     `_value_references_smtp`, for any known integration namespace.
 
@@ -2022,22 +2026,35 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # Rule 5.5 still holds: every check is gated on "at least one
     # destination of this type OR at least one `{{ <ns>.* }}` env value",
     # so a greffon that uses neither is untouched.
-    # Rule 5.6: an env value that contains Jinja must be valid Jinja.
+    # Rule 5.6: an env value that contains Jinja must be valid Jinja, and
+    # must survive the YAML dump the deployed greffers render.
     #
-    # The greffer renders each env value as its own template, so one that
-    # does not parse (`{{ oidc.issuer }`, a stray `{#`) fails the deploy at
-    # /start/. Asked by parsing it, not by pattern; this also catches what
-    # previously surfaced only as the confusing "does not reference the
-    # context".
+    # A value that does not parse fails the deploy at /start/: always for
+    # a stray `{#`, and for `{{ oidc.issuer }` as soon as OIDC is set
+    # (unset, the greffer strips the key before it renders). Asked by
+    # parsing it, not by pattern; this also catches what previously
+    # surfaced only as the confusing "does not reference the context".
     #
-    # This rule used to also reject a value that would not survive a
-    # `yaml.dump` of the whole compose: the greffer rendered the dumped
-    # document, and the dump doubles single quotes, so
-    # `{{ 'a' if x else 'b' }}` broke. greffer#146 renders each string
-    # leaf before the one dump, so that round-trip is gone. Verified on
-    # greffer main: single-quoted literals and `{{ oidc['issuer'] }}`
-    # render correctly in mapping and list form. Keeping the check would
-    # reject entries that deploy fine.
+    # Every published greffer image (0.12.0 and older) renders
+    # `Template(yaml.dump(compose))`, and the dump rewrites the value
+    # before Jinja sees it. A value starting with `{` is emitted single-
+    # quoted with each single quote doubled, so `{{ 'a' if x else 'b' }}`
+    # becomes `{{ ''a'' ... }}`. A value holding a non-ASCII character is
+    # emitted double-quoted, which backslash-escapes the double quotes in
+    # the expression. A long line is wrapped at a fixed column, with a
+    # `\` when double-quoted, so whether an expression breaks depends on
+    # how deep the value sits. Each fails the deploy with the integration
+    # set, the path least likely to be tested.
+    #
+    # Asked by doing it: dump the value at the nesting the compose gives
+    # it, and parse the result. Dumping `{k: v}` alone gets the wrap
+    # column wrong: against 22a59fc it disagreed with the greffer on 12
+    # of 165 long values, this shape on none.
+    #
+    # greffer#146 (first in version 0.13.0) renders each string leaf
+    # before the one dump. Drop this half once every node runs 0.13.0 or
+    # later, which is a question about the published image, not about
+    # greffer main.
     if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
         for svc_name, svc_def in compose["services"].items():
             if not isinstance(svc_def, dict):
@@ -2068,6 +2085,20 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"'{svc_name}' is not valid Jinja: {message}"
                     )
                     continue
+                as_dumped = {"services": {svc_name: {"environment": (
+                    {k: v} if isinstance(env, dict) else [v])}}}
+                try:
+                    _JINJA_ENV.parse(yaml.dump(as_dumped))
+                except Exception:
+                    errors.append(
+                        f"{rel_dir}: docker-compose.yml env '{k}' on service "
+                        f"'{svc_name}' does not survive the yaml.dump the "
+                        f"greffer renders (got: '{v}'). The dump doubles "
+                        "single quotes, escapes double quotes once the value "
+                        "holds a non-ASCII character, and wraps long lines: "
+                        "use double quotes, keep the expression ASCII and "
+                        'the line short: {{ "a" if x else "b" }}'
+                    )
 
     for ns in sorted(KNOWN_INTEGRATION_NAMESPACES):
         label = ns.upper()
