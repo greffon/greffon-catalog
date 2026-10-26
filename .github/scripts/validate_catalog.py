@@ -2101,10 +2101,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # `docker-compose up` fails), and a password `pa' #ss` parses and is
     # silently cut to `pa`. Measured on 0.12.0 (22a59fc). No rule here
     # can see a value the user types after CI ran; only the per-leaf
-    # render fixes it. Output holding `: ` or ` #` in a plain value
-    # (`x {{ oidc|tojson }}`), and whitespace control at the end of one
-    # (`-%}`, `-}}`, which joins the next line on), break the same way;
-    # no catalog env value uses either today.
+    # render fixes it. A plain value breaks the same way on output
+    # holding `: ` or ` #`: `x {{ oidc|tojson }}`, or glitchtip's
+    # `EMAIL_URL` with an SMTP host `mail.x: y` (unparseable) or
+    # `mail.x #x` (silently cut to `...@mail.x`). So does whitespace
+    # control at the end of a plain value (`-%}`, `-}}`), which joins the
+    # next line on; no catalog env value uses that today.
     #
     # greffer#146 renders each string leaf before the one dump. It landed
     # while the version string still said 0.12.0 and was never published
@@ -2155,7 +2157,8 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         "character, or a space next to a line break, and "
                         "it wraps long lines: use double-quoted Jinja "
                         "strings (single-quoted in a value holding any of "
-                        "those), and keep the value short"
+                        "those), keep each expression on one line, and "
+                        "keep the value short"
                     )
 
     for ns in sorted(KNOWN_INTEGRATION_NAMESPACES):

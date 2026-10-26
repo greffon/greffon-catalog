@@ -1251,6 +1251,7 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
             with self.subTest(n=n):
                 self.assertEqual(self._flagged(
                     self._errors(self._pad(n)), self.DUMP), rejected)
+        self.assertIn("keep the value short", self._advice(self._pad(55)))
 
     def test_the_key_length_moves_the_column(self):
         # With a 20-character key 22a59fc fails pad(45) and renders
@@ -1275,16 +1276,33 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
         self.assertEqual(sorted(e.split("env '")[1][0] for e in errs
                                 if self.INVALID in e), ['A', 'B'])
 
+    def _advice(self, value):
+        dump = [e for e in self._errors(value) if self.DUMP in e]
+        self.assertTrue(dump, value)
+        return dump[0]
+
     def test_the_advice_offers_the_quote_that_survives(self):
-        # A tab makes the dump double-quote the value, so the double-
-        # quoted spelling is the one that breaks; 22a59fc renders the
-        # single-quoted one. The advice must not stop at "use double".
-        errs = self._errors('\t{{ "a" if smtp.host else "b" }}')
-        dump = [e for e in errs if self.DUMP in e]
-        self.assertTrue(dump, errs)
-        self.assertIn("single-quoted", dump[0])
+        # The commonest rejection is a single-quoted literal in a plain
+        # ASCII value: the advice must point it at double quotes.
+        self.assertIn("use double-quoted Jinja strings", self._advice(
+            "{{ 'X' if smtp.tls_mode == 'tls' else 'Y' }}"))
+        # A tab makes the dump double-quote the value, so there the
+        # double-quoted spelling is the one that breaks; 22a59fc renders
+        # the single-quoted one. The advice must not stop at "double".
+        self.assertIn("single-quoted in a value holding", self._advice(
+            '\t{{ "a" if smtp.host else "b" }}'))
         self.assertFalse(self._flagged(
             self._errors("\t{{ 'a' if smtp.host else 'b' }}"), self.DUMP))
+
+    def test_a_multi_line_expression_is_told_to_go_on_one_line(self):
+        # A space next to the break double-quotes the value, and the
+        # escaped break lands inside the expression: 22a59fc fails both
+        # quote spellings and renders only the one-line form.
+        for value in ('{{ "a" if smtp.host\n   else "b" }}',
+                      "{{ 'a' if smtp.host\n   else 'b' }}"):
+            with self.subTest(value=value):
+                self.assertIn("each expression on one line",
+                              self._advice(value))
 
     def test_list_form_single_quotes_are_accepted(self):
         # A list item is emitted plain, so the quotes are not doubled.
@@ -1424,10 +1442,13 @@ class OidcSupportedFieldsTest(unittest.TestCase):
         self.assertTrue(any("'worker'" in e for e in errs), errs)
 
     def test_an_entry_has_one_name_in_every_message(self):
-        # Rule 5.3 and the field check both report these (no destination,
-        # an unsupported field); they must name each entry alike.
+        # Two rules report each of these (Rule 5.3 or 5.6, and the field
+        # check); they must name each entry alike.
+        # The third reaches Rule 5.6 (the dump) instead of Rule 5.3.
         for entry, name in (("={{ oidc.client_id }}", ""),
-                            (" K ={{ oidc.client_id }}", "K")):
+                            (" K ={{ oidc.client_id }}", "K"),
+                            ('=Café {{ "a" if oidc.client_id else "b" }}',
+                             "")):
             with self.subTest(entry=entry), \
                     tempfile.TemporaryDirectory() as tmp:
                 rel = _write_greffon(
