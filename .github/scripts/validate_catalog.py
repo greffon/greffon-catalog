@@ -156,13 +156,11 @@ def _strings_in(value):
 
 
 def _list_entry_key(index, entry):
-    """How Rule 5.6 and the supported-field check name a list-form env
-    entry: the text before its first `=`, stripped, or the entry's index
-    when there is no `=` or nothing before it."""
+    """How Rules 5.3 and 5.6 and the supported-field check name a
+    list-form env entry: the text before its first `=`, stripped, or the
+    entry's index when it has no `=`."""
     if isinstance(entry, str) and "=" in entry:
-        key = entry.split("=", 1)[0].strip()
-        if key:
-            return key
+        return entry.split("=", 1)[0].strip()
     return str(index)
 
 
@@ -2081,11 +2079,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # so `{{ 'a' if x else 'b' }}` becomes `{{ ''a'' ... }}`. A value
     # holding a non-ASCII or control character (a tab, a carriage
     # return), or a space next to a line break, is double-quoted, which
-    # backslash-escapes the double quotes in the expression. A long line is wrapped at a fixed
-    # column, with a `\` when double-quoted, so whether an expression
-    # breaks depends on how deep the value sits and how long its key is.
-    # Each fails the deploy with the integration set, the path least
-    # likely to be tested.
+    # backslash-escapes the double quotes instead; there, single-quoted
+    # Jinja strings are the ones that survive. A long line is wrapped at
+    # a fixed column, with a `\` when double-quoted, so whether an
+    # expression breaks depends on how deep the value sits and how long
+    # its key is. Each fails the deploy with the integration set, the
+    # path least likely to be tested.
     #
     # Asked by doing it: dump the value at the nesting the compose gives
     # it, and parse the result. Dumping `{k: v}` alone gets the wrap
@@ -2095,14 +2094,17 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # What this does NOT check: a value whose dump still parses but whose
     # RENDER corrupts the document, because what Jinja writes lands
     # inside the quoted scalar unescaped. That includes the user's own
-    # data: with an SMTP password holding `'`, every single-quoted
-    # `{{ smtp.password }}` (15 catalog entries) leaves the compose
-    # unparseable and /start/ fails on 0.12.0. No check here can see a
-    # value the user types later; only the per-leaf render fixes it.
-    # The same holds for output holding quotes or `: `
-    # (`{{ oidc|tojson }}`), and for whitespace control at the end of a
-    # plain value (`-%}`, `-}}`), which eats the line break and joins the
-    # next line on; no catalog env value uses either of those today.
+    # data. In the 15 catalog entries that single-quote their SMTP
+    # values, any SMTP field holding `'` reaches the YAML raw: a password
+    # `it's` or a sender `o'brien@...` leaves the compose unparseable
+    # (the greffer writes it without parsing, so /start/ answers 200 and
+    # `docker-compose up` fails), and a password `pa' #ss` parses and is
+    # silently cut to `pa`. Measured on 0.12.0 (22a59fc). No rule here
+    # can see a value the user types after CI ran; only the per-leaf
+    # render fixes it. Output holding `: ` or ` #` in a plain value
+    # (`x {{ oidc|tojson }}`), and whitespace control at the end of one
+    # (`-%}`, `-}}`, which joins the next line on), break the same way;
+    # no catalog env value uses either today.
     #
     # greffer#146 renders each string leaf before the one dump. It landed
     # while the version string still said 0.12.0 and was never published
@@ -2147,12 +2149,13 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     errors.append(
                         f"{rel_dir}: docker-compose.yml env '{k}' on service "
                         f"'{svc_name}' does not survive the yaml.dump the "
-                        f"greffer renders (got: '{v}'). The dump re-quotes "
-                        "the value (doubling single quotes, escaping double "
-                        "quotes once it holds non-ASCII, a tab, or a space "
-                        "next to a line break) and wraps long lines: use "
-                        "double-quoted Jinja strings, and keep the value "
-                        'short, ASCII and on one line: {{ "a" if x else "b" }}'
+                        f"greffer renders (got: '{v}'). The dump doubles "
+                        "single quotes, or escapes double quotes once the "
+                        "value holds non-ASCII, a tab or another control "
+                        "character, or a space next to a line break, and "
+                        "it wraps long lines: use double-quoted Jinja "
+                        "strings (single-quoted in a value holding any of "
+                        "those), and keep the value short"
                     )
 
     for ns in sorted(KNOWN_INTEGRATION_NAMESPACES):
@@ -2187,7 +2190,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
                             entry, ns)
                         if _value_references_integration(entry, ns):
                             if isinstance(entry, str) and "=" in entry:
-                                key = entry.split("=", 1)[0].strip()
+                                key = _list_entry_key(i, entry)
                                 compose_env_keys.setdefault(svc_name, set()).add(key)
                                 compose_uses_keys.setdefault(svc_name, set()).add(key)
                     if svc_name in metadata_keys:

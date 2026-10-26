@@ -1268,12 +1268,31 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
         self.assertEqual(sorted(e.split("env '")[1][0] for e in errs
                                 if self.DUMP in e), ['A', 'B'])
 
+    def test_every_invalid_key_in_a_service_is_reported(self):
+        errs = self._errors_for(
+            "services:\n  app:\n    image: nginx\n    environment:\n"
+            "      A: \"{{ oidc. }}\"\n      B: \"{{ oidc. }}\"\n")
+        self.assertEqual(sorted(e.split("env '")[1][0] for e in errs
+                                if self.INVALID in e), ['A', 'B'])
+
+    def test_the_advice_offers_the_quote_that_survives(self):
+        # A tab makes the dump double-quote the value, so the double-
+        # quoted spelling is the one that breaks; 22a59fc renders the
+        # single-quoted one. The advice must not stop at "use double".
+        errs = self._errors('\t{{ "a" if smtp.host else "b" }}')
+        dump = [e for e in errs if self.DUMP in e]
+        self.assertTrue(dump, errs)
+        self.assertIn("single-quoted", dump[0])
+        self.assertFalse(self._flagged(
+            self._errors("\t{{ 'a' if smtp.host else 'b' }}"), self.DUMP))
+
     def test_list_form_single_quotes_are_accepted(self):
         # A list item is emitted plain, so the quotes are not doubled.
         errs = self._list_errors("K={{ 'a' if smtp.host else 'b' }}")
         self.assertFalse(self._flagged(errs, self.DUMP), errs)
 
-    def test_list_form_non_ascii_inside_the_expression_is_rejected(self):
+    def test_list_form_non_ascii_beside_a_double_quoted_literal_is_rejected(
+            self):
         # Non-ASCII forces the item double-quoted, as in mapping form,
         # and the message names the entry by its key: the text before
         # the FIRST `=`, not the index and not up to the `==`.
@@ -1322,16 +1341,18 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
 
 
 class ListEntryKeyTest(unittest.TestCase):
-    """How Rule 5.6 and the field check name a list-form env entry."""
+    """How Rules 5.3 and 5.6 and the field check name a list-form env
+    entry. One name per entry: an empty key stays empty in all three."""
 
     def test_the_key_is_the_text_before_the_first_equals_sign(self):
         for entry, key in (("K=v", "K"), (" K =v", "K"), ("K=a=b", "K"),
-                           ('K={{ x == "y" }}', "K")):
+                           ('K={{ x == "y" }}', "K"), ("=v", ""),
+                           (" =v", "")):
             with self.subTest(entry=entry):
                 self.assertEqual(_list_entry_key(3, entry), key)
 
-    def test_the_index_when_there_is_no_key_to_name(self):
-        for entry in ("=v", " =v", "BARE", 5, None):
+    def test_the_index_when_there_is_no_equals_sign(self):
+        for entry in ("BARE", 5, None):
             with self.subTest(entry=entry):
                 self.assertEqual(_list_entry_key(3, entry), "3")
 
@@ -1401,6 +1422,25 @@ class OidcSupportedFieldsTest(unittest.TestCase):
             "  worker:\n    image: nginx\n    environment:\n"
             "      - " + json.dumps("K=" + self.BAD_GUARD) + "\n")
         self.assertTrue(any("'worker'" in e for e in errs), errs)
+
+    def test_an_entry_has_one_name_in_every_message(self):
+        # Rule 5.3 and the field check both report these (no destination,
+        # an unsupported field); they must name each entry alike.
+        for entry, name in (("={{ oidc.client_id }}", ""),
+                            (" K ={{ oidc.client_id }}", "K")):
+            with self.subTest(entry=entry), \
+                    tempfile.TemporaryDirectory() as tmp:
+                rel = _write_greffon(
+                    tmp, metadata=_base_metadata(),
+                    compose_yaml="services:\n  app:\n    image: nginx\n"
+                                 "    environment:\n      - "
+                                 + json.dumps(entry) + "\n")
+                errs = [e for e in validate_greffon_dir(tmp, rel)
+                        if "env '" in e]
+                self.assertEqual(len(errs), 2, errs)
+                self.assertEqual(
+                    {e.split("env '")[1].split("'")[0] for e in errs},
+                    {name})
 
     def test_a_list_entry_is_named_by_its_key_without_spaces(self):
         errs = self._list_errors(" K = " + self.BAD_GUARD)
