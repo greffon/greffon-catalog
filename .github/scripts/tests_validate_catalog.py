@@ -26,6 +26,7 @@ from validate_catalog import (
     _value_uses_integration,
     _value_references_integration,
     _integration_field_refs,
+    _list_entry_key,
     validate_greffon_dir,
 )
 
@@ -1161,7 +1162,8 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
 
     Each verdict below was measured by rendering the same value through
     `create_compose` on 22a59fc with its integration set. greffer main
-    (#146) renders all of them; nodes do not run main.
+    (#146) renders every value this class expects the dump half to
+    reject; nodes do not run main.
     """
 
     DUMP = 'does not survive the yaml.dump'
@@ -1273,8 +1275,10 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
 
     def test_list_form_non_ascii_inside_the_expression_is_rejected(self):
         # Non-ASCII forces the item double-quoted, as in mapping form,
-        # and the message names the entry by its key, not its index.
-        errs = self._list_errors('K=Café {{ "x" }}')
+        # and the message names the entry by its key: the text before
+        # the FIRST `=`, not the index and not up to the `==`.
+        errs = self._list_errors(
+            'K=Café {{ "a" if smtp.tls_mode == "tls" else "b" }}')
         self.assertTrue(any(self.DUMP in e and "env 'K'" in e
                             for e in errs), errs)
 
@@ -1293,6 +1297,15 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
         self.assertTrue(any(self.INVALID in e and "env 'K'" in e
                             for e in errs), errs)
 
+    def test_a_non_string_list_entry_does_not_stop_the_check(self):
+        # `5` is not an env entry compose accepts, but the validator must
+        # report the next entry, not crash and abort the whole run.
+        errs = self._errors_for(
+            "services:\n  app:\n    image: nginx\n    environment:\n"
+            "      - 5\n      - " + json.dumps("K={{ oidc. }}") + "\n")
+        self.assertTrue(any(self.INVALID in e and "env 'K'" in e
+                            for e in errs), errs)
+
     def test_every_service_is_checked(self):
         errs = self._errors_for(
             "services:\n  app:\n    image: nginx\n"
@@ -1306,6 +1319,21 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
         errs = self._errors('{{ oidc. }}')
         self.assertTrue(self._flagged(errs, self.INVALID), errs)
         self.assertFalse(self._flagged(errs, self.DUMP), errs)
+
+
+class ListEntryKeyTest(unittest.TestCase):
+    """How Rule 5.6 and the field check name a list-form env entry."""
+
+    def test_the_key_is_the_text_before_the_first_equals_sign(self):
+        for entry, key in (("K=v", "K"), (" K =v", "K"), ("K=a=b", "K"),
+                           ('K={{ x == "y" }}', "K")):
+            with self.subTest(entry=entry):
+                self.assertEqual(_list_entry_key(3, entry), key)
+
+    def test_the_index_when_there_is_no_key_to_name(self):
+        for entry in ("=v", " =v", "BARE", 5, None):
+            with self.subTest(entry=entry):
+                self.assertEqual(_list_entry_key(3, entry), "3")
 
 
 class OidcSupportedFieldsTest(unittest.TestCase):

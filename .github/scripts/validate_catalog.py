@@ -114,9 +114,10 @@ def _reads_outside_a_guard(node, namespace, guarded=False):
     A use of the WHOLE mapping counts, not only a dotted field:
     `{{ oidc|tojson }}`, `{{ oidc.items()|list }}`, `{{ oidc }}`. Some of
     those are invisible to the greffer's pattern pass, which only removes
-    a value that contains `{{` and matches `oidc.` or `oidc[` anywhere:
-    with the integration unset and no destination declared, `{{ oidc }}`
-    and `{{ oidc|tojson }}` survive and render `{}` (measured on 22a59fc, the
+    a string value that contains `{{` and, anywhere in it, the whole word
+    `oidc` followed by `.` and a word character or by `[`: with the
+    integration unset and no destination declared, `{{ oidc }}` and
+    `{{ oidc|tojson }}` survive and render `{}` (measured on 22a59fc, the
     published 0.12.0, and on greffer main: the two agree). Requiring the
     destination is what gets them removed.
     """
@@ -155,11 +156,13 @@ def _strings_in(value):
 
 
 def _list_entry_key(index, entry):
-    """The key a list-form env entry sets: the text before `=`, else its
-    index. Used for every list-form message, so one entry is named the
-    same way by every rule."""
+    """How Rule 5.6 and the supported-field check name a list-form env
+    entry: the text before its first `=`, stripped, or the entry's index
+    when there is no `=` or nothing before it."""
     if isinstance(entry, str) and "=" in entry:
-        return entry.split("=", 1)[0].strip()
+        key = entry.split("=", 1)[0].strip()
+        if key:
+            return key
     return str(index)
 
 
@@ -343,8 +346,10 @@ def _value_references_integration(value, namespace) -> bool:
     rendering `info` without a destination, kept=False with one.
 
     What the greffer does with a guard is narrower than "keeps it". Its
-    pattern pass removes any value that contains `{{` and matches
-    `smtp.x` or `smtp[` anywhere, guard or not, so
+    pattern pass removes any string value that contains `{{` and,
+    anywhere in it, the whole word `smtp` followed by `.` and a word
+    character or by `[` (for a list entry, after its first `=`; an entry
+    with no `=` is never removed), guard or not, so
     `{{ "a" if smtp.host else "b" }}` is absent at deploy when
     SMTP is unset even though no destination is required here. Demanding
     one would change nothing: that key is removed either way. The guards
@@ -2074,9 +2079,9 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # from the content. A value it cannot emit plain (a leading `{`, a
     # `: `, a ` #`, ...) is single-quoted with each single quote doubled,
     # so `{{ 'a' if x else 'b' }}` becomes `{{ ''a'' ... }}`. A value
-    # holding a non-ASCII or control character, a tab, or a line break
-    # followed by a space is double-quoted, which backslash-escapes the
-    # double quotes in the expression. A long line is wrapped at a fixed
+    # holding a non-ASCII or control character (a tab, a carriage
+    # return), or a space next to a line break, is double-quoted, which
+    # backslash-escapes the double quotes in the expression. A long line is wrapped at a fixed
     # column, with a `\` when double-quoted, so whether an expression
     # breaks depends on how deep the value sits and how long its key is.
     # Each fails the deploy with the integration set, the path least
@@ -2088,11 +2093,16 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # of 165 long values, this shape on none.
     #
     # What this does NOT check: a value whose dump still parses but whose
-    # RENDER corrupts the document. Whitespace control at the end of a
-    # plain value (`-%}`, `-}}`) eats the line break and joins the next
-    # line onto it, and output holding quotes or `: ` (`{{ oidc|tojson }}`)
-    # can leave the document unparseable. Seeing those means rendering
-    # with a stand-in context; no catalog entry uses either today.
+    # RENDER corrupts the document, because what Jinja writes lands
+    # inside the quoted scalar unescaped. That includes the user's own
+    # data: with an SMTP password holding `'`, every single-quoted
+    # `{{ smtp.password }}` (15 catalog entries) leaves the compose
+    # unparseable and /start/ fails on 0.12.0. No check here can see a
+    # value the user types later; only the per-leaf render fixes it.
+    # The same holds for output holding quotes or `: `
+    # (`{{ oidc|tojson }}`), and for whitespace control at the end of a
+    # plain value (`-%}`, `-}}`), which eats the line break and joins the
+    # next line on; no catalog env value uses either of those today.
     #
     # greffer#146 renders each string leaf before the one dump. It landed
     # while the version string still said 0.12.0 and was never published
@@ -2139,10 +2149,10 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"'{svc_name}' does not survive the yaml.dump the "
                         f"greffer renders (got: '{v}'). The dump re-quotes "
                         "the value (doubling single quotes, escaping double "
-                        "quotes once it holds non-ASCII, a tab or a line "
-                        "break) and wraps long lines: use double-quoted "
-                        "Jinja strings, and keep the value short, ASCII and "
-                        'on one line: {{ "a" if x else "b" }}'
+                        "quotes once it holds non-ASCII, a tab, or a space "
+                        "next to a line break) and wraps long lines: use "
+                        "double-quoted Jinja strings, and keep the value "
+                        'short, ASCII and on one line: {{ "a" if x else "b" }}'
                     )
 
     for ns in sorted(KNOWN_INTEGRATION_NAMESPACES):
