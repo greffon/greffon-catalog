@@ -1155,12 +1155,14 @@ class RenderFlagTest(unittest.TestCase):
         self.assertTrue(any("config.MISSING" in e for e in errs), errs)
 
 
-class ValuesMustSurviveTheDumpRoundTripTest(unittest.TestCase):
-    """The greffer renders `yaml.dump(compose)`, and the dump doubles
-    single quotes, so a single-quoted Jinja literal stops being valid
-    Jinja by the time it is rendered -- with the integration CONFIGURED,
-    the path least likely to be tested. This README taught that exact
-    spelling.
+class EnvValuesMustBeValidJinjaTest(unittest.TestCase):
+    """Rule 5.6: an env value that contains Jinja must parse.
+
+    It used to also reject a single-quoted literal, because the greffer
+    rendered `yaml.dump(compose)` and the dump doubles single quotes.
+    greffer#146 renders each string leaf before the one dump, so the two
+    spellings now render identically (verified on greffer main), and the
+    validator must not treat them differently.
     """
 
     def _errors(self, value):
@@ -1171,19 +1173,27 @@ class ValuesMustSurviveTheDumpRoundTripTest(unittest.TestCase):
             rel = _write_greffon(tmp, metadata=md, compose_yaml=compose)
             return validate_greffon_dir(tmp, rel)
 
-    def test_single_quoted_jinja_literals_are_rejected(self):
+    def test_single_and_double_quoted_literals_are_treated_the_same(self):
+        # The whole claim, as one comparison: whatever the validator says
+        # about the double-quoted spelling, it says about the single-
+        # quoted one. Any check that still cared about quoting -- the old
+        # round-trip half, or a new one -- makes the two lists differ.
         # json.dumps gives a correctly DOUBLE-quoted YAML scalar, so the
-        # single quotes inside reach the validator intact. Quoting this
-        # by hand produced invalid YAML and the test passed on the wrong
-        # error.
-        errs = self._errors(json.dumps(
+        # single quotes inside reach the validator intact; quoting by
+        # hand produced invalid YAML and passed on the wrong error.
+        single = self._errors(json.dumps(
             "{{ 'X' if smtp.tls_mode == 'tls' else 'Y' }}"))
-        self.assertTrue(any('round-trip' in e for e in errs), errs)
-
-    def test_double_quoted_jinja_literals_are_accepted(self):
-        errs = self._errors(json.dumps(
+        double = self._errors(json.dumps(
             '{{ "X" if smtp.tls_mode == "tls" else "Y" }}'))
-        self.assertFalse(any('round-trip' in e for e in errs), errs)
+        self.assertEqual(single, double)
+
+    def test_a_single_quoted_subscript_is_valid_jinja(self):
+        # The spelling the old rule told authors to avoid, and the one an
+        # OIDC entry reaches for first. It may still need a destination
+        # (rule 5.3), but it is not invalid.
+        errs = self._errors(json.dumps("{{ oidc['issuer'] }}"))
+        self.assertFalse(any('is not valid Jinja' in e or 'round-trip' in e
+                             for e in errs), errs)
 
     def test_a_value_that_is_not_valid_jinja_says_so(self):
         errs = self._errors(json.dumps('{{ oidc. }}'))

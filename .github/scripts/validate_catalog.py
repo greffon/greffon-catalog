@@ -91,11 +91,13 @@ def _alias_bindings(node):
     return []
 
 
-# The greffer's guard positions, copied from its `_GUARD_SLOTS`. A value
-# that only GUARDS on an integration renders correctly when it is unset
-# (the binding is a falsy empty mapping, so `{% if oidc %}a{% else %}b`
-# gives `b`), so the greffer keeps it and it needs no destination.
-# Anything else that uses the name is a read.
+# Jinja's guard positions: the slots whose value only DECIDES a branch.
+# A value that only guards on an integration renders correctly when it is
+# unset (the binding is a falsy empty mapping, so `{% if oidc %}a{% else %}b`
+# gives `b`), so it must not be told to declare a destination: the
+# greffer's destination pass removes a key by its declaration, without
+# reading the value, and would delete one that works. Anything else that
+# uses the name is a read.
 _GUARD_SLOTS = (
     (jinja2.nodes.If, "test"),
     (jinja2.nodes.CondExpr, "test"),
@@ -107,15 +109,13 @@ _GUARD_SLOTS = (
 def _reads_outside_a_guard(node, namespace, guarded=False):
     """Does this subtree USE the namespace somewhere that is not a guard?
 
-    Mirrors the greffer's `_reads`, because the two must agree: the
-    validator asks "does this value reference the integration" to decide
-    whether a destination is required, and the greffer asks the same
-    question to decide whether to strip the key. Where they disagreed,
-    a value using the whole mapping -- `{{ oidc|tojson }}`,
-    `{{ oidc.items()|list }}`, `{{ oidc }}` -- was stripped at deploy
-    while the validator said it referenced nothing, so it was rejected
-    WITH a destination and accepted WITHOUT one. Both wrong, and
-    opposite ways round.
+    A use of the WHOLE mapping counts, not only a dotted field:
+    `{{ oidc|tojson }}`, `{{ oidc.items()|list }}`, `{{ oidc }}`. Some of
+    those are invisible to the greffer's pattern pass, which only removes
+    a `{{ }}` value matching `oidc.` or `oidc[`: with the integration
+    unset and no destination declared, `{{ oidc }}` and
+    `{{ oidc|tojson }}` survive and render `{}` (measured on greffer
+    main). Requiring the destination is what gets them removed.
     """
     if isinstance(node, jinja2.nodes.Name):
         return node.name == namespace and not guarded
@@ -260,13 +260,16 @@ def _value_uses_integration(value, namespace) -> bool:
     metadata -> compose: a declared destination is satisfied by ANY use,
     including a guard. `visio/1.0` ships
     `{{ "true" if smtp.tls_mode == "starttls" else "false" }}` with an
-    SMTP destination: the greffer keeps it (a guard renders correctly
-    when the integration is unset) and the destination is what marks the
-    key as SMTP-managed for the manager. Requiring a non-guard read here
-    rejected a shipping entry.
+    SMTP destination. That destination is legitimate: it marks the key
+    as SMTP-managed for the manager, and the greffer removes the key when
+    SMTP is unset, which for this key is behaviour-neutral (the app reads
+    an absent flag as false). Requiring a non-guard read here rejected a
+    shipping entry.
 
-    compose -> metadata: only a NON-guard read needs a destination,
-    because that is the read the greffer strips. A guard needs none.
+    compose -> metadata: only a NON-guard read needs a destination. A
+    guard needs none, and demanding one can destroy it, because the
+    destination pass removes a key without reading its value (see
+    `_value_references_integration`).
     """
     if namespace not in KNOWN_INTEGRATION_NAMESPACES:
         return False
@@ -305,16 +308,15 @@ def _value_references_integration(value, namespace) -> bool:
     without looking at the value. Measured on the greffer: kept=True
     rendering `info` without a destination, kept=False with one.
 
-    KNOWN DIVERGENCE, accepted. The greffer additionally strips a guard
-    that COERCES a field (`{% if smtp.port|int > 0 %}` -- its
-    `_guard_coerces`), and this does not know that, so such a value
-    needs no destination here while the greffer drops it. The author
-    gets no CI warning. That is a missing WARNING, not a wrong action:
-    the greffer strips that key whether or not a destination is
-    declared, so demanding one would not save it. Mirroring
-    `_guard_coerces` here was tried and is what created the drift in
-    the first place -- two copies of one rule in two repos, with no test
-    that can see both.
+    What the greffer does with a guard is narrower than "keeps it". Its
+    pattern pass removes any `{{ }}` value that reads a FIELD, guard or
+    not, so `{{ "a" if smtp.host else "b" }}` is absent at deploy when
+    SMTP is unset even though no destination is required here. Demanding
+    one would change nothing: that key is removed either way. The guards
+    this exemption protects are the ones the pattern pass leaves alone,
+    a bare-name test like the one above or a value with no `{{ }}` in
+    it, and for those a destination is the only thing that would remove
+    a working value. (Measured on greffer main.)
 
     `_value_references_smtp`, for any known integration namespace.
 
@@ -2020,19 +2022,22 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # Rule 5.5 still holds: every check is gated on "at least one
     # destination of this type OR at least one `{{ <ns>.* }}` env value",
     # so a greffon that uses neither is untouched.
-    # Rule 5.6: an env value must survive the greffer's dump-then-render.
+    # Rule 5.6: an env value that contains Jinja must be valid Jinja.
     #
-    # The greffer renders `yaml.dump(compose)`, and `yaml.dump` re-emits
-    # a scalar in SINGLE-quote style by doubling any single quote in it.
-    # So `{{ 'true' if x else 'false' }}` becomes `{{ ''true'' ... }}`,
-    # which is not valid Jinja, and the deploy fails at /start/ -- with
-    # the integration CONFIGURED, which is the path least likely to be
-    # tested. This README taught that exact spelling until it was fixed.
+    # The greffer renders each env value as its own template, so one that
+    # does not parse (`{{ oidc.issuer }`, a stray `{#`) fails the deploy at
+    # /start/. Asked by parsing it, not by pattern; this also catches what
+    # previously surfaced only as the confusing "does not reference the
+    # context".
     #
-    # Asked by doing it, not by pattern: dump the value the way the
-    # greffer will and parse the result. That also catches a value that
-    # was never valid Jinja, which previously surfaced only as the
-    # confusing "does not reference the context".
+    # This rule used to also reject a value that would not survive a
+    # `yaml.dump` of the whole compose: the greffer rendered the dumped
+    # document, and the dump doubles single quotes, so
+    # `{{ 'a' if x else 'b' }}` broke. greffer#146 renders each string
+    # leaf before the one dump, so that round-trip is gone. Verified on
+    # greffer main: single-quoted literals and `{{ oidc['issuer'] }}`
+    # render correctly in mapping and list form. Keeping the check would
+    # reject entries that deploy fine.
     if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
         for svc_name, svc_def in compose["services"].items():
             if not isinstance(svc_def, dict):
@@ -2063,17 +2068,6 @@ def validate_greffon_dir(catalog_root, rel_dir):
                         f"'{svc_name}' is not valid Jinja: {message}"
                     )
                     continue
-                try:
-                    _JINJA_ENV.parse(yaml.dump({k: v}))
-                except Exception:
-                    errors.append(
-                        f"{rel_dir}: docker-compose.yml env '{k}' on service "
-                        f"'{svc_name}' does not survive the greffer's "
-                        f"yaml.dump round-trip (got: '{v}'). Single quotes "
-                        "inside a Jinja expression are doubled by the dump "
-                        'and break the render -- use double quotes: '
-                        '{{ "a" if x else "b" }}'
-                    )
 
     for ns in sorted(KNOWN_INTEGRATION_NAMESPACES):
         label = ns.upper()
@@ -2094,9 +2088,9 @@ def validate_greffon_dir(catalog_root, rel_dir):
                             compose_uses_keys.setdefault(svc_name, set()).add(k)
                         # Field names are checked whether or not the read
                         # is a guard. `{% if oidc.client_id %}` needs no
-                        # destination -- the greffer keeps it -- but the
-                        # field still does not exist, and the author
-                        # should hear about it either way.
+                        # destination, but the field still does not
+                        # exist, and the author should hear about it
+                        # either way.
                         for field in sorted(_integration_field_refs(v, ns)):
                             supported = _INTEGRATION_FIELDS.get(ns)
                             if supported and field not in supported:
