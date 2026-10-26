@@ -114,9 +114,9 @@ def _reads_outside_a_guard(node, namespace, guarded=False):
     A use of the WHOLE mapping counts, not only a dotted field:
     `{{ oidc|tojson }}`, `{{ oidc.items()|list }}`, `{{ oidc }}`. Some of
     those are invisible to the greffer's pattern pass, which only removes
-    a `{{ }}` value matching `oidc.` or `oidc[`: with the integration
-    unset and no destination declared, `{{ oidc }}` and
-    `{{ oidc|tojson }}` survive and render `{}` (measured on 22a59fc, the
+    a value that contains `{{` and matches `oidc.` or `oidc[` anywhere:
+    with the integration unset and no destination declared, `{{ oidc }}`
+    and `{{ oidc|tojson }}` survive and render `{}` (measured on 22a59fc, the
     published 0.12.0, and on greffer main: the two agree). Requiring the
     destination is what gets them removed.
     """
@@ -137,11 +137,12 @@ def _strings_in(value):
     """Every string inside `value`, however nested.
 
     A compose env value is usually a scalar, but YAML permits a list or
-    a mapping, and the greffer's own `_strings_in` walks into them and
-    strips what it finds. Looking only at `str` values here left the
-    validator blind to exactly the shape the greffer acts on:
-    `K: ["{{ oidc.issuer }}"]` is stripped at deploy and was reported by
-    nothing.
+    a mapping, and the greffer renders the strings inside it too.
+    Looking only at `str` values here left the validator blind to them:
+    `K: ["{{ oidc.issuer }}"]` reads the integration and was reported by
+    nothing. The greffer does not strip a nested value (with OIDC unset
+    it renders `['']`, measured on 22a59fc and on greffer main), so only
+    a declared destination removes it.
     """
     if isinstance(value, str):
         yield value
@@ -151,6 +152,15 @@ def _strings_in(value):
     elif isinstance(value, (list, tuple)):
         for nested in value:
             yield from _strings_in(nested)
+
+
+def _list_entry_key(index, entry):
+    """The key a list-form env entry sets: the text before `=`, else its
+    index. Used for every list-form message, so one entry is named the
+    same way by every rule."""
+    if isinstance(entry, str) and "=" in entry:
+        return entry.split("=", 1)[0].strip()
+    return str(index)
 
 
 def _unsupported_field_errors(rel_dir, svc_name, key, value, namespace):
@@ -333,8 +343,8 @@ def _value_references_integration(value, namespace) -> bool:
     rendering `info` without a destination, kept=False with one.
 
     What the greffer does with a guard is narrower than "keeps it". Its
-    pattern pass removes a `{{ }}` value that reads a field spelled
-    `smtp.x` or `smtp[`, guard or not, so
+    pattern pass removes any value that contains `{{` and matches
+    `smtp.x` or `smtp[` anywhere, guard or not, so
     `{{ "a" if smtp.host else "b" }}` is absent at deploy when
     SMTP is unset even though no destination is required here. Demanding
     one would change nothing: that key is removed either way. The guards
@@ -2048,34 +2058,47 @@ def validate_greffon_dir(catalog_root, rel_dir):
     # destination of this type OR at least one `{{ <ns>.* }}` env value",
     # so a greffon that uses neither is untouched.
     # Rule 5.6: an env value that contains Jinja must be valid Jinja, and
-    # must survive the YAML dump the deployed greffers render.
+    # must still be valid Jinja after the YAML dump the deployed greffers
+    # render.
     #
-    # A value that does not parse fails the deploy at /start/: always for
-    # a stray `{#`, and for `{{ oidc.issuer }` as soon as OIDC is set
-    # (unset, the greffer strips the key before it renders). Asked by
-    # parsing it, not by pattern; this also catches what previously
-    # surfaced only as the confusing "does not reference the context".
+    # A value that does not parse fails the deploy at /start/ whenever
+    # the greffer renders it: `{{ oidc.issuer }` as soon as OIDC is set
+    # (unset, the greffer strips the key first), a stray `{#` in a value
+    # with no integration reference always. Asked by parsing it, not by
+    # pattern; this also catches what previously surfaced only as the
+    # confusing "does not reference the context".
     #
-    # Every published greffer image (0.12.0 and older) renders
-    # `Template(yaml.dump(compose))`, and the dump rewrites the value
-    # before Jinja sees it. A value starting with `{` is emitted single-
-    # quoted with each single quote doubled, so `{{ 'a' if x else 'b' }}`
-    # becomes `{{ ''a'' ... }}`. A value holding a non-ASCII character is
-    # emitted double-quoted, which backslash-escapes the double quotes in
-    # the expression. A long line is wrapped at a fixed column, with a
-    # `\` when double-quoted, so whether an expression breaks depends on
-    # how deep the value sits. Each fails the deploy with the integration
-    # set, the path least likely to be tested.
+    # Every greffer image published so far (0.12.0, built from 22a59fc,
+    # and older) renders `Template(yaml.dump(compose))`, so the dump
+    # rewrites the value before Jinja sees it. PyYAML picks the style
+    # from the content. A value it cannot emit plain (a leading `{`, a
+    # `: `, a ` #`, ...) is single-quoted with each single quote doubled,
+    # so `{{ 'a' if x else 'b' }}` becomes `{{ ''a'' ... }}`. A value
+    # holding a non-ASCII or control character, a tab, or a line break
+    # followed by a space is double-quoted, which backslash-escapes the
+    # double quotes in the expression. A long line is wrapped at a fixed
+    # column, with a `\` when double-quoted, so whether an expression
+    # breaks depends on how deep the value sits and how long its key is.
+    # Each fails the deploy with the integration set, the path least
+    # likely to be tested.
     #
     # Asked by doing it: dump the value at the nesting the compose gives
     # it, and parse the result. Dumping `{k: v}` alone gets the wrap
     # column wrong: against 22a59fc it disagreed with the greffer on 12
     # of 165 long values, this shape on none.
     #
-    # greffer#146 (first in version 0.13.0) renders each string leaf
-    # before the one dump. Drop this half once every node runs 0.13.0 or
-    # later, which is a question about the published image, not about
-    # greffer main.
+    # What this does NOT check: a value whose dump still parses but whose
+    # RENDER corrupts the document. Whitespace control at the end of a
+    # plain value (`-%}`, `-}}`) eats the line break and joins the next
+    # line onto it, and output holding quotes or `: ` (`{{ oidc|tojson }}`)
+    # can leave the document unparseable. Seeing those means rendering
+    # with a stand-in context; no catalog entry uses either today.
+    #
+    # greffer#146 renders each string leaf before the one dump. It landed
+    # while the version string still said 0.12.0 and was never published
+    # under it; 0.13.0 (#147) is the first version that carries it. Drop
+    # this half once every node runs 0.13.0 or later, which is a question
+    # about the published image, not about greffer main.
     if isinstance(compose, dict) and isinstance(compose.get("services"), dict):
         for svc_name, svc_def in compose["services"].items():
             if not isinstance(svc_def, dict):
@@ -2084,7 +2107,7 @@ def validate_greffon_dir(catalog_root, rel_dir):
             if isinstance(env, dict):
                 pairs = list(env.items())
             elif isinstance(env, list):
-                pairs = [(str(i), e) for i, e in enumerate(env)]
+                pairs = [(_list_entry_key(i, e), e) for i, e in enumerate(env)]
             else:
                 pairs = []
             for k, v in pairs:
@@ -2114,11 +2137,12 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     errors.append(
                         f"{rel_dir}: docker-compose.yml env '{k}' on service "
                         f"'{svc_name}' does not survive the yaml.dump the "
-                        f"greffer renders (got: '{v}'). The dump doubles "
-                        "single quotes, escapes double quotes once the value "
-                        "holds a non-ASCII character, and wraps long lines: "
-                        "use double quotes, keep the expression ASCII and "
-                        'the line short: {{ "a" if x else "b" }}'
+                        f"greffer renders (got: '{v}'). The dump re-quotes "
+                        "the value (doubling single quotes, escaping double "
+                        "quotes once it holds non-ASCII, a tab or a line "
+                        "break) and wraps long lines: use double-quoted "
+                        "Jinja strings, and keep the value short, ASCII and "
+                        'on one line: {{ "a" if x else "b" }}'
                     )
 
     for ns in sorted(KNOWN_INTEGRATION_NAMESPACES):
@@ -2148,12 +2172,9 @@ def validate_greffon_dir(catalog_root, rel_dir):
                     # obvious reference so a maintainer who wrote list-form
                     # Jinja still trips Rule 5.3.
                     for i, entry in enumerate(env):
-                        if isinstance(entry, str) and "=" in entry:
-                            entry_key = entry.split("=", 1)[0].strip()
-                        else:
-                            entry_key = str(i)
                         errors += _unsupported_field_errors(
-                            rel_dir, svc_name, entry_key, entry, ns)
+                            rel_dir, svc_name, _list_entry_key(i, entry),
+                            entry, ns)
                         if _value_references_integration(entry, ns):
                             if isinstance(entry, str) and "=" in entry:
                                 key = entry.split("=", 1)[0].strip()

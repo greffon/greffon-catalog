@@ -1157,16 +1157,21 @@ class RenderFlagTest(unittest.TestCase):
 
 class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
     """Rule 5.6: an env value must parse, and must survive the yaml.dump
-    every published greffer (0.12.0 and older) renders through.
+    every published greffer (0.12.0, 22a59fc, and older) renders through.
 
     Each verdict below was measured by rendering the same value through
-    `create_compose` on 22a59fc, the published 0.12.0, with its
-    integration set. greffer main (#146) renders all of them; nodes do
-    not run main.
+    `create_compose` on 22a59fc with its integration set. greffer main
+    (#146) renders all of them; nodes do not run main.
     """
 
     DUMP = 'does not survive the yaml.dump'
     INVALID = 'is not valid Jinja'
+
+    @staticmethod
+    def _pad(n):
+        # Non-ASCII makes the dump double-quote the value, and the
+        # padding walks `{{ smtp.host }}` across the wrap column.
+        return 'Café ' + 'x' * (n - 5) + ' {{ smtp.host }} tail'
 
     def _errors_for(self, compose):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1174,12 +1179,13 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
                                  compose_yaml=compose)
             return validate_greffon_dir(tmp, rel)
 
-    def _errors(self, value):
+    def _errors(self, value, key="K"):
         # json.dumps gives a correctly DOUBLE-quoted YAML scalar, so the
-        # quotes and non-ASCII inside reach the validator intact.
+        # quotes, tabs and non-ASCII inside reach the validator intact.
         return self._errors_for(
             "services:\n  app:\n    image: nginx\n"
-            "    environment:\n      K: " + json.dumps(value) + "\n")
+            "    environment:\n      " + key + ": " + json.dumps(value)
+            + "\n")
 
     def _list_errors(self, item):
         return self._errors_for(
@@ -1213,22 +1219,52 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
         self.assertFalse(self._flagged(errs, self.DUMP), errs)
         self.assertFalse(self._flagged(errs, self.INVALID), errs)
 
+    def test_a_colon_space_forces_single_quotes_too(self):
+        # Not only a leading `{`: anything that cannot be emitted plain.
+        self.assertTrue(self._flagged(
+            self._errors("a: b {{ 'x' }}"), self.DUMP))
+
     def test_non_ascii_inside_the_expression_is_rejected(self):
         self.assertTrue(self._flagged(
-            self._errors('{{ "Caf\u00e9" }}'), self.DUMP))
+            self._errors('{{ "Café" }}'), self.DUMP))
 
     def test_non_ascii_outside_the_expression_is_accepted(self):
-        errs = self._errors('Caf\u00e9 {{ instance_url }}')
+        errs = self._errors('Café {{ instance_url }}')
         self.assertFalse(self._flagged(errs, self.DUMP), errs)
 
+    def test_a_tab_forces_double_quotes_too(self):
+        self.assertTrue(self._flagged(
+            self._errors('\t{{ "a" if smtp.host else "b" }}'), self.DUMP))
+
+    def test_a_line_break_then_a_space_forces_double_quotes_too(self):
+        value = 'a\n  ' + 'x' * 53 + ' {{ smtp.host }} tail'
+        self.assertTrue(self._flagged(self._errors(value), self.DUMP))
+
     def test_the_wrap_column_is_the_one_the_compose_gives(self):
-        # Same shape, two lengths: at 55 the dump wraps INSIDE the
-        # expression and 22a59fc fails, at 70 it wraps before it and
-        # 22a59fc renders. Dumping `{k: v}` alone gets both backwards.
-        def pad(n):
-            return 'Caf\u00e9 ' + 'x' * (n - 5) + ' {{ smtp.host }} tail'
-        self.assertTrue(self._flagged(self._errors(pad(55)), self.DUMP))
-        self.assertFalse(self._flagged(self._errors(pad(70)), self.DUMP))
+        # 22a59fc fails pad(55) to pad(67): the dump wraps INSIDE the
+        # expression. Both edges, both sides, so a column off by one in
+        # either direction fails here.
+        for n, rejected in ((54, False), (55, True), (67, True),
+                            (68, False)):
+            with self.subTest(n=n):
+                self.assertEqual(self._flagged(
+                    self._errors(self._pad(n)), self.DUMP), rejected)
+
+    def test_the_key_length_moves_the_column(self):
+        # With a 20-character key 22a59fc fails pad(45) and renders
+        # pad(49); with `K` it renders both.
+        key = "K" * 20
+        self.assertTrue(self._flagged(
+            self._errors(self._pad(45), key=key), self.DUMP))
+        self.assertFalse(self._flagged(
+            self._errors(self._pad(49), key=key), self.DUMP))
+
+    def test_every_bad_key_in_a_service_is_reported(self):
+        errs = self._errors_for(
+            "services:\n  app:\n    image: nginx\n    environment:\n"
+            "      A: \"{{ 'a' }}\"\n      B: \"{{ 'b' }}\"\n")
+        self.assertEqual(sorted(e.split("env '")[1][0] for e in errs
+                                if self.DUMP in e), ['A', 'B'])
 
     def test_list_form_single_quotes_are_accepted(self):
         # A list item is emitted plain, so the quotes are not doubled.
@@ -1236,23 +1272,26 @@ class EnvValuesMustSurviveTheFleetDumpTest(unittest.TestCase):
         self.assertFalse(self._flagged(errs, self.DUMP), errs)
 
     def test_list_form_non_ascii_inside_the_expression_is_rejected(self):
-        # Non-ASCII forces the item double-quoted, as in mapping form.
-        self.assertTrue(self._flagged(
-            self._list_errors('K=Caf\u00e9 {{ "x" }}'), self.DUMP))
+        # Non-ASCII forces the item double-quoted, as in mapping form,
+        # and the message names the entry by its key, not its index.
+        errs = self._list_errors('K=Café {{ "x" }}')
+        self.assertTrue(any(self.DUMP in e and "env 'K'" in e
+                            for e in errs), errs)
 
     def test_list_form_wraps_at_the_list_item_column(self):
-        # A list item sits at a different column from a mapping value of
-        # the same depth. 22a59fc renders the 53 and fails the 66; dumping
-        # the item as a mapping value gets both backwards.
-        def pad(n):
-            return ('K=Caf\u00e9 ' + 'x' * (n - 5)
-                    + ' {{ smtp.host }} tail')
-        self.assertFalse(self._flagged(self._list_errors(pad(53)), self.DUMP))
-        self.assertTrue(self._flagged(self._list_errors(pad(66)), self.DUMP))
+        # 22a59fc fails the list item at 56 to 68, one column off the
+        # mapping window: an item sits at its own column.
+        for n, rejected in ((55, False), (56, True), (68, True),
+                            (69, False)):
+            with self.subTest(n=n):
+                self.assertEqual(self._flagged(
+                    self._list_errors('K=' + self._pad(n)), self.DUMP),
+                    rejected)
 
     def test_list_form_invalid_jinja_is_reported(self):
         errs = self._list_errors("K={{ oidc. }}")
-        self.assertTrue(self._flagged(errs, self.INVALID), errs)
+        self.assertTrue(any(self.INVALID in e and "env 'K'" in e
+                            for e in errs), errs)
 
     def test_every_service_is_checked(self):
         errs = self._errors_for(
@@ -1295,17 +1334,19 @@ class OidcSupportedFieldsTest(unittest.TestCase):
     def test_the_supported_field_is_accepted(self):
         self.assertFalse(self._errors("{{ oidc.issuer }}"))
 
-    def _list_errors(self, entry):
-        # List form, no destination: a guard-only value needs none, so
-        # the field check is the only thing left to catch a bad field.
+    def _compose_errors(self, compose):
+        # No destination: a guard-only value needs none, so the field
+        # check is the only thing left to catch a bad field.
         with tempfile.TemporaryDirectory() as tmp:
-            compose = ("services:\n  app:\n    image: nginx\n"
-                       "    environment:\n      - " + json.dumps(entry)
-                       + "\n")
             rel = _write_greffon(tmp, metadata=_base_metadata(),
                                  compose_yaml=compose)
             return [e for e in validate_greffon_dir(tmp, rel)
                     if "does not supply" in e]
+
+    def _list_errors(self, *entries):
+        return self._compose_errors(
+            "services:\n  app:\n    image: nginx\n    environment:\n"
+            + "".join("      - " + json.dumps(e) + "\n" for e in entries))
 
     def test_a_guard_on_a_missing_field_is_rejected_in_list_form(self):
         # The mapping-form twin was rejected and this one passed. With
@@ -1318,6 +1359,25 @@ class OidcSupportedFieldsTest(unittest.TestCase):
     def test_a_guard_on_the_supported_field_is_accepted_in_list_form(self):
         self.assertFalse(self._list_errors(
             "K={% if oidc.issuer %}enabled{% else %}disabled{% endif %}"))
+
+    BAD_GUARD = "{% if oidc.client_id %}a{% else %}b{% endif %}"
+
+    def test_every_list_entry_is_field_checked(self):
+        errs = self._list_errors("A=1", "K=" + self.BAD_GUARD)
+        self.assertTrue(errs)
+        self.assertIn("env 'K'", errs[0])
+
+    def test_a_list_entry_in_a_second_service_is_field_checked(self):
+        errs = self._compose_errors(
+            "services:\n  app:\n    image: nginx\n"
+            "  worker:\n    image: nginx\n    environment:\n"
+            "      - " + json.dumps("K=" + self.BAD_GUARD) + "\n")
+        self.assertTrue(any("'worker'" in e for e in errs), errs)
+
+    def test_a_list_entry_is_named_by_its_key_without_spaces(self):
+        errs = self._list_errors(" K = " + self.BAD_GUARD)
+        self.assertTrue(errs)
+        self.assertIn("env 'K'", errs[0])
 
     def test_a_field_that_does_not_exist_yet_is_rejected(self):
         self.assertTrue(self._errors("{{ oidc.client_id }}"))
